@@ -82,13 +82,16 @@ and differs by at most one Q27.14-to-Torus quantum (`2^18`) from the radix-2
 C++ result.  The small case is dominated by pipeline fill; the paper-sized
 throughput/resource comparison is generated separately.
 
-`BatchedCmuxEngine` adds twelve tagged coefficient-accumulator contexts around
-the continuous transform pipeline.  Its double-buffered External Product
-PISO drains one transaction at the 64-lane inverse width while the next
-transaction accumulates at the 128-lane forward width.  The opt-in paper-size
-regression accepts and completes contexts every 16 cycles in order, with a
-192-cycle launch-inclusive latency.  `CmuxEngine` remains the simpler
-single-command correctness top.
+`BatchedCmuxEngine` supports two coefficient-storage implementations.  The
+twelve-context register version is the exact schedule oracle: it accepts and
+completes contexts every 16 cycles with a 192-cycle launch-inclusive latency.
+The emitted physical top instead uses replicated synchronous memory banks and
+two polynomial prefetch buffers.  Its eight-cycle prefetch overlaps the prior
+16-cycle decomposition stream, retaining the 16-cycle interval with a
+201-cycle latency and thirteen contexts for sustained reuse.  In both cases,
+the double-buffered External Product PISO drains at the 64-lane inverse width
+while the next transaction accumulates at the 128-lane forward width.
+`CmuxEngine` remains the simpler single-command correctness top.
 
 ## Legacy scheduling prototype
 
@@ -158,11 +161,13 @@ tools/emit_paper_batched_cmux.sh build/sgen-fpt/forward.v \
 
 SGen remains a separate Verilog BlackBox in synthesis; CIRCT does not append
 the generated sources or its resource file list to `CmuxEngine.sv`.  The
-coefficient accumulator is stored in 64 lane banks, and `(X^a-1)` uses one
-shared ten-stage negacyclic barrel rotator.  This avoids duplicating a
-1024-to-one mux for every forward lane.  The External Product accumulator is
-also lane-banked as 128 banks by four spectral points and repacks directly to
-the 64-lane inverse stream.
+physical batch accumulator is 64 banks of 104 packed 128-bit words, duplicated
+to provide independent prefetch and inverse-update reads while writes are
+mirrored.  CIRCT emits 128 synchronous arrays rather than the register
+version's 786k accumulator flip-flop bits.  Two 1024-coefficient buffers feed
+one shared ten-stage negacyclic barrel rotator.  The External Product
+accumulator is also lane-banked as 128 banks by four spectral points and
+repacks directly to the 64-lane inverse stream.
 
 Vivado scripts run the transform alone or the complete CMUX out of context on
 the U280.  The default 3.425 ns constraint matches HOGE's reported 292 MHz;

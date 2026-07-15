@@ -77,7 +77,10 @@ final class BatchedCmuxEngineSpec
       )
     )
   )
-  private val config = BatchedCmuxEngineConfig(engine, batchContexts = 2)
+  private val registerConfig = BatchedCmuxEngineConfig(
+    engine,
+    batchContexts = 2
+  )
 
   private def vectors(name: String): Seq[Array[BigInt]] = {
     val candidates = Seq(
@@ -115,7 +118,10 @@ final class BatchedCmuxEngineSpec
 
   behavior of "the tagged batched CMUX engine"
 
-  it should "accept adjacent contexts at the row-stream interval" in {
+  private def exercise(
+      config: BatchedCmuxEngineConfig,
+      drainUsesPrefetch: Boolean
+  ): Unit = {
     val rows = vectors("rtl_cmux_engine_vectors.txt")
     val initial = rows.take(coefficient.polynomialSize)
     val keyCount = external.rows * external.points
@@ -241,7 +247,8 @@ final class BatchedCmuxEngineSpec
         doneContexts.toSeq should be(Seq(0, 1))
         doneCycles(1) - doneCycles(0) should be(config.commandInterval)
         info(
-          s"batched CMUX accepts/completes every ${config.commandInterval} cycles"
+          s"batched CMUX accepts/completes every ${config.commandInterval} " +
+            s"cycles with first completion at cycle ${doneCycles.head}"
         )
 
         for (context <- 0 until config.batchContexts) {
@@ -250,6 +257,14 @@ final class BatchedCmuxEngineSpec
           step()
           dut.io.drainStart.poke(false.B)
           dut.io.drainReady.poke(true.B)
+          if (drainUsesPrefetch) {
+            var drainWait = 0
+            while (!dut.io.drainValid.peek().litToBoolean) {
+              step()
+              drainWait += 1
+              drainWait should be <= coefficient.inverseBeats + 2
+            }
+          }
           var maximumError = BigInt(0)
           for (beat <- 0 until coefficient.polynomialBeats) {
             dut.io.drainValid.expect(true.B)
@@ -269,5 +284,18 @@ final class BatchedCmuxEngineSpec
           step()
         }
       }
+  }
+
+  it should "accept adjacent register contexts at the row-stream interval" in {
+    exercise(registerConfig, drainUsesPrefetch = false)
+  }
+
+  it should "run the same CMUX through replicated accumulator banks" in {
+    exercise(
+      registerConfig.copy(
+        coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks
+      ),
+      drainUsesPrefetch = true
+    )
   }
 }

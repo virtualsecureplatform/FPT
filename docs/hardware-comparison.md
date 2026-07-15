@@ -9,6 +9,12 @@ cycle is included. The twelve-context batched regression accepts and completes
 a different context every 16 cycles, in order, with the same 192-cycle
 launch-inclusive latency.
 
+The synthesis-oriented variant replaces those twelve register contexts with
+replicated synchronous memory banks and two prefetch buffers. It has a
+201-cycle latency, so thirteen contexts are needed for continuous reuse, but
+its acceptance and completion interval remains 16 cycles. The regression
+issues thirteen distinct contexts and then wraps immediately to context zero.
+
 Run the schedule check after generating the paper-size SGen sources:
 
 ```sh
@@ -22,6 +28,11 @@ FPT_PAPER_BATCH=1 \
 FPT_SGEN_FORWARD=../build/sgen-fpt/forward.v \
 FPT_SGEN_INVERSE=../build/sgen-fpt/inverse.v \
 sbt 'testOnly fpt.PaperBatchedScheduleSpec'
+
+FPT_PAPER_BANKED_BATCH=1 \
+FPT_SGEN_FORWARD=../build/sgen-fpt/forward.v \
+FPT_SGEN_INVERSE=../build/sgen-fpt/inverse.v \
+sbt 'testOnly fpt.PaperBankedBatchScheduleSpec'
 ```
 
 ## Locally measurable transform tradeoff
@@ -44,13 +55,19 @@ the four-cycle launch interval, and both inverse components run concurrently.
 The result is the launch-inclusive 192-cycle schedule even though the forward
 and inverse pipelines themselves are 64 and 102 cycles deep.
 
-The batch top combines a tagged, double-buffered External Product accumulator
-with twelve coefficient contexts. It accepts the next 128-lane transaction
-while the previous result drains through its 64-lane PISO output, then routes
-each delayed inverse result back to its originating context. Its current
-coefficient store is a direct, correctness-oriented register/multiplexer
-implementation; reproducing the paper's bitwise stream reorder and compact
-memory organization is still required before expecting comparable area.
+The physical batch top combines a tagged, double-buffered External Product
+accumulator with thirteen memory-backed coefficient contexts. A lane word
+packs both polynomial halves and both TRLWE components. Sixty-four banks are
+duplicated, giving forward prefetch and delayed inverse read-modify-write one
+read port each while writes are mirrored. For Set II, CIRCT preserves this as
+128 instances of a `104 x 128` synchronous array. The emitted Chisel top falls
+from 9.5 MB and 28,745 scalar register declarations to 4.2 MB and 8,545,
+respectively. These are structural source counts, not placed resource counts.
+
+The two prefetch buffers still feed a combinational ten-stage negacyclic
+barrel rotator. Reproducing the paper's bitwise stream reorder remains the
+next timing/area optimization; the memory-backed top establishes a much more
+credible synthesis baseline without claiming that unpublished organization.
 
 Regenerate the table from local SGen outputs with:
 

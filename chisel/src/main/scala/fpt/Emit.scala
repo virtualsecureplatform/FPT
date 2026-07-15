@@ -113,6 +113,33 @@ object EmitPaperBatchedCmux extends App {
   )
 }
 
+object EmitPaperBankedBatchedCmux extends App {
+  require(
+    args.length == 3,
+    "usage: EmitPaperBankedBatchedCmux OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V"
+  )
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
+  val inversePath = Path.of(args(2)).toAbsolutePath.normalize
+  val engine = PaperSetII.cmuxEngine(
+    forwardPath.toString,
+    inversePath.toString,
+    includeVerilogSource = false
+  )
+  val config = BatchedCmuxEngineConfig(
+    engine,
+    batchContexts = 13,
+    coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks
+  )
+
+  ChiselStage.emitSystemVerilogFile(
+    new BatchedCmuxEngine(config),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+  )
+}
+
 object EmitPaperAccumulatorBanks extends App {
   require(
     args.length == 1,

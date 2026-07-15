@@ -3,6 +3,87 @@ package fpt
 import chisel3._
 import chisel3.util._
 
+final class BatchedCmuxCoefficientStoreIO(
+    val config: CmuxCoefficientConfig,
+    val batchContexts: Int
+) extends Bundle {
+  private val contextWidth = TransformUtil.counterWidth(batchContexts)
+  private val rowWidth = TransformUtil.counterWidth(
+    config.components * config.levels
+  )
+
+  val loadStart = Input(Bool())
+  val loadContext = Input(UInt(contextWidth.W))
+  val loadValid = Input(Bool())
+  val loadReady = Output(Bool())
+  val load = Input(
+    Vec(
+      config.components,
+      Vec(config.inverseLanes, UInt(config.torusWidth.W))
+    )
+  )
+  val loadDone = Output(Bool())
+  val loadDoneContext = Output(UInt(contextWidth.W))
+
+  val commandValid = Input(Bool())
+  val commandReady = Output(Bool())
+  val commandContext = Input(UInt(contextWidth.W))
+  val exponent = Input(UInt(config.exponentWidth.W))
+  val transformStart = Output(Bool())
+  val pairValid = Output(Bool())
+  val pairReady = Input(Bool())
+  val coefficientLow = Output(
+    Vec(config.forwardLanes, SInt(config.forwardFormat.width.W))
+  )
+  val coefficientHigh = Output(
+    Vec(config.forwardLanes, SInt(config.forwardFormat.width.W))
+  )
+  val rowIndex = Output(UInt(rowWidth.W))
+  val pairLast = Output(Bool())
+
+  val updateValid = Input(Bool())
+  val updateReady = Output(Bool())
+  val updateFirst = Input(Bool())
+  val updateContext = Input(UInt(contextWidth.W))
+  val updateLow = Input(
+    Vec(
+      config.components,
+      Vec(config.inverseLanes, SInt(config.inverseFormat.width.W))
+    )
+  )
+  val updateHigh = Input(
+    Vec(
+      config.components,
+      Vec(config.inverseLanes, SInt(config.inverseFormat.width.W))
+    )
+  )
+  val updateDone = Output(Bool())
+  val updateDoneContext = Output(UInt(contextWidth.W))
+
+  val drainStart = Input(Bool())
+  val drainContext = Input(UInt(contextWidth.W))
+  val drainValid = Output(Bool())
+  val drainReady = Input(Bool())
+  val drain = Output(
+    Vec(
+      config.components,
+      Vec(config.inverseLanes, UInt(config.torusWidth.W))
+    )
+  )
+  val drainDone = Output(Bool())
+  val drainDoneContext = Output(UInt(contextWidth.W))
+
+  val contextLoaded = Output(Vec(batchContexts, Bool()))
+  val contextBusy = Output(Vec(batchContexts, Bool()))
+}
+
+abstract class BatchedCmuxCoefficientStoreBase(
+    val config: CmuxCoefficientConfig,
+    val batchContexts: Int
+) extends Module {
+  val io = IO(new BatchedCmuxCoefficientStoreIO(config, batchContexts))
+}
+
 /** Multi-context coefficient storage for FPT batch bootstrapping.
   *
   * The forward side streams all decomposition rows of one context and may
@@ -12,9 +93,9 @@ import chisel3.util._
   * 192-cycle CMUX pipeline has released it.
   */
 final class BatchedCmuxCoefficientStore(
-    val config: CmuxCoefficientConfig,
-    val batchContexts: Int
-) extends Module {
+    override val config: CmuxCoefficientConfig,
+    override val batchContexts: Int
+) extends BatchedCmuxCoefficientStoreBase(config, batchContexts) {
   import TransformUtil._
   require(batchContexts >= 2)
 
@@ -27,72 +108,6 @@ final class BatchedCmuxCoefficientStore(
   private val forwardBeatWidth = counterWidth(config.forwardBeats)
   private val inverseBeatWidth = counterWidth(config.inverseBeats)
   private val polynomialBeatWidth = counterWidth(config.polynomialBeats)
-
-  val io = IO(new Bundle {
-    val loadStart = Input(Bool())
-    val loadContext = Input(UInt(contextWidth.W))
-    val loadValid = Input(Bool())
-    val loadReady = Output(Bool())
-    val load = Input(
-      Vec(
-        config.components,
-        Vec(config.inverseLanes, UInt(config.torusWidth.W))
-      )
-    )
-    val loadDone = Output(Bool())
-    val loadDoneContext = Output(UInt(contextWidth.W))
-
-    val commandValid = Input(Bool())
-    val commandReady = Output(Bool())
-    val commandContext = Input(UInt(contextWidth.W))
-    val exponent = Input(UInt(config.exponentWidth.W))
-    val transformStart = Output(Bool())
-    val pairValid = Output(Bool())
-    val pairReady = Input(Bool())
-    val coefficientLow = Output(
-      Vec(config.forwardLanes, SInt(config.forwardFormat.width.W))
-    )
-    val coefficientHigh = Output(
-      Vec(config.forwardLanes, SInt(config.forwardFormat.width.W))
-    )
-    val rowIndex = Output(UInt(rowWidth.W))
-    val pairLast = Output(Bool())
-
-    val updateValid = Input(Bool())
-    val updateReady = Output(Bool())
-    val updateFirst = Input(Bool())
-    val updateContext = Input(UInt(contextWidth.W))
-    val updateLow = Input(
-      Vec(
-        config.components,
-        Vec(config.inverseLanes, SInt(config.inverseFormat.width.W))
-      )
-    )
-    val updateHigh = Input(
-      Vec(
-        config.components,
-        Vec(config.inverseLanes, SInt(config.inverseFormat.width.W))
-      )
-    )
-    val updateDone = Output(Bool())
-    val updateDoneContext = Output(UInt(contextWidth.W))
-
-    val drainStart = Input(Bool())
-    val drainContext = Input(UInt(contextWidth.W))
-    val drainValid = Output(Bool())
-    val drainReady = Input(Bool())
-    val drain = Output(
-      Vec(
-        config.components,
-        Vec(config.inverseLanes, UInt(config.torusWidth.W))
-      )
-    )
-    val drainDone = Output(Bool())
-    val drainDoneContext = Output(UInt(contextWidth.W))
-
-    val contextLoaded = Output(Vec(batchContexts, Bool()))
-    val contextBusy = Output(Vec(batchContexts, Bool()))
-  })
 
   val memory = Reg(
     Vec(

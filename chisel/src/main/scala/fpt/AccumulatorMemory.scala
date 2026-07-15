@@ -150,6 +150,8 @@ final class ReplicatedAccumulatorBanks(
   when(io.loadStart) {
     assert(!loadActive, "accumulator load started while active")
     assert(io.loadContext < config.batchContexts.U, "invalid load context")
+    assert(!io.prefetchStart, "load and prefetch started together")
+    assert(!io.updateValid, "load started with inverse update data")
     loadActive := true.B
     loadContextReg := io.loadContext
     loadBeat := 0.U
@@ -184,7 +186,7 @@ final class ReplicatedAccumulatorBanks(
   val prefetchActive = RegInit(false.B)
   val prefetchContextReg = RegInit(0.U(contextWidth.W))
   val prefetchIssueBeat = RegInit(0.U(halfBeatWidth.W))
-  io.prefetchReady := !prefetchActive && !loadActive
+  io.prefetchReady := !prefetchActive && !loadActive && !io.loadStart
   val prefetchFire = io.prefetchStart && io.prefetchReady
   val prefetchReadEnable = prefetchFire || prefetchActive
   val activePrefetchContext = Mux(
@@ -252,7 +254,7 @@ final class ReplicatedAccumulatorBanks(
   val updateActive = RegInit(false.B)
   val updateContextReg = RegInit(0.U(contextWidth.W))
   val updateBeat = RegInit(0.U(halfBeatWidth.W))
-  io.updateReady := !loadActive
+  io.updateReady := !loadActive && !io.loadStart
   val updateFire = io.updateValid && io.updateReady
   val activeUpdateContext = Mux(
     updateActive,

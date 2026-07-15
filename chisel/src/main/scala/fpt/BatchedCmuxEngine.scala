@@ -3,9 +3,18 @@ package fpt
 import chisel3._
 import chisel3.util._
 
+sealed trait BatchedCoefficientStorage
+
+object BatchedCoefficientStorage {
+  case object RegisterArray extends BatchedCoefficientStorage
+  case object ReplicatedBanks extends BatchedCoefficientStorage
+}
+
 final case class BatchedCmuxEngineConfig(
     engine: CmuxEngineConfig,
-    batchContexts: Int
+    batchContexts: Int,
+    coefficientStorage: BatchedCoefficientStorage =
+      BatchedCoefficientStorage.RegisterArray
 ) {
   require(batchContexts >= 2)
   require(
@@ -120,12 +129,23 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
     val contextBusy = Output(Vec(config.batchContexts, Bool()))
   })
 
-  val coefficients = Module(
-    new BatchedCmuxCoefficientStore(
-      coefficientConfig,
-      config.batchContexts
-    )
-  )
+  val coefficients: BatchedCmuxCoefficientStoreBase =
+    config.coefficientStorage match {
+      case BatchedCoefficientStorage.RegisterArray =>
+        Module(
+          new BatchedCmuxCoefficientStore(
+            coefficientConfig,
+            config.batchContexts
+          )
+        )
+      case BatchedCoefficientStorage.ReplicatedBanks =>
+        Module(
+          new PrefetchedBatchedCmuxCoefficientStore(
+            coefficientConfig,
+            config.batchContexts
+          )
+        )
+    }
   val forward = Module(
     new SGenForwardTangentBackend(
       base.forwardTransform,

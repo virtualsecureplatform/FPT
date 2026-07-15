@@ -20,7 +20,7 @@ if ! rg -q '^module FptSGenInverse\(' "$inverse"; then
 fi
 
 (cd "$repo_root/chisel" &&
-    sbt "runMain fpt.EmitPaperBatchedCmux $output_dir $forward $inverse")
+    sbt "runMain fpt.EmitPaperBankedBatchedCmux $output_dir $forward $inverse")
 
 if command -v verilator >/dev/null && [[ ${FPT_SKIP_LINT:-0} != 1 ]]; then
     verilator --lint-only -Wno-fatal --top-module BatchedCmuxEngine \
