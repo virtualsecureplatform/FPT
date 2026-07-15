@@ -7,8 +7,9 @@ import chiseltest.simulator.{VerilatorBackendAnnotation, VerilatorFlags}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
+import scala.jdk.CollectionConverters._
 
 final class BlindRotateEngineSpec
     extends AnyFlatSpec
@@ -85,6 +86,37 @@ final class BlindRotateEngineSpec
     BatchedCmuxEngineConfig(engine, contexts),
     domainDimension
   )
+
+  private def vectors(name: String): Seq[Array[BigInt]] = {
+    val candidates = Seq(
+      Path.of("..", "build", name),
+      Path.of("..", "build-tfhepp", name),
+      Path.of("build", name)
+    )
+    val path = candidates.find(Files.exists(_)).getOrElse(
+      fail(s"Could not find $name; build the C++ RTL vectors first")
+    )
+    Files
+      .readAllLines(path)
+      .asScala
+      .filter(_.trim.nonEmpty)
+      .map(_.trim.split("\\s+").map(BigInt(_)))
+      .toSeq
+  }
+
+  private def pokeTwiddle(target: GaussTwiddle, row: Array[BigInt]): Unit = {
+    target.c.poke(row(0).S)
+    target.cMinusD.poke(row(1).S)
+    target.cPlusD.poke(row(2).S)
+  }
+
+  private def wrappedDifference(actual: BigInt, expected: BigInt): BigInt = {
+    val modulus = BigInt(1) << coefficient.torusWidth
+    val raw = (actual - expected) & (modulus - 1)
+    val signed =
+      if (raw.testBit(coefficient.torusWidth - 1)) raw - modulus else raw
+    signed.abs
+  }
 
   behavior of "the batched fixed-point Blind Rotate engine"
 
@@ -197,7 +229,7 @@ final class BlindRotateEngineSpec
 
         var cycle = 0
         val keyCycles = ArrayBuffer.empty[Int]
-        val keyTransactions = ArrayBuffer.empty[(Int, Int)]
+        val keyTransactions = ArrayBuffer.empty[(Int, Int, Int)]
         val completedContexts = ArrayBuffer.empty[Int]
 
         def observe(): Unit = {
@@ -206,7 +238,8 @@ final class BlindRotateEngineSpec
             keyCycles += cycle
             keyTransactions += ((
               dut.io.keyContext.peek().litValue.toInt,
-              dut.io.keyIndex.peek().litValue.toInt
+              dut.io.keyIndex.peek().litValue.toInt,
+              dut.io.keyExponent.peek().litValue.toInt
             ))
           }
           if (dut.io.contextDoneValid.peek().litToBoolean) {
@@ -226,7 +259,9 @@ final class BlindRotateEngineSpec
 
         val expectedTransactions =
           (0 until domainDimension).flatMap(dimension =>
-            (0 until contexts).map(context => (context, dimension))
+            (0 until contexts).map(context =>
+              (context, dimension, desiredMasks(context)(dimension))
+            )
           )
         keyTransactions.toSeq should be(expectedTransactions)
         keyCycles.sliding(2).foreach { pair =>
@@ -268,6 +303,217 @@ final class BlindRotateEngineSpec
         desiredMasks.flatten.map(BigInt(_)).foreach { exponent =>
           (exponent & exponentMask) should be(exponent)
         }
+      }
+  }
+
+  it should "match two chained fixed-point CMUXes from the C++ oracle" in {
+    val rows = vectors("rtl_blind_rotate_vectors.txt")
+    val inputRows = rows.take(contexts)
+    val keyCount = domainDimension * external.rows * external.points
+    val key = rows.slice(contexts, contexts + keyCount)
+    val expected = rows
+      .drop(contexts + keyCount)
+      .grouped(coefficient.polynomialSize)
+      .toSeq
+    inputRows.size should be(contexts)
+    key.size should be(keyCount)
+    expected.size should be(contexts)
+
+    val twiddles = vectors("rtl_cmux_engine_twiddles.txt")
+    val forwardTwists = twiddles.slice(
+      forward.points / 2,
+      forward.points / 2 + forward.points
+    )
+    val inverseOffset = forward.points / 2 + forward.points
+    val inverseUntwists = twiddles.drop(inverseOffset + inverse.points / 2)
+
+    test(new BatchedBlindRotateEngine(config))
+      .withAnnotations(
+        Seq(
+          VerilatorBackendAnnotation,
+          VerilatorFlags(
+            Seq(
+              "--output-split",
+              "99999999",
+              "--output-split-cfuncs",
+              "99999999"
+            )
+          )
+        )
+      ) { dut =>
+        dut.io.inputStart.poke(false.B)
+        dut.io.inputContext.poke(0.U)
+        dut.io.testVector.poke(0.U)
+        dut.io.inputValid.poke(false.B)
+        dut.io.inputCoefficient.poke(0.U)
+        dut.io.runStart.poke(false.B)
+        dut.io.drainStart.poke(false.B)
+        dut.io.drainContext.poke(0.U)
+        dut.io.drainReady.poke(false.B)
+
+        for (component <- 0 until external.outputComponents) {
+          for (lane <- 0 until external.inputLanes) {
+            dut.io.bootstrappingKey(component)(lane).real.poke(0.S)
+            dut.io.bootstrappingKey(component)(lane).imag.poke(0.S)
+          }
+        }
+        for (lane <- 0 until forward.lanes) {
+          dut.io.forwardTwist(lane).c.poke(0.S)
+          dut.io.forwardTwist(lane).cMinusD.poke(0.S)
+          dut.io.forwardTwist(lane).cPlusD.poke(0.S)
+        }
+        for (lane <- 0 until inverse.lanes) {
+          dut.io.inverseUntwist(lane).c.poke(0.S)
+          dut.io.inverseUntwist(lane).cMinusD.poke(0.S)
+          dut.io.inverseUntwist(lane).cPlusD.poke(0.S)
+        }
+
+        dut.reset.poke(true.B)
+        dut.clock.step(2)
+        dut.reset.poke(false.B)
+
+        def driveReadOnlyInputs(): Unit = {
+          for (lane <- 0 until forward.lanes) {
+            val index = dut.io.forwardTwistIndex(lane).peek().litValue.toInt
+            pokeTwiddle(dut.io.forwardTwist(lane), forwardTwists(index))
+          }
+          for (lane <- 0 until inverse.lanes) {
+            val index = dut.io.inverseUntwistIndex(lane).peek().litValue.toInt
+            pokeTwiddle(dut.io.inverseUntwist(lane), inverseUntwists(index))
+          }
+          val keyIndex = dut.io.keyIndex.peek().litValue.toInt
+          val keyRow = dut.io.keyRow.peek().litValue.toInt
+          for (lane <- 0 until external.inputLanes) {
+            val point = dut.io.keyPoint(lane).peek().litValue.toInt
+            val vector = key(
+              (keyIndex * external.rows + keyRow) * external.points + point
+            )
+            for (component <- 0 until external.outputComponents) {
+              dut.io.bootstrappingKey(component)(lane).real.poke(
+                vector(2 * component).S
+              )
+              dut.io.bootstrappingKey(component)(lane).imag.poke(
+                vector(2 * component + 1).S
+              )
+            }
+          }
+        }
+
+        var cycle = 0
+        def step(): Unit = {
+          driveReadOnlyInputs()
+          dut.clock.step()
+          cycle += 1
+        }
+
+        for (context <- 0 until contexts) {
+          dut.io.inputContext.poke(context.U)
+          dut.io.testVector.poke(inputRows(context)(0).U)
+          dut.io.inputStartReady.expect(true.B)
+          dut.io.inputStart.poke(true.B)
+          step()
+          dut.io.inputStart.poke(false.B)
+          dut.io.inputValid.poke(true.B)
+          for (value <- inputRows(context).drop(1)) {
+            dut.io.inputReady.expect(true.B)
+            dut.io.inputCoefficient.poke(value.U)
+            step()
+          }
+          dut.io.inputValid.poke(false.B)
+          var loadWait = 0
+          while (!dut.io.inputDone.peek().litToBoolean) {
+            step()
+            loadWait += 1
+            loadWait should be <= coefficient.polynomialBeats + 4
+          }
+          dut.io.inputDoneContext.expect(context.U)
+          step()
+          dut.io.contextInitialized(context).expect(true.B)
+        }
+
+        dut.io.runReady.expect(true.B)
+        dut.io.runStart.poke(true.B)
+        step()
+        dut.io.runStart.poke(false.B)
+
+        val keyCycles = ArrayBuffer.empty[Int]
+        val keyTransactions = ArrayBuffer.empty[(Int, Int, Int)]
+        val completedContexts = ArrayBuffer.empty[Int]
+
+        def observe(): Unit = {
+          if (dut.io.keyValid.peek().litToBoolean &&
+              dut.io.keyFirst.peek().litToBoolean) {
+            keyCycles += cycle
+            keyTransactions += ((
+              dut.io.keyContext.peek().litValue.toInt,
+              dut.io.keyIndex.peek().litValue.toInt,
+              dut.io.keyExponent.peek().litValue.toInt
+            ))
+          }
+          if (dut.io.contextDoneValid.peek().litToBoolean) {
+            completedContexts += dut.io.contextDone.peek().litValue.toInt
+          }
+        }
+
+        while (!dut.io.done.peek().litToBoolean) {
+          driveReadOnlyInputs()
+          observe()
+          dut.clock.step()
+          cycle += 1
+          cycle should be < 1500
+        }
+        driveReadOnlyInputs()
+        observe()
+        dut.clock.step()
+        cycle += 1
+
+        val expectedTransactions =
+          (0 until domainDimension).flatMap(dimension =>
+            (0 until contexts).map { context =>
+              val exponent =
+                if (context == 0) 0
+                else if (dimension == 0) (3 + 5 * context) & 63
+                else (17 + 7 * context) & 63
+              (context, dimension, exponent)
+            }
+          )
+        keyTransactions.toSeq should be(expectedTransactions)
+        keyCycles.sliding(2).foreach { pair =>
+          pair(1) - pair(0) should be(config.cmux.commandInterval)
+        }
+        completedContexts.toSeq should be(0 until contexts)
+
+        dut.io.drainReady.poke(true.B)
+        var maximumError = BigInt(0)
+        for (context <- 0 until contexts) {
+          dut.io.drainContext.poke(context.U)
+          dut.io.drainStartReady.expect(true.B)
+          dut.io.drainStart.poke(true.B)
+          step()
+          dut.io.drainStart.poke(false.B)
+          for (beat <- 0 until coefficient.polynomialBeats) {
+            dut.io.drainValid.expect(true.B)
+            for (lane <- 0 until coefficient.inverseLanes) {
+              val index = beat * coefficient.inverseLanes + lane
+              for (component <- 0 until coefficient.components) {
+                val actual = dut.io.drain(component)(lane).peek().litValue
+                val error = wrappedDifference(
+                  actual,
+                  expected(context)(index)(component)
+                )
+                if (context == 0) error should be(0)
+                maximumError = maximumError.max(error)
+              }
+            }
+            step()
+          }
+          dut.io.drainDone.expect(true.B)
+          dut.io.drainDoneContext.expect(context.U)
+        }
+        maximumError should be <= (BigInt(1) << 19)
+        info(
+          s"C++ Blind Rotate oracle maximum wrapped error: $maximumError"
+        )
       }
   }
 }

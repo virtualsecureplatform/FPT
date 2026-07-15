@@ -88,6 +88,7 @@ final class BatchedBlindRotateEngine(
     val keyFirst = Output(Bool())
     val keyIndex = Output(UInt(config.dimensionWidth.W))
     val keyContext = Output(UInt(contextWidth.W))
+    val keyExponent = Output(UInt(config.exponentWidth.W))
     val keyRow = Output(UInt(rowWidth.W))
     val keyPoint = Output(
       Vec(external.inputLanes, UInt(log2Ceil(external.points).W))
@@ -309,6 +310,9 @@ final class BatchedBlindRotateEngine(
   val inFlightKeyIndex = RegInit(
     VecInit(Seq.fill(config.batchContexts)(0.U(config.dimensionWidth.W)))
   )
+  val inFlightExponent = RegInit(
+    VecInit(Seq.fill(config.batchContexts)(0.U(config.exponentWidth.W)))
+  )
   val scanContext = RegInit(0.U(contextWidth.W))
   val readPending = RegInit(false.B)
   val pendingContext = RegInit(0.U(contextWidth.W))
@@ -352,6 +356,7 @@ final class BatchedBlindRotateEngine(
     candidateDimension === (config.domainDimension - 1).U
   when(commandFire) {
     inFlightKeyIndex(candidateContext) := candidateDimension
+    inFlightExponent(candidateContext) := candidateExponent
     candidateValid := false.B
     when(candidateFinal) {
       allIssued(candidateContext) := true.B
@@ -400,6 +405,7 @@ final class BatchedBlindRotateEngine(
   io.keyFirst := cmux.io.keyFirst
   io.keyContext := cmux.io.keyContext
   io.keyIndex := inFlightKeyIndex(cmux.io.keyContext)
+  io.keyExponent := inFlightExponent(cmux.io.keyContext)
   io.keyRow := cmux.io.keyRow
   io.keyPoint := cmux.io.keyPoint
 

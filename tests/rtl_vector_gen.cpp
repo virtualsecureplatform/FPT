@@ -147,7 +147,7 @@ void cyclic_fft(std::vector<fpt::FixedComplex> &values, bool inverse = false)
 
 int main(int argc, char **argv)
 {
-    if (argc != 15)
+    if (argc != 16)
         throw std::invalid_argument(
             "expected all RTL vector and twiddle output paths");
     std::ofstream output(argv[1]);
@@ -338,7 +338,8 @@ int main(int argc, char **argv)
     constexpr int engine_rows = cmux_components * cmux_levels;
     using EngineKeyRow = std::array<
         std::array<fpt::FixedComplex, cmux_points>, cmux_components>;
-    std::array<EngineKeyRow, engine_rows> engine_key;
+    using EngineKey = std::array<EngineKeyRow, engine_rows>;
+    EngineKey engine_key;
     for (int row = 0; row < engine_rows; ++row) {
         for (int point = 0; point < cmux_points; ++point) {
             for (int component = 0; component < cmux_components; ++component) {
@@ -356,45 +357,146 @@ int main(int argc, char **argv)
         {cmux_polynomial_size, mac_a_format, 4, {}});
     fpt::NegacyclicFFT engine_inverse_plan(
         {cmux_polynomial_size, accumulator_format, 4, {}});
-    std::array<std::vector<fpt::FixedComplex>, cmux_components>
-        engine_spectrum;
-    for (auto &component : engine_spectrum)
-        component.assign(cmux_points, {});
-    int engine_row = 0;
-    for (int component = 0; component < cmux_components; ++component) {
-        for (int level = 0; level < cmux_levels; ++level, ++engine_row) {
-            std::array<std::int64_t, cmux_polynomial_size> digits;
-            for (int index = 0; index < cmux_polynomial_size; ++index)
-                digits[index] = decompose_torus(
-                    rotate_subtract(engine_accumulator[component], index,
-                                    engine_exponent),
-                    level);
-            const auto transformed = engine_forward_plan.forward_integer(digits);
-            for (int output_component = 0;
-                 output_component < cmux_components; ++output_component)
-                for (int point = 0; point < cmux_points; ++point)
-                    engine_spectrum[output_component][point] = complex_mac(
-                        transformed.values[point],
-                        engine_key[engine_row][output_component][point],
-                        engine_spectrum[output_component][point]);
+    const auto apply_engine_cmux = [&](
+                                       auto &accumulator,
+                                       const auto &key,
+                                       int exponent) {
+        std::array<std::vector<fpt::FixedComplex>, cmux_components> spectrum;
+        for (auto &component : spectrum) component.assign(cmux_points, {});
+        int row = 0;
+        for (int component = 0; component < cmux_components; ++component) {
+            for (int level = 0; level < cmux_levels; ++level, ++row) {
+                std::array<std::int64_t, cmux_polynomial_size> digits;
+                for (int index = 0; index < cmux_polynomial_size; ++index)
+                    digits[index] = decompose_torus(
+                        rotate_subtract(accumulator[component], index,
+                                        exponent),
+                        level);
+                const auto transformed =
+                    engine_forward_plan.forward_integer(digits);
+                for (int output_component = 0;
+                     output_component < cmux_components; ++output_component)
+                    for (int point = 0; point < cmux_points; ++point)
+                        spectrum[output_component][point] = complex_mac(
+                            transformed.values[point],
+                            key[row][output_component][point],
+                            spectrum[output_component][point]);
+            }
         }
-    }
-    for (int component = 0; component < cmux_components; ++component) {
-        fpt::QuantizedSpectrum spectrum;
-        spectrum.values = engine_spectrum[component];
-        spectrum.format = accumulator_format;
-        const auto inverse = engine_inverse_plan.inverse(spectrum);
-        for (int index = 0; index < cmux_polynomial_size; ++index) {
-            const auto normalized_raw = static_cast<std::int64_t>(
-                std::floor(std::ldexp(inverse[index],
-                                      accumulator_format.fractional_bits)));
-            engine_accumulator[component][index] +=
-                static_cast<std::uint32_t>(normalized_raw * (1LL << 18));
+        for (int component = 0; component < cmux_components; ++component) {
+            fpt::QuantizedSpectrum quantized;
+            quantized.values = spectrum[component];
+            quantized.format = accumulator_format;
+            const auto inverse = engine_inverse_plan.inverse(quantized);
+            for (int index = 0; index < cmux_polynomial_size; ++index) {
+                const auto normalized_raw = static_cast<std::int64_t>(
+                    std::floor(std::ldexp(
+                        inverse[index], accumulator_format.fractional_bits)));
+                accumulator[component][index] += static_cast<std::uint32_t>(
+                    normalized_raw * (1LL << 18));
+            }
         }
-    }
+    };
+
+    apply_engine_cmux(engine_accumulator, engine_key, engine_exponent);
     for (int index = 0; index < cmux_polynomial_size; ++index)
         cmux_engine_output << engine_accumulator[0][index] << ' '
                            << engine_accumulator[1][index] << '\n';
+
+    std::ofstream blind_rotate_output(argv[15]);
+    if (!blind_rotate_output)
+        throw std::runtime_error("could not open Blind Rotate vectors");
+    constexpr int blind_contexts = 7;
+    constexpr int blind_dimensions = 2;
+    constexpr int blind_exponent_width = 6;
+    constexpr int blind_modulus_shift = 32 - blind_exponent_width;
+    std::array<std::array<int, blind_dimensions>, blind_contexts>
+        blind_exponents;
+    std::array<std::array<std::uint32_t, blind_dimensions + 1>,
+               blind_contexts>
+        blind_inputs;
+    std::array<std::uint32_t, blind_contexts> blind_test_vectors;
+    std::array<int, blind_contexts> blind_initial_exponents;
+    for (int context = 0; context < blind_contexts; ++context) {
+        blind_test_vectors[context] =
+            0x10000000U + 0x01111111U * context;
+        blind_exponents[context] = {
+            context == 0 ? 0 : (3 + 5 * context) & 63,
+            context == 0 ? 0 : (17 + 7 * context) & 63};
+        const std::array<int, blind_dimensions> residuals{
+            context - 3, -(context + 1)};
+        int correction = 0;
+        for (int dimension = 0; dimension < blind_dimensions; ++dimension) {
+            correction += residuals[dimension];
+            blind_inputs[context][dimension] =
+                static_cast<std::uint32_t>(
+                    (static_cast<std::uint64_t>(
+                         blind_exponents[context][dimension])
+                     << blind_modulus_shift) +
+                    residuals[dimension]);
+        }
+        const int correction_half =
+            correction < 0 ? -((-correction) / 2) : correction / 2;
+        const int body_rounded = (11 + 3 * context) & 63;
+        blind_inputs[context][blind_dimensions] =
+            static_cast<std::uint32_t>(
+                (static_cast<std::uint64_t>(body_rounded)
+                 << blind_modulus_shift) +
+                correction_half);
+        blind_initial_exponents[context] = (-body_rounded) & 63;
+        blind_rotate_output << blind_test_vectors[context];
+        for (const auto value : blind_inputs[context])
+            blind_rotate_output << ' ' << value;
+        blind_rotate_output << '\n';
+    }
+
+    using BlindKey = std::array<EngineKey, blind_dimensions>;
+    BlindKey blind_key;
+    // Keep this deterministic oracle below full scale. A generated-SGen
+    // rounding difference can cross a decomposition digit boundary between
+    // chained CMUXes; a large arbitrary (non-GGSW) spectrum would then amplify
+    // that expected fixed-point difference around the full Torus modulus.
+    std::uniform_int_distribution<std::int64_t> blind_key_distribution(
+        -(std::int64_t{1} << 4), (std::int64_t{1} << 4) - 1);
+    for (int dimension = 0; dimension < blind_dimensions; ++dimension) {
+        for (int row = 0; row < engine_rows; ++row) {
+            for (int point = 0; point < cmux_points; ++point) {
+                for (int component = 0; component < cmux_components;
+                     ++component) {
+                    blind_key[dimension][row][component][point] = {
+                        blind_key_distribution(generator),
+                        blind_key_distribution(generator)};
+                    const auto value =
+                        blind_key[dimension][row][component][point];
+                    blind_rotate_output << value.real << ' ' << value.imag
+                                        << (component + 1 == cmux_components
+                                                ? '\n'
+                                                : ' ');
+                }
+            }
+        }
+    }
+
+    for (int context = 0; context < blind_contexts; ++context) {
+        std::array<std::array<std::uint32_t, cmux_polynomial_size>,
+                   cmux_components>
+            accumulator{};
+        const int initial_exponent = blind_initial_exponents[context];
+        const int low = initial_exponent & (cmux_polynomial_size - 1);
+        const bool high = initial_exponent >= cmux_polynomial_size;
+        for (int index = 0; index < cmux_polynomial_size; ++index) {
+            const bool negate = high != (index < low);
+            accumulator[1][index] =
+                negate ? std::uint32_t{0} - blind_test_vectors[context]
+                       : blind_test_vectors[context];
+        }
+        for (int dimension = 0; dimension < blind_dimensions; ++dimension)
+            apply_engine_cmux(accumulator, blind_key[dimension],
+                              blind_exponents[context][dimension]);
+        for (int index = 0; index < cmux_polynomial_size; ++index)
+            blind_rotate_output << accumulator[0][index] << ' '
+                                << accumulator[1][index] << '\n';
+    }
 
     const auto write_twiddle = [&](double angle,
                                    const fpt::FixedFormat format) {
