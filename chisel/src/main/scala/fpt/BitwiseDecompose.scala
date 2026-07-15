@@ -65,14 +65,17 @@ final class BitwiseGadgetDecomposer(
   io.done := doneReg
   doneReg := false.B
 
-  val biasChunks = VecInit((0 until chunks).map { chunk =>
+  val biasChunks = (0 until chunks).map { chunk =>
     ((bias >> (chunk * bitsPerCycle)) & chunkMask).U(bitsPerCycle.W)
-  })
+  }
+  val selectedBiasChunk = MuxLookup(chunkIndex, biasChunks.head)(
+    biasChunks.zipWithIndex.map { case (value, chunk) => chunk.U -> value }
+  )
   val nextCarry = Wire(Vec(polynomialSize, UInt(2.W)))
   val resultChunk = Wire(Vec(polynomialSize, UInt(bitsPerCycle.W)))
   for (position <- 0 until polynomialSize) {
     val sum = io.rotated(position) +& (~io.original(position)) +&
-      biasChunks(chunkIndex) +& carry(position)
+      selectedBiasChunk +& carry(position)
     resultChunk(position) := sum(bitsPerCycle - 1, 0)
     nextCarry(position) := sum(bitsPerCycle + 1, bitsPerCycle)
   }

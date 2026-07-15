@@ -46,36 +46,42 @@ final class BitwiseFoldedDigitStreamer(val config: CmuxCoefficientConfig)
   io.done := doneReg
   doneReg := false.B
 
-  val rowComponents = VecInit(
-    (0 until rows).map(index => (index / config.levels).U)
-  )
-  val rowLevels = VecInit(
-    (0 until rows).map(index => (index % config.levels).U)
-  )
-  val component = rowComponents(row)
-  val level = rowLevels(row)
+  def fixedDigit(lane: Int, high: Boolean): SInt = {
+    val keyWidth = rowWidth + beatWidth
+    val halfOffset = if (high) config.points else 0
+    val selections = IndexedSeq.tabulate(1 << keyWidth) { key =>
+      val rowIndex = key >> beatWidth
+      val beatIndex = key & ((1 << beatWidth) - 1)
+      if (rowIndex < rows && beatIndex < config.forwardBeats) {
+        val component = rowIndex / config.levels
+        val level = rowIndex % config.levels
+        val position = halfOffset + beatIndex * config.forwardLanes + lane
+        io.digits(component)(level)(position)
+      } else {
+        io.digits(0)(0)(halfOffset + lane)
+      }
+    }
 
-  def fixedDigit(position: UInt): SInt = {
-    val selected = VecInit((0 until config.components).map { componentIndex =>
-      VecInit((0 until config.levels).map { levelIndex =>
-        VecInit(configuredPositions(componentIndex, levelIndex))(position)
-      })(level)
-    })(component)
+    def balancedSelect(values: IndexedSeq[SInt], bit: Int): SInt =
+      if (values.size == 1) values.head
+      else {
+        val (low, highValues) = values.splitAt(values.size / 2)
+        Mux(
+          Cat(row, beat)(bit),
+          balancedSelect(highValues, bit - 1),
+          balancedSelect(low, bit - 1)
+        )
+      }
+
+    val selected = balancedSelect(selections, keyWidth - 1)
     val fixed = Wire(SInt(config.forwardFormat.width.W))
     fixed := selected << config.forwardFormat.fractionalBits
     fixed
   }
 
-  def configuredPositions(component: Int, level: Int): Seq[SInt] =
-    (0 until config.polynomialSize).map(position =>
-      io.digits(component)(level)(position)
-    )
-
   for (lane <- 0 until config.forwardLanes) {
-    val lowPosition = beat * config.forwardLanes.U + lane.U
-    val highPosition = lowPosition + config.points.U
-    io.coefficientLow(lane) := fixedDigit(lowPosition)
-    io.coefficientHigh(lane) := fixedDigit(highPosition)
+    io.coefficientLow(lane) := fixedDigit(lane, high = false)
+    io.coefficientHigh(lane) := fixedDigit(lane, high = true)
   }
 
   // When idle, the first pair can flow in the same cycle as start. This keeps
