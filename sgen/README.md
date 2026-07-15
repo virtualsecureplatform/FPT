@@ -30,6 +30,22 @@ FFT_LOG_POINTS=4 FFT_LOG_LANES=2 IFFT_LOG_LANES=2 RADIX_LOG=2 \
   tools/generate_sgen_fpt.sh ../SGen build/sgen-blackbox
 ```
 
+The guarded-format asymmetric fixtures used by the end-to-end CMUX regression
+use an unscaled inverse transform followed by the Chisel normalization stage:
+
+```sh
+FFT_LOG_POINTS=4 FFT_LOG_LANES=2 IFFT_LOG_LANES=1 RADIX_LOG=2 \
+FFT_INTEGER_BITS=18 FFT_FRACTIONAL_BITS=20 \
+IFFT_INTEGER_BITS=27 IFFT_FRACTIONAL_BITS=14 IFFT_STAGE_SCALE=1.0 \
+FORWARD_MODULE=FptSGenForwardGuarded16x4 \
+INVERSE_MODULE=FptSGenInverseGuarded16x2 \
+  tools/generate_sgen_fpt.sh ../SGen build/sgen-cmux
+```
+
+SGen reports the required `next`-to-input lead in each generated header.  The
+Chisel adapter makes this explicit per BlackBox (one cycle for the fixture's
+forward core and four cycles for its inverse core).
+
 This is a streaming architecture baseline, not a claim of exact paper RTL.
 The public SGen release still lacks FPT's tangent fold/twist operators,
 per-stage width/scaling schedule, and specialized radix-2^k structures.  The

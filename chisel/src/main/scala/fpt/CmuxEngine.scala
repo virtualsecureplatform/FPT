@@ -8,7 +8,9 @@ final case class CmuxEngineConfig(
     forwardTransform: TransformConfig,
     inverseTransform: TransformConfig,
     externalProduct: ExternalProductConfig,
-    inverseNormalizeShift: Int
+    inverseNormalizeShift: Int,
+    forwardSGen: Option[SGenBackendConfig] = None,
+    inverseSGen: Option[SGenBackendConfig] = None
 ) {
   require(coefficient.points == forwardTransform.points)
   require(coefficient.points == inverseTransform.points)
@@ -141,16 +143,35 @@ final class CmuxEngine(val config: CmuxEngineConfig) extends Module {
   })
 
   val coefficientStore = Module(new CmuxCoefficientStore(coefficientConfig))
-  val forward = Module(new TangentFftCore(config.forwardTransform))
-  val external = Module(new ExternalProductAccumulator(externalConfig))
-  val inverses = Seq.fill(coefficientConfig.components)(
-    Module(
-      new TangentIfftCore(
-        config.inverseTransform,
-        config.inverseNormalizeShift
+  val forward: ForwardTangentBackend = config.forwardSGen match {
+    case Some(generated) =>
+      Module(
+        new SGenForwardTangentBackend(config.forwardTransform, generated)
       )
-    )
-  )
+    case None => Module(new NativeForwardTangentBackend(config.forwardTransform))
+  }
+  val external = Module(new ExternalProductAccumulator(externalConfig))
+  val inverses: Seq[InverseTangentBackend] = Seq.fill(
+    coefficientConfig.components
+  ) {
+    config.inverseSGen match {
+      case Some(generated) =>
+        Module(
+          new SGenInverseTangentBackend(
+            config.inverseTransform,
+            config.inverseNormalizeShift,
+            generated
+          )
+        )
+      case None =>
+        Module(
+          new NativeInverseTangentBackend(
+            config.inverseTransform,
+            config.inverseNormalizeShift
+          )
+        )
+    }
+  }
 
   coefficientStore.io.loadStart := io.loadStart
   coefficientStore.io.loadValid := io.loadValid
@@ -169,10 +190,15 @@ final class CmuxEngine(val config: CmuxEngineConfig) extends Module {
   val row = RegInit(0.U(rowWidth.W))
   val commandFire = io.commandValid && io.commandReady
   val finalRow = row === (externalConfig.rows - 1).U
+  val forwardRowBoundary = if (config.forwardSGen.isDefined) {
+    coefficientStore.io.pairLast
+  } else {
+    forward.io.done
+  }
   val launchFollowingRow =
-    state === processingRows && forward.io.done && !finalRow
+    state === processingRows && forwardRowBoundary && !finalRow
   val launchFinalInverse =
-    state === processingRows && forward.io.done && finalRow
+    state === processingRows && external.io.outputValid
   val followingRow = Mux(finalRow, 0.U, row + 1.U)
   val launchRowIndex = Mux(commandFire, 0.U, followingRow)
   val rowComponents = VecInit(
@@ -196,6 +222,7 @@ final class CmuxEngine(val config: CmuxEngineConfig) extends Module {
   coefficientStore.io.rowLevel := rowLevels(launchRowIndex)
   coefficientStore.io.exponent := Mux(commandFire, io.exponent, exponentReg)
   coefficientStore.io.pairReady := forward.io.pairReady
+  forward.io.start := commandFire || launchFollowingRow
   forward.io.pairValid := coefficientStore.io.pairValid
   forward.io.coefficientLow := coefficientStore.io.coefficientLow
   forward.io.coefficientHigh := coefficientStore.io.coefficientHigh
@@ -215,6 +242,7 @@ final class CmuxEngine(val config: CmuxEngineConfig) extends Module {
   val allInverseInputReady = inverses.map(_.io.inputReady).reduce(_ && _)
   external.io.outputReady := allInverseInputReady
   for ((inverse, component) <- inverses.zipWithIndex) {
+    inverse.io.start := launchFinalInverse
     inverse.io.inputValid := external.io.outputValid && allInverseInputReady
     inverse.io.input := external.io.output(component)
     inverse.io.fftTwiddle := io.inverseFftTwiddle

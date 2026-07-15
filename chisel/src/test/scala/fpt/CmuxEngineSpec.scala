@@ -2,6 +2,7 @@ package fpt
 
 import chisel3._
 import chiseltest._
+import chiseltest.simulator.{VerilatorBackendAnnotation, VerilatorFlags}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -47,7 +48,7 @@ final class CmuxEngineSpec
     bootstrappingKey = FixedFormat(8, 24),
     accumulator = FixedFormat(27, 14)
   )
-  private val config = CmuxEngineConfig(
+  private val nativeConfig = CmuxEngineConfig(
     coefficientConfig,
     forwardConfig,
     inverseConfig,
@@ -80,9 +81,26 @@ final class CmuxEngineSpec
     target.cPlusD.poke(row(2).S)
   }
 
-  behavior of "the complete fixed-point CMUX engine"
+  private def generatedPath(name: String): String =
+    Path
+      .of("src", "test", "resources", "generated", name)
+      .toAbsolutePath
+      .normalize
+      .toString
 
-  it should "match a C++ rotation through forward FFT, product, and inverse FFT" in {
+  private def wrappedDifference(actual: BigInt, expected: BigInt): BigInt = {
+    val modulus = BigInt(1) << coefficientConfig.torusWidth
+    val raw = (actual - expected) & (modulus - 1)
+    val signed =
+      if (raw.testBit(coefficientConfig.torusWidth - 1)) raw - modulus else raw
+    signed.abs
+  }
+
+  private def exercise(
+      engineConfig: CmuxEngineConfig,
+      label: String,
+      maximumAllowedError: BigInt
+  ): Unit = {
     val rows = vectors("rtl_cmux_engine_vectors.txt")
     val initial = rows.take(coefficientConfig.polynomialSize)
     val keyCount = externalConfig.rows * externalConfig.points
@@ -106,7 +124,22 @@ final class CmuxEngineSpec
       inverseOffset + inverseConfig.points / 2
     )
 
-    test(new CmuxEngine(config)) { dut =>
+    test(new CmuxEngine(engineConfig))
+      .withAnnotations(
+        Seq(
+          VerilatorBackendAnnotation,
+          // The workspace's development Verilator build has a parallel-PCH
+          // regression. A monolithic model avoids that tool bug.
+          VerilatorFlags(
+            Seq(
+              "--output-split",
+              "99999999",
+              "--output-split-cfuncs",
+              "99999999"
+            )
+          )
+        )
+      ) { dut =>
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.commandValid.poke(false.B)
@@ -187,7 +220,8 @@ final class CmuxEngineSpec
         cycles += 1
         cycles should be < 1000
       }
-      info(s"native Chisel CMUX latency: $cycles cycles")
+      var maximumError = BigInt(0)
+      info(s"$label CMUX latency: $cycles cycles")
 
       dut.io.drainStart.poke(true.B)
       dut.clock.step()
@@ -199,13 +233,46 @@ final class CmuxEngineSpec
           val index = beat * coefficientConfig.inverseLanes + lane
           for (component <- 0 until coefficientConfig.components) {
             withClue(s"component=$component index=$index") {
-              dut.io.drain(component)(lane).expect(expected(index)(component).U)
+              val actual = dut.io.drain(component)(lane).peek().litValue
+              val error = wrappedDifference(actual, expected(index)(component))
+              maximumError = maximumError.max(error)
+              error should be <= maximumAllowedError
             }
           }
         }
         dut.clock.step()
       }
       dut.io.drainDone.expect(true.B)
+      info(s"$label maximum Torus error: $maximumError raw units")
     }
+  }
+
+  behavior of "the complete fixed-point CMUX engine"
+
+  it should "match the C++ model with native Chisel transforms" in {
+    exercise(nativeConfig, "native Chisel", maximumAllowedError = 0)
+  }
+
+  it should "run the same CMUX through generated SGen transforms" in {
+    val sgenConfig = nativeConfig.copy(
+      forwardSGen = Some(
+        SGenBackendConfig(
+          "FptSGenForwardGuarded16x4",
+          generatedPath("FptSGenForwardGuarded16x4.v")
+        )
+      ),
+      inverseSGen = Some(
+        SGenBackendConfig(
+          "FptSGenInverseGuarded16x2",
+          generatedPath("FptSGenInverseGuarded16x2.v"),
+          inputLeadCycles = 4
+        )
+      )
+    )
+    exercise(
+      sgenConfig,
+      "generated SGen",
+      maximumAllowedError = BigInt(1) << 18
+    )
   }
 }

@@ -87,6 +87,7 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
     val coefficientHigh = Output(
       Vec(config.forwardLanes, SInt(config.forwardFormat.width.W))
     )
+    val pairLast = Output(Bool())
     val rowDone = Output(Bool())
 
     val updateStart = Input(Bool())
@@ -143,6 +144,8 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
 
   io.loadReady := state === loading
   io.pairValid := state === rowStreaming
+  io.pairLast := io.pairValid && io.pairReady &&
+    forwardBeat === (config.forwardBeats - 1).U
   io.updateReady := state === updating
   io.drainValid := state === draining
   io.loaded := loadedReg
@@ -238,7 +241,10 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
     loadedReg := false.B
   }
   when(io.rowStart) {
-    assert(state === idle && loadedReg, "CMUX row started before load or while active")
+    assert(
+      (state === idle || io.pairLast) && loadedReg,
+      "CMUX row must start while idle or at the previous row boundary"
+    )
     assert(io.rowComponent < config.components.U, "invalid CMUX component")
     assert(io.rowLevel < config.levels.U, "invalid CMUX level")
     state := rowStreaming
@@ -280,7 +286,7 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
   when(io.pairValid && io.pairReady) {
     when(forwardBeat === (config.forwardBeats - 1).U) {
       forwardBeat := 0.U
-      state := idle
+      state := Mux(io.rowStart, rowStreaming, idle)
       rowDoneReg := true.B
     }.otherwise {
       forwardBeat := forwardBeat + 1.U

@@ -55,9 +55,11 @@ private final class SGenBlackBox(
 final class SGenCyclicBackend(
     val config: TransformConfig,
     val moduleName: String,
-    val verilogPath: String
+    val verilogPath: String,
+    val inputLeadCycles: Int = 1
 ) extends Module {
   import TransformUtil._
+  require(inputLeadCycles >= 1)
   private val beatWidth = counterWidth(config.frameBeats)
 
   val io = IO(new Bundle {
@@ -95,31 +97,68 @@ final class SGenCyclicBackend(
     ).asSInt
   }
 
-  val acceptingInput = RegInit(false.B)
-  val inputBeat = RegInit(0.U(beatWidth.W))
-  io.inputReady := acceptingInput
-  val finalInputBeat = acceptingInput && io.inputValid &&
-    inputBeat === (config.frameBeats - 1).U
-  when(io.start && !acceptingInput) {
-    acceptingInput := true.B
-    inputBeat := 0.U
-  }
-  when(io.start) {
-    assert(
-      !acceptingInput || finalInputBeat,
-      "SGen start must be idle or coincide with the final input beat"
-    )
-  }
-  when(acceptingInput) {
-    assert(io.inputValid, "SGen input frames cannot contain bubbles")
-    when(io.inputValid) {
-      when(inputBeat === (config.frameBeats - 1).U) {
-        inputBeat := 0.U
-        // SGen's full-throughput protocol announces the next frame one cycle
-        // before it enters, which is also the final beat of this frame.
-        acceptingInput := io.start
+  if (inputLeadCycles == 1) {
+    val acceptingInput = RegInit(false.B)
+    val inputBeat = RegInit(0.U(beatWidth.W))
+    io.inputReady := acceptingInput
+    val finalInputBeat = acceptingInput && io.inputValid &&
+      inputBeat === (config.frameBeats - 1).U
+    when(io.start && !acceptingInput) {
+      acceptingInput := true.B
+      inputBeat := 0.U
+    }
+    when(io.start) {
+      assert(
+        !acceptingInput || finalInputBeat,
+        "SGen start must be idle or coincide with the final input beat"
+      )
+    }
+    when(acceptingInput) {
+      assert(io.inputValid, "SGen input frames cannot contain bubbles")
+      when(io.inputValid) {
+        when(inputBeat === (config.frameBeats - 1).U) {
+          inputBeat := 0.U
+          // In a one-cycle-lead full-throughput design the next marker
+          // coincides with the current frame's final input beat.
+          acceptingInput := io.start
+        }.otherwise {
+          inputBeat := inputBeat + 1.U
+        }
+      }
+    }
+  } else {
+    val leadWidth = counterWidth(inputLeadCycles)
+    val waitingForInput = RegInit(false.B)
+    val acceptingInput = RegInit(false.B)
+    val leadCounter = RegInit(0.U(leadWidth.W))
+    val inputBeat = RegInit(0.U(beatWidth.W))
+    io.inputReady := acceptingInput
+    when(io.start) {
+      assert(
+        !waitingForInput && !acceptingInput,
+        "multi-cycle-lead SGen frames cannot overlap in this adapter"
+      )
+      waitingForInput := true.B
+      leadCounter := (inputLeadCycles - 1).U
+      inputBeat := 0.U
+    }
+    when(waitingForInput) {
+      when(leadCounter === 1.U) {
+        waitingForInput := false.B
+        acceptingInput := true.B
       }.otherwise {
-        inputBeat := inputBeat + 1.U
+        leadCounter := leadCounter - 1.U
+      }
+    }
+    when(acceptingInput) {
+      assert(io.inputValid, "SGen input frames cannot contain bubbles")
+      when(io.inputValid) {
+        when(inputBeat === (config.frameBeats - 1).U) {
+          inputBeat := 0.U
+          acceptingInput := false.B
+        }.otherwise {
+          inputBeat := inputBeat + 1.U
+        }
       }
     }
   }
@@ -156,7 +195,8 @@ final class SGenCyclicBackend(
 final class SGenTangentFft(
     val config: TransformConfig,
     val moduleName: String,
-    val verilogPath: String
+    val verilogPath: String,
+    val inputLeadCycles: Int = 1
 ) extends Module {
   import TransformUtil._
   private val beatWidth = counterWidth(config.frameBeats)
@@ -175,7 +215,14 @@ final class SGenTangentFft(
     val done = Output(Bool())
   })
 
-  val backend = Module(new SGenCyclicBackend(config, moduleName, verilogPath))
+  val backend = Module(
+    new SGenCyclicBackend(
+      config,
+      moduleName,
+      verilogPath,
+      inputLeadCycles
+    )
+  )
   backend.io.start := io.start
   backend.io.inputValid := io.pairValid
   io.pairReady := backend.io.inputReady
@@ -215,7 +262,8 @@ final class SGenTangentIfft(
     val config: TransformConfig,
     val normalizeShift: Int,
     val moduleName: String,
-    val verilogPath: String
+    val verilogPath: String,
+    val inputLeadCycles: Int = 1
 ) extends Module {
   import TransformUtil._
   require(normalizeShift >= 0 && normalizeShift < config.dataWidth)
@@ -237,7 +285,14 @@ final class SGenTangentIfft(
     val done = Output(Bool())
   })
 
-  val backend = Module(new SGenCyclicBackend(config, moduleName, verilogPath))
+  val backend = Module(
+    new SGenCyclicBackend(
+      config,
+      moduleName,
+      verilogPath,
+      inputLeadCycles
+    )
+  )
   backend.io.start := io.start
   backend.io.inputValid := io.inputValid
   io.inputReady := backend.io.inputReady

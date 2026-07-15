@@ -73,12 +73,14 @@ intermediate overflow because different radix factorizations need not agree
 after fixed-width overflow.
 
 `CmuxEngine` composes these blocks into an end-to-end correctness engine.  It
-reuses one native Chisel forward transform for all six decomposition rows and
-runs two inverse transforms in parallel.  The 32-coefficient, four-lane
-forward/two-lane inverse regression is bit-exact with the C++ CMUX model and
-takes 133 cycles.  This is a sequential correctness baseline; replacing its
-transform backends with the continuous-flow SGen BlackBoxes is the next
-throughput step.
+can select native Chisel or generated SGen transform backends and runs two
+inverse transforms in parallel.  In the 32-coefficient, four-lane forward /
+two-lane inverse regression, the native iterative backend is bit-exact with
+the C++ CMUX model and takes 133 cycles.  The SGen backend overlaps the six
+forward decomposition rows at one frame every four cycles, takes 138 cycles,
+and differs by at most one Q27.14-to-Torus quantum (`2^18`) from the radix-2
+C++ result.  The small case is dominated by pipeline fill; the paper-sized
+throughput/resource comparison is generated separately.
 
 ## Legacy scheduling prototype
 
