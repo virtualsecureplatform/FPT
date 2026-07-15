@@ -139,13 +139,13 @@ in this workspace.  Yosys is used only for structural checks because its
 UltraScale+ DSP mapping is not representative of Vivado's signed asymmetric
 DSP48E2 mapping.
 
-For the continuous-flow comparison path, `sgen/fpt-sgen.patch` adapts the
-current upstream SGen complex multiplier and twiddle widths, and
-`tools/generate_sgen_fpt.sh` generates configurable full-throughput cyclic
-FFT/IFFT Verilog with stable `FptSGenForward` and `FptSGenInverse` module
-names.  The defaults reproduce the paper's 512-point, 128-lane forward and
-64-lane inverse transform shapes.  See `sgen/README.md` for the remaining
-differences from the unpublished FPT generator extensions.
+For the continuous-flow comparison path, the `fpt` branch of
+`virtualsecureplatform/SGen` carries the Gauss complex multiplier and narrower
+twiddle profile. `tools/generate_sgen_fpt.sh` generates configurable
+full-throughput cyclic FFT/IFFT Verilog with stable `FptSGenForward` and
+`FptSGenInverse` module names.  The defaults reproduce the paper's 512-point,
+128-lane forward and 64-lane inverse transform shapes.  See `sgen/README.md`
+for the remaining differences from the unpublished FPT generator extensions.
 
 The paper-shaped Chisel top uses Set II's `N=1024`, two components, two
 decomposition levels, 128 forward lanes, and 64 inverse lanes.  Generate the

@@ -1,18 +1,18 @@
 # SGen streaming baseline
 
 The paper used a private extension of SGen for continuous-flow negacyclic
-FFTs.  Upstream SGen provides the essential full-throughput streamed
-permutation network, but not all FPT changes.  `fpt-sgen.patch` carries the two
-arithmetic changes that can be reproduced cleanly on the current upstream
-SGen checkout:
+FFTs. Upstream SGen provides the essential full-throughput streamed
+permutation network, but not all FPT changes. The `fpt` branch of
+[`virtualsecureplatform/SGen`](https://github.com/virtualsecureplatform/SGen/tree/fpt)
+carries the two arithmetic changes that can be reproduced cleanly:
 
 - Gauss/Karatsuba complex multiplication with three real products;
 - Q2 twiddles whose total width is four bits shorter than the data path.
 
-Apply and build it from the SGen checkout:
+Clone or switch to that branch and build it:
 
 ```sh
-git -C ../SGen apply ../FPT/sgen/fpt-sgen.patch
+git clone -b fpt https://github.com/virtualsecureplatform/SGen.git ../SGen
 (cd ../SGen && sbt assembly)
 ```
 

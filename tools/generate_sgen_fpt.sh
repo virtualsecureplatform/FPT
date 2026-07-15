@@ -28,7 +28,7 @@ if [[ ! -x "$sgen_dir/sgen.bat" ]]; then
 fi
 if ! rg -q 'val z = \(Re\(lhs\) - Im\(lhs\)\) \* Re\(rhs\)' \
     "$sgen_dir/src/main/scala/ir/rtl/hardwaretype/ComplexHW.scala"; then
-    echo "Apply sgen/fpt-sgen.patch to $sgen_dir before generation" >&2
+    echo "Use the virtualsecureplatform/SGen fpt branch for generation" >&2
     exit 1
 fi
 
