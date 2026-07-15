@@ -201,22 +201,22 @@ latency. Both accept a command every 16 cycles:
 
 | Metric | 14-context barrel | 15-context bitwise | Change |
 | --- | ---: | ---: | ---: |
-| Estimated logic cells | 531,854 | 320,080 | -39.8% |
-| LUT1--LUT6 primitives | 624,974 | 328,726 | -47.4% |
-| Flip-flops | 140,165 | 398,389 | +184.2% |
-| CARRY4 | 18,685 | 8,476 | -54.6% |
-| MUXF7/8/9 | 210,631 | 118,886 | -43.6% |
+| Estimated logic cells | 532,471 | 319,358 | -40.0% |
+| LUT1--LUT6 primitives | 626,032 | 327,943 | -47.6% |
+| Flip-flops | 140,165 | 398,406 | +184.2% |
+| CARRY4 | 18,685 | 8,478 | -54.6% |
+| MUXF7/8/9 | 211,378 | 118,910 | -43.7% |
 | RAMB36E2 | 256 | 256 | 0% |
-| Distributed RAM | 0 | 1 | +1 primitive |
-| Total mapped cells | 994,853 | 863,112 | -13.2% |
+| Distributed RAM | 0 | 0 | 0% |
+| Total mapped cells | 996,658 | 862,370 | -13.5% |
 
 Thus the bitwise path still removes about 40% of the estimated logic-cell
 pressure after duplicating the working core to preserve II=16. Both context
 stores map to the same 256 RAMB36E2 primitives; the extra bitwise context fits
-within the same primitive-depth granularity, and its only additional memory is
-one small `RAM32M16` queue. The FF cost remains close to 3x. Yosys needed 10:32
-and 10.1 GiB peak RSS for barrel-batched, versus 22:02 and 41.5 GiB for
-bitwise-batched. These synthesis host costs are not FPGA costs.
+within the same primitive-depth granularity, and neither design uses a
+distributed-RAM primitive. The FF cost remains close to 3x. Yosys needed
+10:40 and 10.12 GiB peak RSS for barrel-batched, versus 21:59 and 40.79 GiB
+for bitwise-batched. These synthesis host costs are not FPGA costs.
 
 Re-run either single frontend, or request the larger batched coefficient
 stores explicitly, with:
