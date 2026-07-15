@@ -56,7 +56,6 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
   import TransformUtil._
 
   private val indexWidth = log2Ceil(config.polynomialSize)
-  private val pointWidth = log2Ceil(config.points)
   private val componentWidth = counterWidth(config.components)
   private val levelWidth = counterWidth(config.levels)
   private val forwardBeatWidth = counterWidth(config.forwardBeats)
@@ -135,10 +134,18 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
   val rowDoneReg = RegInit(false.B)
   val updateDoneReg = RegInit(false.B)
   val drainDoneReg = RegInit(false.B)
+  // Lane-bank the accumulator so load, inverse update, and drain have static
+  // banks and only select a shallow beat address. Rotation is implemented by
+  // a shared logarithmic barrel network below; independently indexing this
+  // storage once per forward coefficient would create hundreds of duplicated
+  // polynomial-wide muxes at the paper's lane count.
   val memory = Reg(
     Vec(
       config.components,
-      Vec(config.polynomialSize, UInt(config.torusWidth.W))
+      Vec(
+        config.inverseLanes,
+        Vec(config.polynomialBeats, UInt(config.torusWidth.W))
+      )
     )
   )
 
@@ -163,46 +170,53 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
     assert(false.B, "CMUX coefficient operations must not start together")
   }
 
-  def polynomialAddress(base: UInt, lanes: Int, lane: Int): UInt =
-    indexedAddress(base, lanes, lane, indexWidth)
-
-  val loadAddress = Wire(Vec(config.inverseLanes, UInt(indexWidth.W)))
-  val updateLowAddress = Wire(Vec(config.inverseLanes, UInt(indexWidth.W)))
-  val updateHighAddress = Wire(Vec(config.inverseLanes, UInt(indexWidth.W)))
-  val drainAddress = Wire(Vec(config.inverseLanes, UInt(indexWidth.W)))
   for (lane <- 0 until config.inverseLanes) {
-    loadAddress(lane) := polynomialAddress(
-      polynomialBeat, config.inverseLanes, lane
-    )
-    updateLowAddress(lane) := polynomialAddress(
-      inverseBeat, config.inverseLanes, lane
-    )
-    updateHighAddress(lane) :=
-      (updateLowAddress(lane) + config.points.U)(indexWidth - 1, 0)
-    drainAddress(lane) := polynomialAddress(
-      polynomialBeat, config.inverseLanes, lane
-    )
     for (component <- 0 until config.components) {
-      io.drain(component)(lane) := memory(component)(drainAddress(lane))
+      io.drain(component)(lane) := memory(component)(lane)(polynomialBeat)
     }
   }
 
-  def decomposedCoefficient(index: UInt): SInt = {
-    val rotation = selectedExponent(indexWidth - 1, 0)
-    val sourceIndex = (index - rotation)(indexWidth - 1, 0)
-    val source = memory(selectedComponent)(sourceIndex)
-    val current = memory(selectedComponent)(index)
-    val negative = Mux(
-      selectedExponent(indexWidth),
-      index >= rotation,
-      index < rotation
-    )
-    val negated = (0.U((config.torusWidth + 1).W) - source)(
+  def negateTorus(value: UInt): UInt =
+    (0.U((config.torusWidth + 1).W) - value)(
       config.torusWidth - 1,
       0
     )
-    val rotated = Mux(negative, negated, source)
-    val difference = (rotated - current)(config.torusWidth - 1, 0)
+
+  // Reconstruct the selected component with only a components-to-one mux per
+  // coefficient. Each exponent bit then conditionally applies X^(2^bit),
+  // including the sign on coefficients that wrap around X^N = -1. The high
+  // exponent bit applies X^N by negating the complete result.
+  val selectedPolynomial: Seq[UInt] =
+    (0 until config.polynomialSize).map { index =>
+      val bank = index % config.inverseLanes
+      val depth = index / config.inverseLanes
+      VecInit(
+        (0 until config.components).map(component =>
+          memory(component)(bank)(depth)
+        )
+      )(selectedComponent)
+    }
+  var barrelStage: Seq[UInt] = selectedPolynomial
+  for (bit <- 0 until indexWidth) {
+    val shift = 1 << bit
+    val previous = barrelStage
+    barrelStage = (0 until config.polynomialSize).map { index =>
+      val sourceIndex = (index - shift + config.polynomialSize) %
+        config.polynomialSize
+      val shifted = if (index < shift) {
+        negateTorus(previous(sourceIndex))
+      } else {
+        previous(sourceIndex)
+      }
+      Mux(selectedExponent(bit), shifted, previous(index))
+    }
+  }
+  val rotatedPolynomial: Seq[UInt] = barrelStage.map(value =>
+    Mux(selectedExponent(indexWidth), negateTorus(value), value)
+  )
+
+  def decompose(source: UInt, current: UInt): SInt = {
+    val difference = (source - current)(config.torusWidth - 1, 0)
     val biased = (difference +& config.decompositionBias.U)(
       config.torusWidth - 1,
       0
@@ -223,15 +237,24 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
     fixed
   }
 
+  def streamedCoefficient(lane: Int, high: Boolean): SInt = {
+    val halfOffset = if (high) config.points else 0
+    val sourceValues = VecInit(
+      (0 until config.forwardBeats).map { beat =>
+        rotatedPolynomial(halfOffset + beat * config.forwardLanes + lane)
+      }
+    )
+    val currentValues = VecInit(
+      (0 until config.forwardBeats).map { beat =>
+        selectedPolynomial(halfOffset + beat * config.forwardLanes + lane)
+      }
+    )
+    decompose(sourceValues(forwardBeat), currentValues(forwardBeat))
+  }
+
   for (lane <- 0 until config.forwardLanes) {
-    val point = indexedAddress(
-      forwardBeat, config.forwardLanes, lane, pointWidth
-    )
-    val polynomialPoint = point.pad(indexWidth)
-    io.coefficientLow(lane) := decomposedCoefficient(polynomialPoint)
-    io.coefficientHigh(lane) := decomposedCoefficient(
-      (polynomialPoint + config.points.U)(indexWidth - 1, 0)
-    )
+    io.coefficientLow(lane) := streamedCoefficient(lane, high = false)
+    io.coefficientHigh(lane) := streamedCoefficient(lane, high = true)
   }
 
   when(io.loadStart) {
@@ -270,7 +293,7 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
   when(io.loadValid && io.loadReady) {
     for (component <- 0 until config.components) {
       for (lane <- 0 until config.inverseLanes) {
-        memory(component)(loadAddress(lane)) := io.load(component)(lane)
+        memory(component)(lane)(polynomialBeat) := io.load(component)(lane)
       }
     }
     when(polynomialBeat === (config.polynomialBeats - 1).U) {
@@ -297,16 +320,18 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
     assert(io.updateReady, "CMUX update data presented while not updating")
   }
   when(io.updateValid && io.updateReady) {
+    val updateLowDepth = inverseBeat.pad(polynomialBeatWidth)
+    val updateHighDepth = updateLowDepth + config.inverseBeats.U
     for (component <- 0 until config.components) {
       for (lane <- 0 until config.inverseLanes) {
         val lowTorus = (io.updateLow(component)(lane).asUInt <<
           config.torusShift)(config.torusWidth - 1, 0)
         val highTorus = (io.updateHigh(component)(lane).asUInt <<
           config.torusShift)(config.torusWidth - 1, 0)
-        memory(component)(updateLowAddress(lane)) :=
-          memory(component)(updateLowAddress(lane)) + lowTorus
-        memory(component)(updateHighAddress(lane)) :=
-          memory(component)(updateHighAddress(lane)) + highTorus
+        memory(component)(lane)(updateLowDepth) :=
+          memory(component)(lane)(updateLowDepth) + lowTorus
+        memory(component)(lane)(updateHighDepth) :=
+          memory(component)(lane)(updateHighDepth) + highTorus
       }
     }
     when(inverseBeat === (config.inverseBeats - 1).U) {

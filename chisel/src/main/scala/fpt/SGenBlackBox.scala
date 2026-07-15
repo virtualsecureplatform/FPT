@@ -34,17 +34,34 @@ private final class SGenPorts(val lanes: Int, val wordWidth: Int)
   * upstream-generated SGen cyclic FFT. All arithmetic around the BlackBox is
   * typed and controlled by Chisel.
   */
-private final class SGenBlackBox(
+private abstract class SGenBlackBoxBase(
     val lanes: Int,
     val componentWidth: Int,
-    val moduleName: String,
-    val verilogPath: String
-) extends BlackBox
-    with HasBlackBoxPath {
+    val moduleName: String
+) extends BlackBox {
   override def desiredName: String = moduleName
   val io = IO(new SGenPorts(lanes, 2 * componentWidth))
+}
+
+private final class EmbeddedSGenBlackBox(
+    lanes: Int,
+    componentWidth: Int,
+    moduleName: String,
+    val verilogPath: String
+) extends SGenBlackBoxBase(lanes, componentWidth, moduleName)
+    with HasBlackBoxPath {
   addPath(verilogPath)
 }
+
+/** Synthesis builds read the generated SGen source as a separate file. Leaving
+  * this BlackBox unresolved prevents CIRCT's resource packager from appending
+  * the source and its file list to the emitted Chisel SystemVerilog.
+  */
+private final class ExternalSGenBlackBox(
+    lanes: Int,
+    componentWidth: Int,
+    moduleName: String
+) extends SGenBlackBoxBase(lanes, componentWidth, moduleName)
 
 /** Converts SGen's flat, fixed-rate interface into typed Chisel vectors.
   * `start` must be asserted one cycle before the first input beat. Once a
@@ -56,10 +73,12 @@ final class SGenCyclicBackend(
     val config: TransformConfig,
     val moduleName: String,
     val verilogPath: String,
-    val inputLeadCycles: Int = 1
+    val inputLeadCycles: Int = 1,
+    val includeVerilogSource: Boolean = true
 ) extends Module {
   import TransformUtil._
   require(inputLeadCycles >= 1)
+  require(!includeVerilogSource || verilogPath.nonEmpty)
   private val beatWidth = counterWidth(config.frameBeats)
 
   val io = IO(new Bundle {
@@ -73,14 +92,24 @@ final class SGenCyclicBackend(
     val done = Output(Bool())
   })
 
-  private val generated = Module(
-    new SGenBlackBox(
-      config.lanes,
-      config.dataWidth,
-      moduleName,
-      verilogPath
+  private val generated: SGenBlackBoxBase = if (includeVerilogSource) {
+    Module(
+      new EmbeddedSGenBlackBox(
+        config.lanes,
+        config.dataWidth,
+        moduleName,
+        verilogPath
+      )
     )
-  )
+  } else {
+    Module(
+      new ExternalSGenBlackBox(
+        config.lanes,
+        config.dataWidth,
+        moduleName
+      )
+    )
+  }
   generated.io.clockPort := clock
   generated.io.resetPort := reset.asBool
   generated.io.nextPort := io.start
@@ -196,7 +225,8 @@ final class SGenTangentFft(
     val config: TransformConfig,
     val moduleName: String,
     val verilogPath: String,
-    val inputLeadCycles: Int = 1
+    val inputLeadCycles: Int = 1,
+    val includeVerilogSource: Boolean = true
 ) extends Module {
   import TransformUtil._
   private val beatWidth = counterWidth(config.frameBeats)
@@ -220,7 +250,8 @@ final class SGenTangentFft(
       config,
       moduleName,
       verilogPath,
-      inputLeadCycles
+      inputLeadCycles,
+      includeVerilogSource
     )
   )
   backend.io.start := io.start
@@ -263,7 +294,8 @@ final class SGenTangentIfft(
     val normalizeShift: Int,
     val moduleName: String,
     val verilogPath: String,
-    val inputLeadCycles: Int = 1
+    val inputLeadCycles: Int = 1,
+    val includeVerilogSource: Boolean = true
 ) extends Module {
   import TransformUtil._
   require(normalizeShift >= 0 && normalizeShift < config.dataWidth)
@@ -290,7 +322,8 @@ final class SGenTangentIfft(
       config,
       moduleName,
       verilogPath,
-      inputLeadCycles
+      inputLeadCycles,
+      includeVerilogSource
     )
   )
   backend.io.start := io.start

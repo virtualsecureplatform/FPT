@@ -5,10 +5,11 @@ import chisel3._
 final case class SGenBackendConfig(
     moduleName: String,
     verilogPath: String,
-    inputLeadCycles: Int = 1
+    inputLeadCycles: Int = 1,
+    includeVerilogSource: Boolean = true
 ) {
   require(moduleName.nonEmpty)
-  require(verilogPath.nonEmpty)
+  require(!includeVerilogSource || verilogPath.nonEmpty)
   require(inputLeadCycles >= 1)
 }
 
@@ -64,7 +65,8 @@ final class SGenForwardTangentBackend(
       config,
       generated.moduleName,
       generated.verilogPath,
-      generated.inputLeadCycles
+      generated.inputLeadCycles,
+      generated.includeVerilogSource
     )
   )
   core.io.start := io.start
@@ -140,7 +142,8 @@ final class SGenInverseTangentBackend(
       normalization,
       generated.moduleName,
       generated.verilogPath,
-      generated.inputLeadCycles
+      generated.inputLeadCycles,
+      generated.includeVerilogSource
     )
   )
   core.io.start := io.start

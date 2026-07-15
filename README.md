@@ -136,6 +136,43 @@ names.  The defaults reproduce the paper's 512-point, 128-lane forward and
 64-lane inverse transform shapes.  See `sgen/README.md` for the remaining
 differences from the unpublished FPT generator extensions.
 
+The paper-shaped Chisel top uses Set II's `N=1024`, two components, two
+decomposition levels, 128 forward lanes, and 64 inverse lanes.  Generate the
+SGen sources and emit/lint the composed design with:
+
+```sh
+tools/generate_sgen_fpt.sh ../SGen build/sgen-fpt
+tools/emit_paper_cmux.sh build/sgen-fpt/forward.v \
+  build/sgen-fpt/inverse.v build/chisel-paper
+```
+
+SGen remains a separate Verilog BlackBox in synthesis; CIRCT does not append
+the generated sources or its resource file list to `CmuxEngine.sv`.  The
+coefficient accumulator is stored in 64 lane banks, and `(X^a-1)` uses one
+shared ten-stage negacyclic barrel rotator.  This avoids duplicating a
+1024-to-one mux for every forward lane.  The External Product accumulator is
+also lane-banked as 128 banks by four spectral points and repacks directly to
+the 64-lane inverse stream.
+
+Vivado scripts run the transform alone or the complete CMUX out of context on
+the U280.  The default 3.425 ns constraint matches HOGE's reported 292 MHz;
+pass `5.0` as the final argument to reproduce FPT's 200 MHz operating point:
+
+```sh
+vivado -mode batch -source chisel/scripts/synth_sgen_u280.tcl \
+  -tclargs build/sgen-fpt/forward.v FptSGenForward \
+  build/vivado-sgen-forward 3.425
+vivado -mode batch -source chisel/scripts/synth_paper_cmux_u280.tcl \
+  -tclargs build/chisel-paper/CmuxEngine.sv \
+  build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
+  build/vivado-paper-cmux 3.425
+```
+
+These scripts produce hierarchical utilization, timing, power, and routed
+checkpoint reports.  Vivado is not installed in this workspace, so the
+checked regression stops at Chisel tests plus complete-design Verilator lint;
+hardware benefit claims must wait for those U280 reports.
+
 The integration currently supports native 32-bit Torus parameters.  Its
 bootstrapping key is normalized to real Torus units before being quantized to
 the paper's BK format; this is why it is a distinct key type rather than a

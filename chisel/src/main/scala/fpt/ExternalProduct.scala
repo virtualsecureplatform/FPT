@@ -16,11 +16,13 @@ final case class ExternalProductConfig(
   require(points >= 1 && isPow2(points))
   require(inputLanes >= 1 && isPow2(inputLanes) && inputLanes <= points)
   require(outputLanes >= 1 && isPow2(outputLanes) && outputLanes <= points)
+  require(inputLanes >= outputLanes && inputLanes % outputLanes == 0)
   require(rows >= 1)
   require(outputComponents >= 1)
 
   val inputFrameBeats: Int = points / inputLanes
   val outputFrameBeats: Int = points / outputLanes
+  val outputGroupsPerInputBeat: Int = inputLanes / outputLanes
   val productFractionalBits: Int =
     spectrum.fractionalBits + bootstrappingKey.fractionalBits
   val productShift: Int = productFractionalBits - accumulator.fractionalBits
@@ -82,10 +84,24 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
     val done = Output(Bool())
   })
 
+  // Store one point per physical input lane and input beat. Reorganizing the
+  // banks as [output group][output lane][beat] makes every input write bank
+  // static and limits output selection to inputLanes/outputLanes banks. In the
+  // Set-II datapath this is a two-way selection, rather than a 512-way
+  // dynamically indexed register Vec for every output.
   val accumulatorMemory = Reg(
     Vec(
       config.outputComponents,
-      Vec(config.points, new ComplexSInt(config.accumulator.width))
+      Vec(
+        config.outputGroupsPerInputBeat,
+        Vec(
+          config.outputLanes,
+          Vec(
+            config.inputFrameBeats,
+            new ComplexSInt(config.accumulator.width)
+          )
+        )
+      )
     )
   )
   val inputActive = RegInit(false.B)
@@ -103,23 +119,33 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
   doneReg := false.B
 
   val inputAddress = Wire(Vec(config.inputLanes, UInt(pointWidth.W)))
-  val outputAddress = Wire(Vec(config.outputLanes, UInt(pointWidth.W)))
   for (lane <- 0 until config.inputLanes) {
     inputAddress(lane) := indexedAddress(
       inputBeat, config.inputLanes, lane, pointWidth
     )
     io.pointIndex(lane) := inputAddress(lane)
   }
-  for (lane <- 0 until config.outputLanes) {
-    outputAddress(lane) := indexedAddress(
-      outputBeat, config.outputLanes, lane, pointWidth
-    )
+
+  private val groupBits = log2Ceil(config.outputGroupsPerInputBeat)
+  val outputGroup = if (config.outputGroupsPerInputBeat == 1) {
+    0.U
+  } else {
+    outputBeat(groupBits - 1, 0)
+  }
+  val outputDepth = if (config.outputGroupsPerInputBeat == 1) {
+    outputBeat
+  } else {
+    outputBeat >> groupBits
   }
 
   for (component <- 0 until config.outputComponents) {
     for (lane <- 0 until config.outputLanes) {
-      io.output(component)(lane) :=
-        accumulatorMemory(component)(outputAddress(lane))
+      val groupValues = VecInit(
+        (0 until config.outputGroupsPerInputBeat).map(group =>
+          accumulatorMemory(component)(group)(lane)(outputDepth)
+        )
+      )
+      io.output(component)(lane) := groupValues(outputGroup)
     }
   }
 
@@ -138,6 +164,8 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
   when(io.inputValid && io.inputReady) {
     for (component <- 0 until config.outputComponents) {
       for (lane <- 0 until config.inputLanes) {
+        val inputGroup = lane / config.outputLanes
+        val outputLane = lane % config.outputLanes
         val a = io.decomposition(lane)
         val b = io.bootstrappingKey(component)(lane)
         val ac = a.real * b.real
@@ -159,19 +187,19 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
         val previousReal = Mux(
           row === 0.U,
           0.S(config.accumulator.width.W),
-          accumulatorMemory(component)(inputAddress(lane)).real
+          accumulatorMemory(component)(inputGroup)(outputLane)(inputBeat).real
         )
         val previousImag = Mux(
           row === 0.U,
           0.S(config.accumulator.width.W),
-          accumulatorMemory(component)(inputAddress(lane)).imag
+          accumulatorMemory(component)(inputGroup)(outputLane)(inputBeat).imag
         )
-        accumulatorMemory(component)(inputAddress(lane)).real :=
+        accumulatorMemory(component)(inputGroup)(outputLane)(inputBeat).real :=
           FixedPointBits.lowSigned(
             previousReal + quantizedReal,
             config.accumulator.width
           )
-        accumulatorMemory(component)(inputAddress(lane)).imag :=
+        accumulatorMemory(component)(inputGroup)(outputLane)(inputBeat).imag :=
           FixedPointBits.lowSigned(
             previousImag + quantizedImag,
             config.accumulator.width
