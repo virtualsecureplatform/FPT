@@ -162,11 +162,11 @@ tools/report_bitwise_structure.sh
 
 ## Local UltraScale+ coefficient-frontend mapping
 
-Stock Yosys cannot parse CIRCT's block-local variables, so the synthesis-only
-emitters use `firtool --lowering-options=disallowLocalVariables`. The normal
-Vivado/Verilator emitters do not use that lowering option. With Yosys
-0.45+139, the single and batched Set-II coefficient frontends were flattened
-and mapped with:
+Stock Yosys cannot parse CIRCT's block-local variables, so every paper-sized
+emitter uses `firtool --lowering-options=disallowLocalVariables`. The same
+portable Chisel output is therefore used at the Verilator, Yosys, and Vivado
+boundaries. With Yosys 0.45+139, the single and batched Set-II coefficient
+frontends were flattened and mapped with:
 
 ```text
 synth_xilinx -family xcup -flatten -noiopad -noclkbuf -widemux 5
@@ -231,6 +231,38 @@ The script emits Yosys-compatible SystemVerilog, retains `synth.log`,
 TSV report. Vivado post-route remains the measurement boundary for achieved
 frequency, routing pressure, and the complete CMUX including SGen/DSP48E2
 packing.
+
+### Complete Blind Rotate memory contexts
+
+The full synthesis-boundary audit also maps the three large Chisel memories
+through parent modules that expose their real single-clock connections. This
+matters because mapping the generated memory modules alone leaves distinct
+read/write clock ports at the temporary top and incorrectly forces Yosys to
+use distributed RAM. The exponent audit black-boxes only
+`BatchedCmuxEngine`; it still synthesizes the Blind Rotate scheduler and its
+actual exponent-memory instance.
+
+| Context | Logical storage | UltraScale+ mapping | Context cells |
+| --- | ---: | ---: | ---: |
+| Replicated accumulators | 128 x 120 x 128 bits | 256 `RAMB36E2` | 20,301 |
+| Blind Rotate exponents | 9,450 x 11 bits | 9 `RAMB18E2` | 4,224 |
+| Index-zero sample extraction | 16 x 2,048-bit mask plus result queue | 150 `RAM32M16` | 1,254 |
+
+The sample-extraction total consists of 147 distributed-RAM primitives for
+the wide, depth-16 mask store and three for its two-entry result queue. That
+is a reasonable shallow-memory choice, while the accumulator and exponent
+stores both infer block RAM. The context cell totals are audit boundaries,
+not additive estimates for the complete accelerator: the accumulator and
+sample-extraction rows include their local control, and the exponent row does
+not include the black-boxed CMUX. Reproduce and signature-cache all three
+maps together with the exact full-hierarchy check using:
+
+```sh
+tools/check_fpt_synthesis_boundary.sh
+```
+
+These results confirm synthesizable storage behavior but do not predict
+placed utilization, routing, clock rate, DSP packing, or board power.
 
 Regenerate the cyclic comparison and table from local SGen outputs with:
 

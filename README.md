@@ -264,7 +264,12 @@ sample-extracted outputs in 180,736 cycles, or 12,049.1 cycles/result. The
 compiled FPT model is signature-cached because its generated C++ is large.
 When Yosys is installed, the same preparation independently checks the full
 Chisel/SGen synthesis hierarchy and the expected accumulator, exponent, and
-sample-extraction memory shapes.
+sample-extraction memory shapes. It also maps those memories through their
+real single-clock parent contexts to the UltraScale+ primitive library. The
+current result is 256 `RAMB36E2` for the replicated accumulators, 9
+`RAMB18E2` for the exponent store, and 150 `RAM32M16` distributed-RAM
+primitives for the complete sample-extraction context. These are local Yosys
+mapping estimates; the common Vivado route remains the hardware result.
 
 See [the FPT/HOGE comparison guide](docs/fpt-hoge-comparison.md) for the
 precise boundaries, throughput normalization, source-only preparation, and

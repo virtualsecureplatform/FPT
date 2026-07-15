@@ -37,8 +37,9 @@ The route machine needs:
 - Vivado with support for `xcu280-fsvh2892-2L-e`;
 - `verilator` for complete-source lint; emitters skip lint when it is
   unavailable or explicitly disabled;
-- `yosys` optionally provides an independent full-hierarchy synthesis-
-  frontend check in the direct FPT/HOGE flow;
+- `yosys` and `jq` optionally provide an independent full-hierarchy
+  synthesis-frontend and UltraScale+ memory-mapping check in the direct
+  FPT/HOGE flow;
 - standard `bash`, `git`, `awk`, `realpath`, and `sha256sum` utilities.
 
 ## Run the comparison
@@ -81,7 +82,9 @@ Useful controls are:
 The direct FPT/HOGE runner additionally accepts
 `FPT_SKIP_YOSYS_BOUNDARY=1` and `FPT_YOSYS_BOUNDARY_DIR=...` to control its
 cached independent synthesis-boundary check. Yosys generic-cell totals are
-not substitutes for routed U280 utilization.
+recorded as hierarchy-wide values, while the accumulator, exponent, and
+sample-extraction primitive counts come from smaller real-clock mapping
+contexts. Neither is a substitute for routed U280 utilization.
 
 The preparation path can be checked on a machine without Vivado:
 

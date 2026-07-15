@@ -11,10 +11,12 @@ forward=$sgen_dir/forward.v
 inverse=$sgen_dir/inverse.v
 top=BatchedBlindRotateSampleExtractEngine
 
-if ! command -v yosys >/dev/null; then
-    echo "yosys is required for the FPT synthesis-boundary check" >&2
-    exit 1
-fi
+for tool in jq yosys; do
+    if ! command -v "$tool" >/dev/null; then
+        echo "$tool is required for the FPT synthesis-boundary check" >&2
+        exit 1
+    fi
+done
 for input_file in "$source_file" "$forward" "$inverse"; do
     if [[ ! -s $input_file ]]; then
         echo "Missing FPT synthesis input: $input_file" >&2
@@ -27,6 +29,10 @@ forward=$(realpath "$forward")
 inverse=$(realpath "$inverse")
 build_dir=$(realpath -m "$build_dir")
 mkdir -p "$build_dir"
+if [[ $build_dir == *[[:space:]]* ]]; then
+    echo "Yosys output paths must not contain whitespace: $build_dir" >&2
+    exit 1
+fi
 
 if rg -q '\bautomatic\b' "$source_file"; then
     echo "CIRCT left block-local automatic declarations in $source_file" >&2
@@ -66,7 +72,10 @@ fi
 yosys_version=$(yosys -V)
 signature=$(
     {
-        sha256sum "$source_file" "$forward" "$inverse" "$script_path"
+        for signature_input in \
+            "$source_file" "$forward" "$inverse" "$script_path"; do
+            sha256sum "$signature_input" | awk '{ print $1 }'
+        done
         printf '%s\n' "$yosys_version" "$top"
     } | sha256sum | awk '{ print $1 }'
 )
@@ -109,23 +118,140 @@ if rg -q '^[[:space:]]+\$check[[:space:]]' "$log_file"; then
     exit 1
 fi
 
+run_ultrascale_memory_map() {
+    local name=$1
+    local map_top=$2
+    local setup=$3
+    local map_log=$build_dir/$name-yosys.log
+    local map_console=$build_dir/$name-yosys-console.log
+    local map_stat=$build_dir/$name-stat.json
+    local map_command="read_verilog -sv -DSYNTHESIS \"$source_file\"; "
+    map_command+="$setup"
+    map_command+="synth_xilinx -family xcup -top $map_top -flatten "
+    map_command+="-noiopad -noclkbuf -widemux 5; "
+    map_command+="tee -o $map_stat stat -tech xilinx -json"
+    if ! yosys -ql "$map_log" -p "$map_command" \
+        >"$map_console" 2>&1; then
+        echo "Yosys could not map the $name memory context" >&2
+        tail -100 "$map_console" >&2
+        return 1
+    fi
+}
+
+run_ultrascale_memory_map \
+    accumulator ReplicatedAccumulatorBanks '' &
+accumulator_map_pid=$!
+run_ultrascale_memory_map \
+    exponent BatchedBlindRotateEngine \
+    'blackbox BatchedCmuxEngine; select -clear; ' &
+exponent_map_pid=$!
+run_ultrascale_memory_map \
+    sample_extract SampleExtractIndexZero '' &
+sample_extract_map_pid=$!
+memory_map_failed=0
+for map_pid in \
+    "$accumulator_map_pid" "$exponent_map_pid" "$sample_extract_map_pid"; do
+    if ! wait "$map_pid"; then
+        memory_map_failed=1
+    fi
+done
+if [[ $memory_map_failed != 0 ]]; then
+    exit 1
+fi
+
+mapped_cell_count() {
+    local stat_file=$1
+    local map_top=$2
+    local cell_type=$3
+    jq -er --arg module "\\$map_top" --arg cell "$cell_type" \
+        '.modules[$module].num_cells_by_type[$cell] // 0' "$stat_file"
+}
+
+mapped_total_cells() {
+    local stat_file=$1
+    local map_top=$2
+    jq -er --arg module "\\$map_top" \
+        '.modules[$module].num_cells' "$stat_file"
+}
+
+mapped_distributed_ram() {
+    local stat_file=$1
+    local map_top=$2
+    jq -er --arg module "\\$map_top" '
+        [
+            .modules[$module].num_cells_by_type
+            | to_entries[]
+            | select(.key | test("^RAM(16|32|64|128|256|512)"))
+            | .value
+        ] | add // 0
+    ' "$stat_file"
+}
+
+accumulator_map_stat=$build_dir/accumulator-stat.json
+exponent_map_stat=$build_dir/exponent-stat.json
+sample_extract_map_stat=$build_dir/sample_extract-stat.json
+accumulator_ramb18e2=$(mapped_cell_count \
+    "$accumulator_map_stat" ReplicatedAccumulatorBanks RAMB18E2)
+accumulator_ramb36e2=$(mapped_cell_count \
+    "$accumulator_map_stat" ReplicatedAccumulatorBanks RAMB36E2)
+accumulator_distributed_ram=$(mapped_distributed_ram \
+    "$accumulator_map_stat" ReplicatedAccumulatorBanks)
+accumulator_mapped_cells=$(mapped_total_cells \
+    "$accumulator_map_stat" ReplicatedAccumulatorBanks)
+exponent_ramb18e2=$(mapped_cell_count \
+    "$exponent_map_stat" BatchedBlindRotateEngine RAMB18E2)
+exponent_ramb36e2=$(mapped_cell_count \
+    "$exponent_map_stat" BatchedBlindRotateEngine RAMB36E2)
+exponent_distributed_ram=$(mapped_distributed_ram \
+    "$exponent_map_stat" BatchedBlindRotateEngine)
+exponent_mapped_cells=$(mapped_total_cells \
+    "$exponent_map_stat" BatchedBlindRotateEngine)
+sample_extract_ramb18e2=$(mapped_cell_count \
+    "$sample_extract_map_stat" SampleExtractIndexZero RAMB18E2)
+sample_extract_ramb36e2=$(mapped_cell_count \
+    "$sample_extract_map_stat" SampleExtractIndexZero RAMB36E2)
+sample_extract_ram32m16=$(mapped_cell_count \
+    "$sample_extract_map_stat" SampleExtractIndexZero RAM32M16)
+sample_extract_distributed_ram=$(mapped_distributed_ram \
+    "$sample_extract_map_stat" SampleExtractIndexZero)
+sample_extract_mapped_cells=$(mapped_total_cells \
+    "$sample_extract_map_stat" SampleExtractIndexZero)
+
+if [[ $accumulator_ramb18e2 != 0 || \
+      $accumulator_ramb36e2 != 256 || \
+      $accumulator_distributed_ram != 0 || \
+      $exponent_ramb18e2 != 9 || \
+      $exponent_ramb36e2 != 0 || \
+      $exponent_distributed_ram != 0 || \
+      $sample_extract_ramb18e2 != 0 || \
+      $sample_extract_ramb36e2 != 0 || \
+      $sample_extract_ram32m16 != 150 || \
+      $sample_extract_distributed_ram != 150 ]]; then
+    echo "The FPT UltraScale+ memory mapping changed unexpectedly" >&2
+    jq '.modules[].num_cells_by_type' \
+        "$accumulator_map_stat" "$exponent_map_stat" \
+        "$sample_extract_map_stat" >&2
+    exit 1
+fi
+
 sgen_register_array_warnings=$(awk '
     /^Warning: Replacing memory .* with list of registers/ { count++ }
     END { print count + 0 }
 ' "$log_file")
-total_port_bits=$(awk '
+hierarchy_port_bits=$(awk '
     /Number of port bits:/ { value = $5 }
     END { print value }
 ' "$log_file")
-total_memory_bits=$(awk '
+hierarchy_memory_bits=$(awk '
     /Number of memory bits:/ { value = $5 }
     END { print value }
 ' "$log_file")
-total_cells=$(awk '
+hierarchy_cells=$(awk '
     /Number of cells:/ { value = $4 }
     END { print value }
 ' "$log_file")
-for value in "$total_port_bits" "$total_memory_bits" "$total_cells"; do
+for value in \
+    "$hierarchy_port_bits" "$hierarchy_memory_bits" "$hierarchy_cells"; do
     if [[ ! $value =~ ^[0-9]+$ ]]; then
         echo "Could not parse the full-design Yosys statistics" >&2
         exit 1
@@ -143,9 +269,34 @@ done
     printf 'accumulator_memory_bits\t1966080\n'
     printf 'exponent_memory_bits\t103950\n'
     printf 'sample_extract_memory_bits\t32768\n'
-    printf 'total_port_bits\t%s\n' "$total_port_bits"
-    printf 'total_memory_bits\t%s\n' "$total_memory_bits"
-    printf 'total_cells\t%s\n' "$total_cells"
+    printf 'hierarchy_port_bits\t%s\n' "$hierarchy_port_bits"
+    printf 'hierarchy_memory_bits\t%s\n' "$hierarchy_memory_bits"
+    printf 'hierarchy_cells\t%s\n' "$hierarchy_cells"
+    printf 'ultrascale_mapping_status\tpassed\n'
+    printf 'ultrascale_accumulator_ramb18e2\t%s\n' \
+        "$accumulator_ramb18e2"
+    printf 'ultrascale_accumulator_ramb36e2\t%s\n' \
+        "$accumulator_ramb36e2"
+    printf 'ultrascale_accumulator_distributed_ram\t%s\n' \
+        "$accumulator_distributed_ram"
+    printf 'ultrascale_accumulator_mapped_cells\t%s\n' \
+        "$accumulator_mapped_cells"
+    printf 'ultrascale_exponent_ramb18e2\t%s\n' "$exponent_ramb18e2"
+    printf 'ultrascale_exponent_ramb36e2\t%s\n' "$exponent_ramb36e2"
+    printf 'ultrascale_exponent_distributed_ram\t%s\n' \
+        "$exponent_distributed_ram"
+    printf 'ultrascale_exponent_mapped_cells\t%s\n' \
+        "$exponent_mapped_cells"
+    printf 'ultrascale_sample_extract_ramb18e2\t%s\n' \
+        "$sample_extract_ramb18e2"
+    printf 'ultrascale_sample_extract_ramb36e2\t%s\n' \
+        "$sample_extract_ramb36e2"
+    printf 'ultrascale_sample_extract_ram32m16\t%s\n' \
+        "$sample_extract_ram32m16"
+    printf 'ultrascale_sample_extract_distributed_ram\t%s\n' \
+        "$sample_extract_distributed_ram"
+    printf 'ultrascale_sample_extract_mapped_cells\t%s\n' \
+        "$sample_extract_mapped_cells"
     printf 'sgen_register_array_warnings\t%s\n' \
         "$sgen_register_array_warnings"
     printf 'unexpected_warnings\t0\n'

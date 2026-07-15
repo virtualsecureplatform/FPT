@@ -69,11 +69,16 @@ paper-sized Chisel top together with both generated SGen transforms. This
 check rejects missing hierarchy, unexpected synthesis warnings, CIRCT
 block-local declarations, or changes to the 128 replicated `120 x 128`
 accumulator memories, the `9450 x 11` exponent memory, and the `16 x 2048`
-sample-extraction memory. The first elaboration takes roughly a minute and is
-signature-cached. Set `FPT_YOSYS_BOUNDARY_DIR` to place its cache elsewhere,
-or `FPT_SKIP_YOSYS_BOUNDARY=1` to skip it explicitly. These generic-cell
-statistics validate the synthesis boundary; only the Vivado runs provide
-U280 resource and timing results.
+sample-extraction memory. It then maps the real single-clock memory contexts
+to 256 `RAMB36E2`, 9 `RAMB18E2`, and 150 `RAM32M16` primitives,
+respectively. The exponent-memory context black-boxes the unrelated CMUX
+datapath; the full generic hierarchy check still includes both real SGen
+transforms. The first run is signature-cached. Set `FPT_YOSYS_BOUNDARY_DIR`
+to place its cache elsewhere, or `FPT_SKIP_YOSYS_BOUNDARY=1` to skip it
+explicitly. The manifest labels generic totals as hierarchy-wide and records
+the three technology-mapped memory counts separately. These are independent
+synthesis checks; only the Vivado runs provide placed and routed U280
+resource and timing results.
 
 ## Route on the Vivado machine
 

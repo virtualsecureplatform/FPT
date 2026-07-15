@@ -129,9 +129,13 @@ fi
 fpt_yosys_boundary_status=unavailable
 fpt_yosys_version=unavailable
 fpt_yosys_accumulator_memories=unmeasured
-fpt_yosys_total_port_bits=unmeasured
-fpt_yosys_total_memory_bits=unmeasured
-fpt_yosys_total_cells=unmeasured
+fpt_yosys_hierarchy_port_bits=unmeasured
+fpt_yosys_hierarchy_memory_bits=unmeasured
+fpt_yosys_hierarchy_cells=unmeasured
+fpt_yosys_ultrascale_mapping_status=unmeasured
+fpt_yosys_ultrascale_accumulator_ramb36e2=unmeasured
+fpt_yosys_ultrascale_exponent_ramb18e2=unmeasured
+fpt_yosys_ultrascale_sample_extract_distributed_ram=unmeasured
 if [[ $skip_yosys_boundary == 1 ]]; then
     fpt_yosys_boundary_status=skipped
 elif command -v yosys >/dev/null; then
@@ -145,17 +149,33 @@ elif command -v yosys >/dev/null; then
     fpt_yosys_accumulator_memories=$(awk -F '\t' \
         '$1 == "accumulator_memories_120x128" { print $2 }' \
         "$fpt_yosys_metrics")
-    fpt_yosys_total_port_bits=$(awk -F '\t' \
-        '$1 == "total_port_bits" { print $2 }' "$fpt_yosys_metrics")
-    fpt_yosys_total_memory_bits=$(awk -F '\t' \
-        '$1 == "total_memory_bits" { print $2 }' "$fpt_yosys_metrics")
-    fpt_yosys_total_cells=$(awk -F '\t' \
-        '$1 == "total_cells" { print $2 }' "$fpt_yosys_metrics")
+    fpt_yosys_hierarchy_port_bits=$(awk -F '\t' \
+        '$1 == "hierarchy_port_bits" { print $2 }' "$fpt_yosys_metrics")
+    fpt_yosys_hierarchy_memory_bits=$(awk -F '\t' \
+        '$1 == "hierarchy_memory_bits" { print $2 }' "$fpt_yosys_metrics")
+    fpt_yosys_hierarchy_cells=$(awk -F '\t' \
+        '$1 == "hierarchy_cells" { print $2 }' "$fpt_yosys_metrics")
+    fpt_yosys_ultrascale_mapping_status=$(awk -F '\t' \
+        '$1 == "ultrascale_mapping_status" { print $2 }' \
+        "$fpt_yosys_metrics")
+    fpt_yosys_ultrascale_accumulator_ramb36e2=$(awk -F '\t' \
+        '$1 == "ultrascale_accumulator_ramb36e2" { print $2 }' \
+        "$fpt_yosys_metrics")
+    fpt_yosys_ultrascale_exponent_ramb18e2=$(awk -F '\t' \
+        '$1 == "ultrascale_exponent_ramb18e2" { print $2 }' \
+        "$fpt_yosys_metrics")
+    fpt_yosys_ultrascale_sample_extract_distributed_ram=$(awk -F '\t' \
+        '$1 == "ultrascale_sample_extract_distributed_ram" { print $2 }' \
+        "$fpt_yosys_metrics")
     if [[ $fpt_yosys_boundary_status != passed || \
+          $fpt_yosys_ultrascale_mapping_status != passed || \
           $fpt_yosys_accumulator_memories != 128 || \
-          ! $fpt_yosys_total_port_bits =~ ^[0-9]+$ || \
-          ! $fpt_yosys_total_memory_bits =~ ^[0-9]+$ || \
-          ! $fpt_yosys_total_cells =~ ^[0-9]+$ ]]; then
+          $fpt_yosys_ultrascale_accumulator_ramb36e2 != 256 || \
+          $fpt_yosys_ultrascale_exponent_ramb18e2 != 9 || \
+          $fpt_yosys_ultrascale_sample_extract_distributed_ram != 150 || \
+          ! $fpt_yosys_hierarchy_port_bits =~ ^[0-9]+$ || \
+          ! $fpt_yosys_hierarchy_memory_bits =~ ^[0-9]+$ || \
+          ! $fpt_yosys_hierarchy_cells =~ ^[0-9]+$ ]]; then
         echo "Could not validate the FPT Yosys synthesis boundary" >&2
         exit 1
     fi
@@ -309,11 +329,20 @@ composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl"
     printf 'fpt_yosys_version\t%s\n' "$fpt_yosys_version"
     printf 'fpt_yosys_accumulator_memories_120x128\t%s\n' \
         "$fpt_yosys_accumulator_memories"
-    printf 'fpt_yosys_total_port_bits\t%s\n' \
-        "$fpt_yosys_total_port_bits"
-    printf 'fpt_yosys_total_memory_bits\t%s\n' \
-        "$fpt_yosys_total_memory_bits"
-    printf 'fpt_yosys_total_cells\t%s\n' "$fpt_yosys_total_cells"
+    printf 'fpt_yosys_hierarchy_port_bits\t%s\n' \
+        "$fpt_yosys_hierarchy_port_bits"
+    printf 'fpt_yosys_hierarchy_memory_bits\t%s\n' \
+        "$fpt_yosys_hierarchy_memory_bits"
+    printf 'fpt_yosys_hierarchy_cells\t%s\n' \
+        "$fpt_yosys_hierarchy_cells"
+    printf 'fpt_yosys_ultrascale_mapping_status\t%s\n' \
+        "$fpt_yosys_ultrascale_mapping_status"
+    printf 'fpt_yosys_ultrascale_accumulator_ramb36e2\t%s\n' \
+        "$fpt_yosys_ultrascale_accumulator_ramb36e2"
+    printf 'fpt_yosys_ultrascale_exponent_ramb18e2\t%s\n' \
+        "$fpt_yosys_ultrascale_exponent_ramb18e2"
+    printf 'fpt_yosys_ultrascale_sample_extract_distributed_ram\t%s\n' \
+        "$fpt_yosys_ultrascale_sample_extract_distributed_ram"
     printf 'part\t%s\n' "$part"
     printf 'clock_periods_ns\t%s\n' "$period_list"
     printf 'vivado_jobs\t%s\n' "$jobs"
