@@ -32,6 +32,7 @@ final class BitwiseFoldedDigitStreamer(val config: CmuxCoefficientConfig)
     val rowIndex = Output(UInt(rowWidth.W))
     val pairLast = Output(Bool())
     val transformStart = Output(Bool())
+    val finishing = Output(Bool())
     val busy = Output(Bool())
     val done = Output(Bool())
   })
@@ -90,7 +91,10 @@ final class BitwiseFoldedDigitStreamer(val config: CmuxCoefficientConfig)
   val pairFire = io.pairValid && io.pairReady
   val finalBeat = beat === (config.forwardBeats - 1).U
   val finalRow = row === (rows - 1).U
-  val finishing = pairFire && finalBeat && finalRow
+  // Keep this independent of io.start. A parent can use it to start the next
+  // streamer without feeding that start back into its own finishing test.
+  val finishing = active && io.pairReady && finalBeat && finalRow
+  io.finishing := finishing
   io.pairLast := pairFire && finalBeat
   io.transformStart := io.start || (pairFire && finalBeat && !finalRow)
   when(io.start) {
@@ -196,6 +200,8 @@ final class BitwiseCmuxForwardFrontend(
     val rowIndex = Output(UInt(rowWidth.W))
     val pairLast = Output(Bool())
     val transformStart = Output(Bool())
+    val streamStartReady = Output(Bool())
+    val streamFinishing = Output(Bool())
     val loaded = Output(Bool())
     val idle = Output(Bool())
     val busy = Output(Bool())
@@ -242,6 +248,8 @@ final class BitwiseCmuxForwardFrontend(
   val allDrainDone = components.map(_.io.drainDone).reduce(_ && _)
   val allLoaded = components.map(_.io.loaded).reduce(_ && _)
   val allDecompositionDone = components.map(_.io.done).reduce(_ && _)
+  val allDecompositionFinishing =
+    components.map(_.io.decompositionFinishing).reduce(_ && _)
   val anyComponentBusy = components.map(_.io.busy).reduce(_ || _)
   val allRotateReady = components.map(_.io.rotateReady).reduce(_ && _)
   val frontendBusy = anyComponentBusy || streamer.io.busy ||
@@ -258,8 +266,7 @@ final class BitwiseCmuxForwardFrontend(
     assert(!anyComponentBusy, "bitwise storage operation started while busy")
   }
 
-  val finalOutputRow = streamer.io.rowIndex === (rows - 1).U
-  val streamerFinishing = streamer.io.pairLast && finalOutputRow
+  val streamerFinishing = streamer.io.finishing
   val availableBuffers = VecInit((0 until bufferCount).map { buffer =>
     !bufferOccupied(buffer) ||
       (streamerFinishing && drainBuffer === buffer.U)
@@ -339,8 +346,16 @@ final class BitwiseCmuxForwardFrontend(
     assert(readyBuffers.io.enq.ready, "bitwise digit buffer queue overflow")
   }
 
-  val streamerCanStart = io.streamEnable && !streamer.io.busy
+  // A queued workset may replace the one emitting its final pair. Starting
+  // it on that pair supplies SGen's one-cycle frame-marker lead without an
+  // input bubble. The first pair of the replacement remains held until its
+  // core receives pairReady on the following cycle.
+  val streamerCanStart = io.streamEnable &&
+    (!streamer.io.busy || streamerFinishing)
   val streamerStart = streamerCanStart && readyBuffers.io.deq.valid
+  io.streamStartReady :=
+    (!streamer.io.busy || streamerFinishing) &&
+      (readyBuffers.io.deq.valid || allDecompositionFinishing)
   readyBuffers.io.deq.ready := streamerCanStart
   streamer.io.start := streamerStart
   val streamerFlowStart = streamerStart && !streamer.io.busy
@@ -391,6 +406,7 @@ final class BitwiseCmuxForwardFrontend(
   io.rowIndex := streamer.io.rowIndex
   io.pairLast := streamer.io.pairLast
   io.transformStart := streamer.io.transformStart
+  io.streamFinishing := streamer.io.finishing
   io.busy := frontendBusy
   io.idle := !frontendBusy
   io.done := streamer.io.done

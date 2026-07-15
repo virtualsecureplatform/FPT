@@ -330,8 +330,12 @@ final class PrefetchedCoefficientStoreSpec
       var pairCount = 0
       val acceptCycles = ArrayBuffer.empty[Int]
       val firstPairCycles = ArrayBuffer.empty[Int]
+      val transformStartCycles = ArrayBuffer.empty[Int]
 
       def step(): Unit = {
+        if (dut.io.transformStart.peek().litToBoolean) {
+          transformStartCycles += cycle
+        }
         if (dut.io.pairValid.peek().litToBoolean) {
           val transactionBeat = pairCount % commandInterval
           val row = transactionBeat / config.forwardBeats
@@ -378,8 +382,17 @@ final class PrefetchedCoefficientStoreSpec
 
       acceptCycles.toSeq should be(Seq(0, commandInterval))
       firstPairCycles(1) - firstPairCycles(0) should be(commandInterval)
+      transformStartCycles.size should be(contexts * config.components *
+        config.levels)
+      transformStartCycles.head should be(firstPairCycles.head)
+      transformStartCycles.last should be(firstPairCycles(1) +
+        commandInterval - config.forwardBeats - 1)
+      transformStartCycles(config.components * config.levels) should be(
+        firstPairCycles(1) - 1
+      )
       info(
-        s"bitwise prefetched rows remain ${commandInterval} cycles apart"
+        s"bitwise prefetched rows remain ${commandInterval} cycles apart " +
+          "with an early SGen marker at the command boundary"
       )
 
       for (context <- 0 until contexts) {

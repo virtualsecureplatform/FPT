@@ -19,6 +19,9 @@ final class BitwisePrefetchedBatchedCmuxCoefficientStore(
   private val cooldownWidth = counterWidth(commandInterval)
   private val coreCount = 2
   private val coreWidth = counterWidth(coreCount)
+  private val commandQueueEntries = batchContexts + 2
+  private val commandQueuePointerWidth = counterWidth(commandQueueEntries)
+  private val commandQueueCountWidth = counterWidth(commandQueueEntries + 1)
 
   private val memoryConfig = ReplicatedAccumulatorBanksConfig(
     config,
@@ -68,16 +71,29 @@ final class BitwisePrefetchedBatchedCmuxCoefficientStore(
     (!busy(io.commandContext) ||
       (memory.io.updateDone &&
         memory.io.updateDoneContext === io.commandContext))
-  val commandCores = Module(
-    new Queue(UInt(coreWidth.W), batchContexts + 2)
-  )
+  // This small explicit FIFO exposes both the active core and its successor.
+  // Queue only exposes the head, but the successor must see streamEnable on
+  // the active command's final pair to provide SGen's next frame marker.
+  val commandCores = Reg(Vec(commandQueueEntries, UInt(coreWidth.W)))
+  val commandReadPointer = RegInit(0.U(commandQueuePointerWidth.W))
+  val commandWritePointer = RegInit(0.U(commandQueuePointerWidth.W))
+  val commandCount = RegInit(0.U(commandQueueCountWidth.W))
+  val commandQueueFull = commandCount === commandQueueEntries.U
+
+  def nextCommandPointer(pointer: UInt): UInt =
+    Mux(
+      pointer === (commandQueueEntries - 1).U,
+      0.U,
+      pointer + 1.U
+    )
+
   io.commandReady := commandCooldown === 0.U &&
     memory.io.prefetchReady && !fillOutstanding && hasReadyCore &&
-    commandCores.io.enq.ready && commandAvailable
+    !commandQueueFull && commandAvailable
   val commandFire = io.commandValid && io.commandReady
-  commandCores.io.enq.valid := commandFire
-  commandCores.io.enq.bits := selectedCore
   when(commandFire) {
+    commandCores(commandWritePointer) := selectedCore
+    commandWritePointer := nextCommandPointer(commandWritePointer)
     commandCooldown := (commandInterval - 1).U
   }.elsewhen(commandCooldown =/= 0.U) {
     commandCooldown := commandCooldown - 1.U
@@ -90,13 +106,14 @@ final class BitwisePrefetchedBatchedCmuxCoefficientStore(
   val drainCore = RegInit(0.U(coreWidth.W))
   val drainContextReg = RegInit(0.U(contextWidth.W))
   val drainCanStart = !drainActive && !fillOutstanding &&
-    memory.io.prefetchReady && hasReadyCore && !commandCores.io.deq.valid &&
-    !io.commandValid
+    memory.io.prefetchReady && hasReadyCore && commandCount === 0.U &&
+    !io.commandValid && io.drainContext < batchContexts.U &&
+    !busy(io.drainContext)
+  io.drainStartReady := drainCanStart
   val drainFire = io.drainStart && drainCanStart
   when(io.drainStart) {
     assert(drainCanStart, "bitwise drain started while unavailable")
     assert(io.drainContext < batchContexts.U, "invalid drain context")
-    assert(!busy(io.drainContext), "cannot drain an in-flight context")
   }
 
   memory.io.prefetchStart := commandFire || drainFire
@@ -153,26 +170,61 @@ final class BitwisePrefetchedBatchedCmuxCoefficientStore(
     }
   }
 
-  val outputCore = commandCores.io.deq.bits
-  val outputQueued = commandCores.io.deq.valid
+  val outputQueued = commandCount =/= 0.U
+  val outputCore = Mux(
+    outputQueued,
+    commandCores(commandReadPointer),
+    0.U(coreWidth.W)
+  )
+  val followingCore = commandCores(nextCommandPointer(commandReadPointer))
+  val followingQueued = commandCount > 1.U
   val selectedPairValid = VecInit(cores.map(_.io.pairValid))(outputCore)
   val selectedPairLast = VecInit(cores.map(_.io.pairLast))(outputCore)
   val selectedRow = VecInit(cores.map(_.io.rowIndex))(outputCore)
+  val selectedStreamFinishing =
+    VecInit(cores.map(_.io.streamFinishing))(outputCore)
   val selectedTransformStart =
     VecInit(cores.map(_.io.transformStart))(outputCore)
   io.pairValid := outputQueued && selectedPairValid
   io.pairLast := outputQueued && selectedPairLast
   io.rowIndex := Mux(outputQueued, selectedRow, 0.U(rowWidth.W))
-  io.transformStart := outputQueued && selectedTransformStart
   io.coefficientLow := VecInit(cores.map(_.io.coefficientLow))(outputCore)
   io.coefficientHigh := VecInit(cores.map(_.io.coefficientHigh))(outputCore)
-  val finishingOutput = outputQueued && selectedPairLast &&
-    selectedRow === (rows - 1).U
-  commandCores.io.deq.ready := finishingOutput
+  val finishingOutput = outputQueued && selectedStreamFinishing
+  val followingStartReady =
+    VecInit(cores.map(_.io.streamStartReady))(followingCore)
+  val switchWithoutBubble = finishingOutput && followingQueued &&
+    followingStartReady
+  val followingTransformStart =
+    VecInit(cores.map(_.io.transformStart))(followingCore)
+  // If the following core is accepting its final decomposition chunk, its
+  // streamer starts next cycle. Issue the SGen marker now and suppress the
+  // streamer's redundant marker when the completed buffer becomes visible.
+  val suppressQueuedTransformStart = RegInit(false.B)
+  val selectedTransformMarker = outputQueued && selectedTransformStart
+  io.transformStart :=
+    (selectedTransformMarker && !suppressQueuedTransformStart) ||
+      switchWithoutBubble
+  when(suppressQueuedTransformStart && selectedTransformMarker) {
+    suppressQueuedTransformStart := false.B
+  }
+  when(switchWithoutBubble && !followingTransformStart) {
+    suppressQueuedTransformStart := true.B
+  }
+
   for ((core, index) <- cores.zipWithIndex) {
     val selectedOutput = outputQueued && outputCore === index.U
-    core.io.streamEnable := selectedOutput
+    val selectedFollowing = switchWithoutBubble && followingCore === index.U
+    core.io.streamEnable := selectedOutput || selectedFollowing
     core.io.pairReady := io.pairReady && selectedOutput
+  }
+
+  when(finishingOutput) {
+    commandReadPointer := nextCommandPointer(commandReadPointer)
+  }
+  switch(Cat(commandFire, finishingOutput)) {
+    is("b01".U) { commandCount := commandCount - 1.U }
+    is("b10".U) { commandCount := commandCount + 1.U }
   }
 
   for (context <- 0 until batchContexts) {
@@ -190,7 +242,7 @@ final class BitwisePrefetchedBatchedCmuxCoefficientStore(
   when(io.loadStart) {
     assert(!busy(io.loadContext), "cannot load an in-flight context")
     assert(!fillOutstanding, "cannot load during a bitwise prefetch")
-    assert(!commandCores.io.deq.valid, "cannot load with queued commands")
+    assert(commandCount === 0.U, "cannot load with queued commands")
   }
 
   val selectedDrainValid = VecInit(cores.map(_.io.drainValid))(drainCore)

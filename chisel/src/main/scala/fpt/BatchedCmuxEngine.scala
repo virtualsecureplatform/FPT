@@ -113,6 +113,7 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
     val doneContext = Output(UInt(contextWidth.W))
 
     val drainStart = Input(Bool())
+    val drainStartReady = Output(Bool())
     val drainContext = Input(UInt(contextWidth.W))
     val drainValid = Output(Bool())
     val drainReady = Input(Bool())
@@ -304,6 +305,7 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
   io.contextBusy := coefficients.io.contextBusy
 
   coefficients.io.drainStart := io.drainStart
+  io.drainStartReady := coefficients.io.drainStartReady
   coefficients.io.drainContext := io.drainContext
   coefficients.io.drainReady := io.drainReady
   io.drainValid := coefficients.io.drainValid

@@ -45,6 +45,7 @@ final class BitwiseGadgetDecomposer(
     val centeredDigit = Output(
       Vec(levels, Vec(polynomialSize, SInt(baseBits.W)))
     )
+    val finishing = Output(Bool())
     val busy = Output(Bool())
     val done = Output(Bool())
   })
@@ -83,6 +84,7 @@ final class BitwiseGadgetDecomposer(
   val inputFire = io.inputValid && io.inputReady
   val finalChunk = chunkIndex === (chunks - 1).U
   val finishing = inputFire && finalChunk
+  io.finishing := finishing
   io.startReady := !active || finishing
   val startFire = io.start && io.startReady
   when(io.start) {
@@ -172,6 +174,7 @@ final class BitwiseCmuxDecompositionFrontend(
         Vec(config.polynomialSize, SInt(config.baseBits.W))
       )
     )
+    val decompositionFinishing = Output(Bool())
     val busy = Output(Bool())
     val done = Output(Bool())
 
@@ -249,6 +252,7 @@ final class BitwiseCmuxDecompositionFrontend(
   }
 
   io.centeredDigit := decomposer.io.centeredDigit
+  io.decompositionFinishing := decomposer.io.finishing
   io.busy := reorder.io.busy || decomposer.io.busy
   io.done := decomposer.io.done
 }

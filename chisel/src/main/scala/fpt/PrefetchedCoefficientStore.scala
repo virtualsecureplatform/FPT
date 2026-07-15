@@ -121,16 +121,14 @@ final class PrefetchedBatchedCmuxCoefficientStore(
 
   val readyBuffers = Module(new Queue(UInt(bufferWidth.W), bufferCount))
   val drainCanStart = !drainStreaming && !fillOutstanding &&
-    memory.io.prefetchReady && hasFreeBuffer && !io.commandValid
+    memory.io.prefetchReady && hasFreeBuffer && !io.commandValid &&
+    !readyBuffers.io.deq.valid && io.drainContext < batchContexts.U &&
+    !busy(io.drainContext)
+  io.drainStartReady := drainCanStart
   val drainFire = io.drainStart && drainCanStart
   when(io.drainStart) {
     assert(drainCanStart, "drain started while the prefetch path was busy")
     assert(io.drainContext < batchContexts.U, "invalid drain context")
-    assert(!busy(io.drainContext), "cannot drain an in-flight context")
-    assert(
-      !readyBuffers.io.deq.valid,
-      "cannot drain while a prefetched command is queued"
-    )
   }
 
   memory.io.prefetchStart := commandFire || drainFire

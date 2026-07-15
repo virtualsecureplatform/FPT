@@ -61,6 +61,7 @@ final class BatchedCmuxCoefficientStoreIO(
   val updateDoneContext = Output(UInt(contextWidth.W))
 
   val drainStart = Input(Bool())
+  val drainStartReady = Output(Bool())
   val drainContext = Input(UInt(contextWidth.W))
   val drainValid = Output(Bool())
   val drainReady = Input(Bool())
@@ -377,6 +378,8 @@ final class BatchedCmuxCoefficientStore(
   val drainDoneReg = RegInit(false.B)
   val drainDoneContextReg = RegInit(0.U(contextWidth.W))
   io.drainValid := drainActive
+  io.drainStartReady := !drainActive &&
+    io.drainContext < batchContexts.U && !busy(io.drainContext)
   io.drainDone := drainDoneReg
   io.drainDoneContext := drainDoneContextReg
   drainDoneReg := false.B
@@ -389,9 +392,8 @@ final class BatchedCmuxCoefficientStore(
     }
   }
   when(io.drainStart) {
-    assert(!drainActive, "batch drain started while active")
+    assert(io.drainStartReady, "batch drain started while unavailable")
     assert(io.drainContext < batchContexts.U, "invalid drain context")
-    assert(!busy(io.drainContext), "cannot drain an in-flight context")
     drainActive := true.B
     drainContextReg := io.drainContext
     drainBeat := 0.U
