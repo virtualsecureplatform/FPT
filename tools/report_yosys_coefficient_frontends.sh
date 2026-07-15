@@ -38,7 +38,7 @@ sum_cells() {
     ' "$stat_file"
 }
 
-printf 'design\tlogic-cells\tluts\tffs\tcarry\tmuxf\tram\telapsed-s\tmax-rss-kib\n'
+printf 'design\tlogic-cells\tluts\tffs\tcarry\tmuxf\tbram\tdist-ram\turam\tdsp\telapsed-s\tmax-rss-kib\n'
 for design in "${designs[@]}"; do
     top=$(top_for "$design")
     result_dir=$build_root/$design
@@ -56,11 +56,16 @@ for design in "${designs[@]}"; do
     ffs=$(sum_cells "$stat_file" "$module" '^FD')
     carry=$(sum_cells "$stat_file" "$module" '^CARRY')
     muxf=$(sum_cells "$stat_file" "$module" '^MUXF')
-    ram=$(sum_cells "$stat_file" "$module" '^(RAM|RAMB|URAM)')
+    all_ram=$(sum_cells "$stat_file" "$module" '^RAM')
+    bram=$(sum_cells "$stat_file" "$module" '^RAMB')
+    dist_ram=$((all_ram - bram))
+    uram=$(sum_cells "$stat_file" "$module" '^URAM')
+    dsp=$(sum_cells "$stat_file" "$module" '^DSP')
     elapsed=$(sed -n 's/^elapsed_seconds=//p' "$timing_file" 2>/dev/null || true)
     max_rss=$(sed -n 's/^max_rss_kib=//p' "$timing_file" 2>/dev/null || true)
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$design" "$logic_cells" "$luts" "$ffs" "$carry" "$muxf" \
-        "$ram" "${elapsed:--}" "${max_rss:--}"
+        "$bram" "$dist_ram" "$uram" "$dsp" \
+        "${elapsed:--}" "${max_rss:--}"
 done

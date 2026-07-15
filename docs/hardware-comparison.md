@@ -126,8 +126,8 @@ tools/report_bitwise_structure.sh
 Stock Yosys cannot parse CIRCT's block-local variables, so the synthesis-only
 emitters use `firtool --lowering-options=disallowLocalVariables`. The normal
 Vivado/Verilator emitters do not use that lowering option. With Yosys
-0.45+139, both isolated Set-II coefficient frontends were flattened and
-mapped with:
+0.45+139, the single and batched Set-II coefficient frontends were flattened
+and mapped with:
 
 ```text
 synth_xilinx -family xcup -flatten -noiopad -noclkbuf -widemux 5
@@ -154,6 +154,30 @@ transposed bitwise state and ping-pong digit buffers, plus the already tested
 17-cycle pipeline fill. Yosys needed 9:06 and 12.5 GiB peak RSS for the barrel
 map, versus 15:19 and 21.3 GiB for the bitwise map; those host costs do not
 represent FPGA area.
+
+The memory-backed comparison is the more relevant sustained-throughput point.
+The barrel design has fourteen contexts and a 212-cycle latency; the bitwise
+design has fifteen contexts, two complete working cores, and a 229-cycle
+latency. Both accept a command every 16 cycles:
+
+| Metric | 14-context barrel | 15-context bitwise | Change |
+| --- | ---: | ---: | ---: |
+| Estimated logic cells | 531,854 | 320,080 | -39.8% |
+| LUT1--LUT6 primitives | 624,974 | 328,726 | -47.4% |
+| Flip-flops | 140,165 | 398,389 | +184.2% |
+| CARRY4 | 18,685 | 8,476 | -54.6% |
+| MUXF7/8/9 | 210,631 | 118,886 | -43.6% |
+| RAMB36E2 | 256 | 256 | 0% |
+| Distributed RAM | 0 | 1 | +1 primitive |
+| Total mapped cells | 994,853 | 863,112 | -13.2% |
+
+Thus the bitwise path still removes about 40% of the estimated logic-cell
+pressure after duplicating the working core to preserve II=16. Both context
+stores map to the same 256 RAMB36E2 primitives; the extra bitwise context fits
+within the same primitive-depth granularity, and its only additional memory is
+one small `RAM32M16` queue. The FF cost remains close to 3x. Yosys needed 10:32
+and 10.1 GiB peak RSS for barrel-batched, versus 22:02 and 41.5 GiB for
+bitwise-batched. These synthesis host costs are not FPGA costs.
 
 Re-run either single frontend, or request the larger batched coefficient
 stores explicitly, with:

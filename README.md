@@ -231,7 +231,7 @@ tools/synthesize_coefficient_frontends.sh
 Pass `barrel-batched bitwise-batched` to run the larger replicated-memory
 frontends as well. Results and full logs are written below
 `build/yosys-coeff/`; see `docs/hardware-comparison.md` for the measured
-single-frontend comparison and its limitations.
+single and sustained-throughput batched comparisons and their limitations.
 
 Vivado scripts run the transform alone or the complete CMUX out of context on
 the U280.  The default 3.425 ns constraint matches HOGE's reported 292 MHz;
