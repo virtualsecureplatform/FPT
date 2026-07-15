@@ -88,6 +88,28 @@ final class CmuxEngineSpec
       .normalize
       .toString
 
+  private def generatedConfig(
+      bitwiseBitsPerCycle: Option[Int] = None
+  ): CmuxEngineConfig =
+    nativeConfig.copy(
+      forwardSGen = Some(
+        SGenBackendConfig(
+          "FptSGenForwardGuarded16x4",
+          generatedPath("FptSGenForwardGuarded16x4.v"),
+          integratedTangent = true
+        )
+      ),
+      inverseSGen = Some(
+        SGenBackendConfig(
+          "FptSGenInverseGuarded16x2",
+          generatedPath("FptSGenInverseGuarded16x2.v"),
+          inputLeadCycles = 4,
+          integratedTangent = true
+        )
+      ),
+      bitwiseBitsPerCycle = bitwiseBitsPerCycle
+    )
+
   private def wrappedDifference(actual: BigInt, expected: BigInt): BigInt = {
     val modulus = BigInt(1) << coefficientConfig.torusWidth
     val raw = (actual - expected) & (modulus - 1)
@@ -254,26 +276,17 @@ final class CmuxEngineSpec
   }
 
   it should "run the same CMUX through generated SGen transforms" in {
-    val sgenConfig = nativeConfig.copy(
-      forwardSGen = Some(
-        SGenBackendConfig(
-          "FptSGenForwardGuarded16x4",
-          generatedPath("FptSGenForwardGuarded16x4.v"),
-          integratedTangent = true
-        )
-      ),
-      inverseSGen = Some(
-        SGenBackendConfig(
-          "FptSGenInverseGuarded16x2",
-          generatedPath("FptSGenInverseGuarded16x2.v"),
-          inputLeadCycles = 4,
-          integratedTangent = true
-        )
-      )
-    )
     exercise(
-      sgenConfig,
+      generatedConfig(),
       "generated SGen",
+      maximumAllowedError = BigInt(1) << 18
+    )
+  }
+
+  it should "run the bitwise accumulator through generated SGen transforms" in {
+    exercise(
+      generatedConfig(bitwiseBitsPerCycle = Some(2)),
+      "bitwise generated SGen",
       maximumAllowedError = BigInt(1) << 18
     )
   }

@@ -81,10 +81,20 @@ bitwise cycles with 16 coefficient-wise output cycles, giving a tested
 initiation interval of 16 cycles when the downstream remains ready. It emits
 as 7.51 MB before writeback logic. Adding lane-local inverse updates and the
 accumulator drain path makes the stateful frontend 10.22 MB; it passes lint
-across 9.75 MB of sources in eight modules. The standalone frontend still
-needs to replace the live CMUX coefficient store's full-width barrel network
-and connect to the forward and inverse transforms; until then, the
-memory-backed top remains the conservative full-width rotation baseline.
+across 9.75 MB of sources in eight modules. `CmuxEngine` now selects this path
+with `bitwiseBitsPerCycle = Some(2)`: the small generated-SGen CMUX remains
+within `2^18` Torus units of the C++ result and takes 166 cycles versus 149 for
+the immediate barrel frontend. At Set II, the integrated bitwise CMUX emits as
+11.57 MB and complete-design lint processes 37.34 MB across 19 modules; its
+module list contains `BitwiseNegacyclicReorder` and no
+`NegacyclicBarrelRotator`. The comparable barrel CMUX is 3.03 MB and lints
+across 12.91 MB in 14 modules. These text/elaboration sizes are not FPGA area
+results. The bitwise schedule is 219 cycles after acceptance (220
+launch-inclusive), exactly 17 cycles beyond the barrel schedule as in the
+end-to-end small regression. Complete RTL lint passes; the optional paper-size
+Verilator executable was not completed because its monolithic C++ compilation
+reached 46.5 GB RSS. The memory-backed batched top remains the full-width
+rotation baseline until it adopts the transposed per-context storage.
 
 Regenerate the cyclic comparison and table from local SGen outputs with:
 

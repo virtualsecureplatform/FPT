@@ -11,7 +11,9 @@ import java.nio.file.{Files, Path}
 /** An opt-in paper-size scheduling regression. The generated SGen sources are
   * intentionally build artifacts rather than checked-in RTL, so run with
   * `FPT_PAPER_SCHEDULE=1 sbt 'testOnly fpt.PaperCmuxScheduleSpec'` after
-  * `tools/generate_sgen_fpt.sh`.
+  * `tools/generate_sgen_fpt.sh`. Select the bitwise frontend with
+  * `FPT_PAPER_BITWISE_SCHEDULE=1`; its Chisel elaboration needs a larger JVM
+  * heap and its monolithic Verilator C++ model is substantially heavier.
   */
 final class PaperCmuxScheduleSpec
     extends AnyFlatSpec
@@ -20,8 +22,12 @@ final class PaperCmuxScheduleSpec
   behavior of "the paper-shaped CMUX scheduler"
 
   it should "compose the four forward rows and two inverse streams" in {
-    if (!sys.env.get("FPT_PAPER_SCHEDULE").contains("1")) {
-      cancel("set FPT_PAPER_SCHEDULE=1 to run the generated paper-size RTL")
+    val bitwise = sys.env.get("FPT_PAPER_BITWISE_SCHEDULE").contains("1")
+    if (!sys.env.get("FPT_PAPER_SCHEDULE").contains("1") && !bitwise) {
+      cancel(
+        "set FPT_PAPER_SCHEDULE=1 or FPT_PAPER_BITWISE_SCHEDULE=1 " +
+          "to run the generated paper-size RTL"
+      )
     }
 
     val forwardPath = Path
@@ -38,7 +44,8 @@ final class PaperCmuxScheduleSpec
     val config = PaperSetII.cmuxEngine(
       forwardPath.toString,
       inversePath.toString,
-      includeVerilogSource = true
+      includeVerilogSource = true,
+      bitwiseBitsPerCycle = if (bitwise) Some(2) else None
     )
     test(new CmuxEngine(config))
       .withAnnotations(
@@ -116,10 +123,11 @@ final class PaperCmuxScheduleSpec
           cycles should be < 256
         }
         info(
-          s"paper-shaped SGen CMUX latency: $cycles cycles after acceptance " +
+          s"paper-shaped ${if (bitwise) "bitwise " else ""}SGen CMUX " +
+            s"latency: $cycles cycles after acceptance " +
             s"(${cycles + 1} launch-inclusive cycles)"
         )
-        cycles should be(202)
+        cycles should be(if (bitwise) 219 else 202)
       }
   }
 }

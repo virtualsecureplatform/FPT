@@ -10,7 +10,8 @@ final case class CmuxEngineConfig(
     externalProduct: ExternalProductConfig,
     inverseNormalizeShift: Int,
     forwardSGen: Option[SGenBackendConfig] = None,
-    inverseSGen: Option[SGenBackendConfig] = None
+    inverseSGen: Option[SGenBackendConfig] = None,
+    bitwiseBitsPerCycle: Option[Int] = None
 ) {
   require(coefficient.points == forwardTransform.points)
   require(coefficient.points == inverseTransform.points)
@@ -26,6 +27,7 @@ final case class CmuxEngineConfig(
   require(coefficient.forwardFormat == externalProduct.spectrum)
   require(coefficient.inverseFormat == externalProduct.accumulator)
   require(inverseNormalizeShift >= 0)
+  bitwiseBitsPerCycle.foreach(bits => require(bits >= 1))
 }
 
 /** A complete, sequentially scheduled fixed-point CMUX reference engine.
@@ -39,10 +41,6 @@ final case class CmuxEngineConfig(
 final class CmuxEngine(val config: CmuxEngineConfig) extends Module {
   private val coefficientConfig = config.coefficient
   private val externalConfig = config.externalProduct
-  private val componentWidth = TransformUtil.counterWidth(
-    coefficientConfig.components
-  )
-  private val levelWidth = TransformUtil.counterWidth(coefficientConfig.levels)
   private val rowWidth = TransformUtil.counterWidth(externalConfig.rows)
 
   val io = IO(new Bundle {
@@ -142,7 +140,15 @@ final class CmuxEngine(val config: CmuxEngineConfig) extends Module {
     val done = Output(Bool())
   })
 
-  val coefficientStore = Module(new CmuxCoefficientStore(coefficientConfig))
+  val coefficients: CmuxEngineCoefficientFrontend =
+    config.bitwiseBitsPerCycle match {
+      case Some(bits) =>
+        Module(
+          new BitwiseCmuxEngineCoefficientFrontend(coefficientConfig, bits)
+        )
+      case None =>
+        Module(new BarrelCmuxEngineCoefficientFrontend(coefficientConfig))
+    }
   val forward: ForwardTangentBackend = config.forwardSGen match {
     case Some(generated) =>
       Module(
@@ -173,59 +179,34 @@ final class CmuxEngine(val config: CmuxEngineConfig) extends Module {
     }
   }
 
-  coefficientStore.io.loadStart := io.loadStart
-  coefficientStore.io.loadValid := io.loadValid
-  coefficientStore.io.load := io.load
-  io.loadReady := coefficientStore.io.loadReady
-  io.loadDone := coefficientStore.io.loadDone
-  coefficientStore.io.drainStart := io.drainStart
-  coefficientStore.io.drainReady := io.drainReady
-  io.drainValid := coefficientStore.io.drainValid
-  io.drain := coefficientStore.io.drain
-  io.drainDone := coefficientStore.io.drainDone
+  coefficients.io.loadStart := io.loadStart
+  coefficients.io.loadValid := io.loadValid
+  coefficients.io.load := io.load
+  io.loadReady := coefficients.io.loadReady
+  io.loadDone := coefficients.io.loadDone
+  coefficients.io.drainStart := io.drainStart
+  coefficients.io.drainReady := io.drainReady
+  io.drainValid := coefficients.io.drainValid
+  io.drain := coefficients.io.drain
+  io.drainDone := coefficients.io.drainDone
 
   val idle :: processingRows :: processingInverse :: Nil = Enum(3)
   val state = RegInit(idle)
-  val exponentReg = RegInit(0.U(coefficientConfig.exponentWidth.W))
-  val row = RegInit(0.U(rowWidth.W))
   val commandFire = io.commandValid && io.commandReady
-  val finalRow = row === (externalConfig.rows - 1).U
-  val forwardRowBoundary = if (config.forwardSGen.isDefined) {
-    coefficientStore.io.pairLast
-  } else {
-    forward.io.done
-  }
-  val launchFollowingRow =
-    state === processingRows && forwardRowBoundary && !finalRow
   val launchFinalInverse =
     state === processingRows && external.io.outputValid
-  val followingRow = Mux(finalRow, 0.U, row + 1.U)
-  val launchRowIndex = Mux(commandFire, 0.U, followingRow)
-  val rowComponents = VecInit(
-    (0 until externalConfig.rows).map(index =>
-      (index / coefficientConfig.levels).U(componentWidth.W)
-    )
-  )
-  val rowLevels = VecInit(
-    (0 until externalConfig.rows).map(index =>
-      (index % coefficientConfig.levels).U(levelWidth.W)
-    )
-  )
 
-  io.commandReady :=
-    state === idle && coefficientStore.io.loaded && coefficientStore.io.idle
-  io.busy := state =/= idle || !coefficientStore.io.idle
-  io.done := coefficientStore.io.updateDone
+  coefficients.io.commandValid := io.commandValid && state === idle
+  coefficients.io.exponent := io.exponent
+  io.commandReady := state === idle && coefficients.io.commandReady
+  io.busy := state =/= idle || !coefficients.io.idle
+  io.done := coefficients.io.updateDone
 
-  coefficientStore.io.rowStart := commandFire || launchFollowingRow
-  coefficientStore.io.rowComponent := rowComponents(launchRowIndex)
-  coefficientStore.io.rowLevel := rowLevels(launchRowIndex)
-  coefficientStore.io.exponent := Mux(commandFire, io.exponent, exponentReg)
-  coefficientStore.io.pairReady := forward.io.pairReady
-  forward.io.start := commandFire || launchFollowingRow
-  forward.io.pairValid := coefficientStore.io.pairValid
-  forward.io.coefficientLow := coefficientStore.io.coefficientLow
-  forward.io.coefficientHigh := coefficientStore.io.coefficientHigh
+  coefficients.io.pairReady := forward.io.pairReady
+  forward.io.start := coefficients.io.transformStart
+  forward.io.pairValid := coefficients.io.pairValid
+  forward.io.coefficientLow := coefficients.io.coefficientLow
+  forward.io.coefficientHigh := coefficients.io.coefficientHigh
   forward.io.twist := io.forwardTwist
   forward.io.fftTwiddle := io.forwardFftTwiddle
   io.forwardTwistIndex := forward.io.twistIndex
@@ -251,28 +232,23 @@ final class CmuxEngine(val config: CmuxEngineConfig) extends Module {
   io.inverseFftTwiddleIndex := inverses.head.io.fftTwiddleIndex
   io.inverseUntwistIndex := inverses.head.io.untwistIndex
 
-  coefficientStore.io.updateStart := launchFinalInverse
+  coefficients.io.updateStart := launchFinalInverse
   val allInverseOutputValid = inverses.map(_.io.outputValid).reduce(_ && _)
-  coefficientStore.io.updateValid := allInverseOutputValid
+  coefficients.io.updateValid := allInverseOutputValid
   for ((inverse, component) <- inverses.zipWithIndex) {
     inverse.io.outputReady :=
-      coefficientStore.io.updateReady && allInverseOutputValid
-    coefficientStore.io.updateLow(component) := inverse.io.coefficientLow
-    coefficientStore.io.updateHigh(component) := inverse.io.coefficientHigh
+      coefficients.io.updateReady && allInverseOutputValid
+    coefficients.io.updateLow(component) := inverse.io.coefficientLow
+    coefficients.io.updateHigh(component) := inverse.io.coefficientHigh
   }
 
   when(commandFire) {
-    exponentReg := io.exponent
-    row := 0.U
     state := processingRows
-  }
-  when(launchFollowingRow) {
-    row := row + 1.U
   }
   when(launchFinalInverse) {
     state := processingInverse
   }
-  when(state === processingInverse && coefficientStore.io.updateDone) {
+  when(state === processingInverse && coefficients.io.updateDone) {
     state := idle
   }
 }

@@ -43,7 +43,8 @@ object PaperSetII {
   def cmuxEngine(
       forwardPath: String,
       inversePath: String,
-      includeVerilogSource: Boolean
+      includeVerilogSource: Boolean,
+      bitwiseBitsPerCycle: Option[Int] = None
   ): CmuxEngineConfig =
     CmuxEngineConfig(
       coefficient,
@@ -66,7 +67,8 @@ object PaperSetII {
           includeVerilogSource = includeVerilogSource,
           integratedTangent = true
         )
-      )
+      ),
+      bitwiseBitsPerCycle = bitwiseBitsPerCycle
     )
 }
 
@@ -83,6 +85,29 @@ object EmitPaperCmux extends App {
     forwardPath.toString,
     inversePath.toString,
     includeVerilogSource = false
+  )
+
+  ChiselStage.emitSystemVerilogFile(
+    new CmuxEngine(config),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+  )
+}
+
+object EmitPaperBitwiseCmux extends App {
+  require(
+    args.length == 3,
+    "usage: EmitPaperBitwiseCmux OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V"
+  )
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
+  val inversePath = Path.of(args(2)).toAbsolutePath.normalize
+  val config = PaperSetII.cmuxEngine(
+    forwardPath.toString,
+    inversePath.toString,
+    includeVerilogSource = false,
+    bitwiseBitsPerCycle = Some(2)
   )
 
   ChiselStage.emitSystemVerilogFile(

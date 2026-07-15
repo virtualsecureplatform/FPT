@@ -77,11 +77,13 @@ after fixed-width overflow.
 can select native Chisel or generated SGen transform backends and runs two
 inverse transforms in parallel.  In the 32-coefficient, four-lane forward /
 two-lane inverse regression, the native iterative backend is bit-exact with
-the C++ CMUX model and takes 133 cycles.  The integrated-tangent SGen backend
+the C++ CMUX model and takes 128 cycles.  The integrated-tangent SGen backend
 overlaps the six forward decomposition rows at one frame every four cycles,
 takes 149 cycles, and differs by at most one Q27.14-to-Torus quantum (`2^18`)
-from the radix-2 C++ result.  The small case is dominated by pipeline fill;
-the paper-sized throughput/resource comparison is generated separately.
+from the radix-2 C++ result. Selecting the 2-bit coefficient frontend removes
+the full-width barrel network and produces the same bounded result in 166
+cycles. The small case is dominated by pipeline fill; the paper-sized
+throughput/resource comparison is generated separately.
 
 `BatchedCmuxEngine` supports two coefficient-storage implementations.  With
 the integrated transforms, the register schedule is 203 cycles and needs 13
@@ -157,6 +159,8 @@ SGen sources and emit/lint the composed design with:
 tools/generate_sgen_fpt.sh ../SGen build/sgen-fpt
 tools/emit_paper_cmux.sh build/sgen-fpt/forward.v \
   build/sgen-fpt/inverse.v build/chisel-paper
+tools/emit_paper_bitwise_cmux.sh build/sgen-fpt/forward.v \
+  build/sgen-fpt/inverse.v build/chisel-paper-bitwise-cmux
 tools/emit_paper_batched_cmux.sh build/sgen-fpt/forward.v \
   build/sgen-fpt/inverse.v build/chisel-paper-batched
 ```
@@ -186,10 +190,17 @@ stream, and the sustained test accepts one exponent every 16 cycles while the
 downstream remains ready. The paper-scale output is 7.51 MB and passes lint
 across 7.17 MB of sources before accumulator writeback. The complete stateful
 version adds lane-local inverse-update adders and a drain path, emits as 10.22
-MB, and passes lint across 9.75 MB of sources. It is still standalone; the live
-CMUX coefficient store continues to use the ten-stage 32-bit barrel network
-until this frontend is connected to its forward and inverse transforms.
-Reproduce the standalone blocks with:
+MB, and passes lint across 9.75 MB of sources. It retains a standalone emitter,
+and `CmuxEngine` can now select it for a complete SGen forward/external-product/
+inverse/update/drain path. The paper bitwise engine emits as 11.57 MB, lints
+with the real SGen sources across 37.34 MB in 19 modules, and contains no
+`NegacyclicBarrelRotator` module. Its control schedule is 219 cycles after
+command acceptance (220 launch-inclusive), 17 more than the barrel path; the
+end-to-end small model verifies the same 17-cycle offset. The optional
+paper-size executable simulation is not part of the checked regression: its
+monolithic C++ compile reached 46.5 GB RSS on this host and was stopped, while
+complete-design lint passed. The batched multi-context top remains on the
+full-width barrel path. Reproduce the standalone blocks with:
 
 ```sh
 tools/emit_paper_bitwise_reorder.sh build/chisel-paper-bitwise
