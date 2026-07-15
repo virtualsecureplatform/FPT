@@ -10,6 +10,10 @@ carries the reproducible FPT transform changes:
 - Q2 twiddles whose total width is four bits shorter than the data path;
 - fixed forward-twist and inverse-untwist operators for the tangent FFT.
 
+The workspace also requires SGen commit `5c0680a`, which sign-extends
+fractional power-of-two stage scaling. That commit is local until the FPT SGen
+fork is published; `tools/generate_sgen_fpt.sh` rejects a checkout without it.
+
 Clone or switch to that branch and build it:
 
 ```sh
@@ -17,19 +21,35 @@ git clone -b fpt https://github.com/virtualsecureplatform/SGen.git ../SGen
 (cd ../SGen && sbt assembly)
 ```
 
-Then run `tools/generate_sgen_fpt.sh`. Its defaults generate the paper-sized
-512-point tangent forward and inverse transforms at 128 and 64 lanes. All
-point, lane, radix, and fixed-point parameters can be overridden with
-environment variables, and `INTEGRATED_TANGENT=0` selects cyclic comparison
-cores. The wrapper also gives the generated designs stable module names for
-Chisel BlackBox elaboration.
+Then run `tools/generate_sgen_fpt.sh`. Its defaults generate 512-point tangent
+forward and inverse transforms at the paper's 128- and 64-lane widths. The
+validated baseline uses radix 8 forward and radix 2 inverse; `RADIX_LOG`
+controls the forward radix and `IFFT_RADIX_LOG` controls the inverse radix.
+All point, lane, and fixed-point parameters can also be overridden, and
+`INTEGRATED_TANGENT=0` selects cyclic comparison cores. The wrapper gives the
+generated designs stable module names for Chisel BlackBox elaboration.
+
+Run the full-size nonzero numerical regression with:
+
+```sh
+tools/test_paper_sgen_numerics.sh ../SGen build/paper-sgen-numerics
+```
+
+It compares four 512-point frames against both the fixed radix-2 C++ model and
+a quantized double-precision tangent-transform oracle. The current maximum
+errors are 518 raw Q18.12 units forward and 8 raw Q27.3 units inverse. SGen's
+radix-8 inverse with `0.5` scaling at every stage still corrupts some nonzero
+512-point vectors; set `IFFT_RADIX_LOG=3` only for investigating that known
+generator limitation. The radix choice is deliberately not presented as a
+paper match.
 
 The checked-in 16-point forward fixture used by the Chisel regression can be
 regenerated with:
 
 ```sh
 INTEGRATED_TANGENT=0 \
-FFT_LOG_POINTS=4 FFT_LOG_LANES=2 IFFT_LOG_LANES=2 RADIX_LOG=2 \
+FFT_LOG_POINTS=4 FFT_LOG_LANES=2 IFFT_LOG_LANES=2 \
+RADIX_LOG=2 IFFT_RADIX_LOG=2 \
   tools/generate_sgen_fpt.sh ../SGen build/sgen-blackbox
 ```
 
@@ -37,7 +57,8 @@ The guarded-format asymmetric fixtures used by the end-to-end CMUX regression
 use an unscaled inverse transform followed by the Chisel normalization stage:
 
 ```sh
-FFT_LOG_POINTS=4 FFT_LOG_LANES=2 IFFT_LOG_LANES=1 RADIX_LOG=2 \
+FFT_LOG_POINTS=4 FFT_LOG_LANES=2 IFFT_LOG_LANES=1 \
+RADIX_LOG=2 IFFT_RADIX_LOG=2 \
 FFT_INTEGER_BITS=18 FFT_FRACTIONAL_BITS=20 \
 IFFT_INTEGER_BITS=27 IFFT_FRACTIONAL_BITS=14 IFFT_STAGE_SCALE=1.0 \
 FORWARD_MODULE=FptSGenForwardGuarded16x4 \

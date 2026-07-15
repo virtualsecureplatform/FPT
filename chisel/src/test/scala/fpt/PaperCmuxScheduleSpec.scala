@@ -128,7 +128,7 @@ final class PaperCmuxScheduleSpec
             s"latency: $cycles cycles after acceptance " +
             s"(${cycles + 1} launch-inclusive cycles)"
         )
-        cycles should be(if (bitwise) 219 else 202)
+        cycles should be(if (bitwise) 224 else 207)
 
         dut.io.drainStart.poke(true.B)
         dut.clock.step()

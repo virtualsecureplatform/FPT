@@ -16,6 +16,7 @@ fft_log_points=${FFT_LOG_POINTS:-9}
 fft_log_lanes=${FFT_LOG_LANES:-7}
 ifft_log_lanes=${IFFT_LOG_LANES:-6}
 radix_log=${RADIX_LOG:-3}
+ifft_radix_log=${IFFT_RADIX_LOG:-1}
 fft_integer_bits=${FFT_INTEGER_BITS:-18}
 fft_fractional_bits=${FFT_FRACTIONAL_BITS:-12}
 ifft_integer_bits=${IFFT_INTEGER_BITS:-27}
@@ -47,6 +48,11 @@ if ! rg -q 'val z = \(Re\(lhs\) - Im\(lhs\)\) \* Re\(rhs\)' \
     echo "Use the virtualsecureplatform/SGen fpt branch for generation" >&2
     exit 1
 fi
+if ! rg -q 'Seq\.fill\(rightShift\)\(sign\)' \
+    "$sgen_dir/src/main/scala/ir/rtl/hardwaretype/FixedPoint.scala"; then
+    echo "SGen is missing signed fractional power-of-two stage scaling" >&2
+    exit 1
+fi
 
 mkdir -p "$output_dir"
 "$sgen_dir/sgen.bat" -nologo \
@@ -54,7 +60,7 @@ mkdir -p "$output_dir"
     -hw complex fixedpoint "$fft_integer_bits" "$fft_fractional_bits" \
     -o "$output_dir/forward.raw.v" "$forward_transform"
 "$sgen_dir/sgen.bat" -nologo \
-    -n "$fft_log_points" -k "$ifft_log_lanes" -r "$radix_log" \
+    -n "$fft_log_points" -k "$ifft_log_lanes" -r "$ifft_radix_log" \
     -sf "$ifft_stage_scale" \
     -hw complex fixedpoint "$ifft_integer_bits" "$ifft_fractional_bits" \
     -o "$output_dir/inverse.raw.v" "$inverse_transform"

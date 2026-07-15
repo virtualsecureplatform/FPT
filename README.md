@@ -87,13 +87,13 @@ throughput/resource comparison is generated separately.
 
 `BatchedCmuxEngine` supports register, barrel-prefetched, and bitwise-prefetched
 coefficient storage. With the integrated transforms, the register schedule is
-203 cycles and needs 13
+208 cycles and needs 13
 contexts for sustained 16-cycle reuse.  The emitted physical top instead uses
 replicated synchronous memory banks and two polynomial prefetch buffers.  Its
 eight-cycle prefetch overlaps the prior 16-cycle decomposition stream,
-retaining the 16-cycle interval with a 212-cycle latency and 14 contexts.  In
+retaining the 16-cycle interval with a 217-cycle latency and 14 contexts.  In
 the bitwise variant, two transposed working sets replace those buffers and the
-barrel. The Set-II executable measures a 229-cycle latency and 16-cycle
+barrel. The Set-II schedule is 234 cycles with a 16-cycle
 completion interval; 15 contexts sustain reuse at that rate. In all cases,
 the double-buffered External Product PISO drains at the 64-lane inverse width
 while the next transaction accumulates at the
@@ -129,9 +129,20 @@ twiddle profile, and generator-level tangent twist/untwist operators.
 `tools/generate_sgen_fpt.sh` generates configurable full-throughput tangent
 FFT/IFFT Verilog with stable `FptSGenForward` and `FptSGenInverse` module
 names. The defaults reproduce the paper's 512-point, 128-lane forward and
-64-lane inverse transform shapes; set `INTEGRATED_TANGENT=0` for the cyclic
-comparison cores. See `sgen/README.md` for the remaining differences from the
-unpublished FPT generator extensions.
+64-lane inverse interface shapes, using a validated radix-8 forward and
+radix-2 inverse. Set `INTEGRATED_TANGENT=0` for the cyclic comparison cores.
+See `sgen/README.md` for the numerical regression, radix controls, and the
+remaining differences from the unpublished FPT generator extensions.
+
+The opt-in full-size numerical check regenerates both cores and four nonzero
+frames per direction:
+
+```sh
+tools/test_paper_sgen_numerics.sh ../SGen build/paper-sgen-numerics
+```
+
+It currently bounds the forward core to 518 raw Q18.12 units and the inverse
+core to 8 raw Q27.3 units versus a quantized double-precision oracle.
 
 The paper-shaped Chisel top uses Set II's `N=1024`, two components, two
 decomposition levels, 128 forward lanes, and 64 inverse lanes.  Generate the
@@ -196,17 +207,17 @@ MB, and passes lint across 9.75 MB of sources. It retains a standalone emitter,
 and `CmuxEngine` can now select it for a complete SGen forward/external-product/
 inverse/update/drain path. The paper bitwise engine emits as 11.57 MB, lints
 with the real SGen sources across 37.34 MB in 19 modules, and contains no
-`NegacyclicBarrelRotator` module. Its control schedule is 219 cycles after
-command acceptance (220 launch-inclusive), 17 more than the barrel path; the
+`NegacyclicBarrelRotator` module. Its control schedule is 224 cycles after
+command acceptance (225 launch-inclusive), 17 more than the barrel path; the
 end-to-end small model verifies the same 17-cycle offset. The opt-in Set-II
 executable now uses bounded Verilator translation units instead of the former
-monolithic C++ output. It measures the same 219-cycle latency and exactly
+monolithic C++ output. It has the same 224-cycle latency and exactly
 preserves all 2,048 nonzero Torus words with a zero external product. The
 bitwise batched top alternates two transposed working sets over the replicated
 accumulator banks. Its paper shape uses 15 contexts, emits as 11.09 MB, lints
 across 35.97 MB in 25 modules, preserves the `120 x 128` memory arrays, and
 contains no full-width barrel module. The executable accepts and completes 16
-commands at II=16, measures 229-cycle first-command latency, reuses context
+commands at II=16, has 234-cycle first-command latency, reuses context
 zero, and exactly preserves all 30,720 nonzero accumulator words. Thus 15
 contexts cover sustained 16-cycle reuse.
 Reproduce the standalone blocks with:
@@ -319,7 +330,7 @@ Chisel tests, complete-design Verilator lint, mocked acceptance-flow tests,
 and source-only handoff generation; hardware benefit claims must wait for
 those U280 reports.
 
-See `docs/hardware-comparison.md` for the reproduced 203/212-cycle Set-II CMUX
+See `docs/hardware-comparison.md` for the reproduced 208/217-cycle Set-II CMUX
 schedule, generated multiplier-expression comparison, and the remaining
 U280 measurement checklist.
 

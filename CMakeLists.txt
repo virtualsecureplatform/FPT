@@ -89,6 +89,26 @@ if(FPT_BUILD_RTL_TESTS)
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_vectors.txt"
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_twiddles.txt"
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_blind_rotate_vectors.txt")
+
+        add_executable(fpt_paper_sgen_vector_gen
+            tests/paper_sgen_vector_gen.cpp)
+        target_link_libraries(fpt_paper_sgen_vector_gen PRIVATE FPT::reference)
+        target_compile_options(fpt_paper_sgen_vector_gen PRIVATE -Wall -Wextra)
+        add_custom_command(
+            OUTPUT
+                "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_sgen_forward_vectors.txt"
+                "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_sgen_inverse_vectors.txt"
+            COMMAND fpt_paper_sgen_vector_gen
+                "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_sgen_forward_vectors.txt"
+                "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_sgen_inverse_vectors.txt"
+            DEPENDS fpt_paper_sgen_vector_gen
+            VERBATIM
+        )
+        add_custom_target(fpt_paper_sgen_vectors
+            DEPENDS
+                "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_sgen_forward_vectors.txt"
+                "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_sgen_inverse_vectors.txt"
+        )
         add_test(NAME fpt_rtl_source_policy
             COMMAND bash
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_rtl_source_policy.sh")

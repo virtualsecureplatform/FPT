@@ -10,7 +10,7 @@ import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
 
 /** Opt-in Set-II batch-throughput regression using the generated 512-point
-  * tangent transforms. Thirteen contexts cover the 203-cycle pipeline while
+  * tangent transforms. Thirteen contexts cover the 208-cycle pipeline while
   * retaining the paper's 16-cycle initiation interval.
   */
 final class PaperBatchedScheduleSpec
@@ -138,7 +138,7 @@ final class PaperBatchedScheduleSpec
         doneCycles.sliding(2).foreach { pair =>
           pair(1) - pair(0) should be(config.commandInterval)
         }
-        doneCycles.head - acceptCycles.head should be(203)
+        doneCycles.head - acceptCycles.head should be(208)
         info(
           s"Set-II batch interval ${config.commandInterval}, " +
             s"latency ${doneCycles.head - acceptCycles.head} launch-inclusive cycles"

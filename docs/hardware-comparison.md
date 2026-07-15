@@ -4,18 +4,19 @@ The paper-shaped implementation uses `N=1024`, four decomposition rows, a
 512-point/128-lane forward tangent transform, and two parallel
 512-point/64-lane inverse tangent transforms. The twist and untwist constants
 are now generated inside SGen instead of arriving through runtime Chisel
-ports. The single-command regression observes `done` 202 cycles after command
-acceptance, or 203 cycles when the launch cycle is included.
+ports. The validated mixed-radix baseline uses radix 8 forward and radix 2
+inverse. The single-command regression observes `done` 207 cycles after
+command acceptance, or 208 cycles when the launch cycle is included.
 
 The synthesis-oriented variant uses replicated synchronous memory banks and
-two prefetch buffers. It has a 212-cycle latency, so fourteen contexts are
+two prefetch buffers. It has a 217-cycle latency, so fourteen contexts are
 needed for continuous reuse, but its acceptance and completion interval
 remains 16 cycles. The paper-size regression issues fourteen distinct
 contexts and then wraps immediately to context zero.
 
 The bitwise-prefetched variant uses fifteen contexts and two transposed
-2-bit working sets. Its executable Set-II regression measures 229-cycle
-latency and the same 16-cycle acceptance and completion interval, then drains
+2-bit working sets. Its Set-II schedule is 234 cycles with the same 16-cycle
+acceptance and completion interval, then drains
 every context to verify exact preservation under a zero external product.
 
 Run the schedule check after generating the paper-size SGen sources:
@@ -64,9 +65,9 @@ Measured executable schedules on this host are:
 
 | Top | Accept cycles | Done cycles | Latency / II | Identity coverage |
 | --- | --- | --- | --- | --- |
-| Bitwise single CMUX | `0` | `219` | `219 / -` | 2,048 nonzero Torus words |
-| 14-context barrel batch | `0,16,...,224` | `212,228,...,436` | `212 / 16` | 28,672 nonzero Torus words |
-| 15-context bitwise batch | `0,16,...,240` | `229,245,...,469` | `229 / 16` | 30,720 nonzero Torus words |
+| Bitwise single CMUX | `0` | `224` | `224 / -` | 2,048 nonzero Torus words |
+| 14-context barrel batch | `0,16,...,224` | `217,233,...,441` | `217 / 16` | 28,672 nonzero Torus words |
+| 15-context bitwise batch | `0,16,...,240` | `234,250,...,474` | `234 / 16` | 30,720 nonzero Torus words |
 
 The single bitwise run took 2:15 and 8.37 GiB peak RSS. The barrel batch took
 0:41 and 3.39 GiB; the bitwise batch took 1:58 and 14.42 GiB. These are
@@ -82,7 +83,14 @@ implement a constant multiply in LUTs.
 | Transform | Stock SGen | FPT cyclic | FPT tangent | Latency stock/cyclic/tangent | Interval |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 512-point, 128-lane forward | 1006 | 808 | 1192 | 59 / 64 / 70 | 4 |
-| 512-point, 64-lane inverse | 506 | 411 | 603 | 80 / 102 / 107 | 8 |
+| 512-point, 64-lane inverse (radix 2) | 506 | 551 | 743 | 80 / 107 / 112 | 8 |
+
+The stock inverse entry is the historical radix-8 baseline, while the FPT
+inverse entries are the numerically validated radix-2 fallback, so that row is
+not a same-radix area comparison. The adapted radix-8 tangent inverse has 603
+multiply expressions and 107-cycle latency, but its per-stage-scaled RTL
+fails the new nonzero 512-point numerical regression and is excluded from the
+correctness baseline. `IFFT_RADIX_LOG=3` retains it as a diagnostic option.
 
 The cyclic adapted design uses the three-real-multiply Gauss form and changes
 twiddle literals from 30 to 26 bits. The tangent columns add exactly three
@@ -93,7 +101,7 @@ the constants are generated in ROMs, their pipelines are included in SGen's
 schedule, and they are no longer runtime top-level inputs. Frame throughput
 remains unchanged. CMUX launches all four forward decomposition rows at the
 four-cycle interval and runs both inverse components concurrently, producing
-the 203-cycle launch-inclusive schedule.
+the 208-cycle launch-inclusive schedule.
 
 The physical batch top combines a tagged, double-buffered External Product
 accumulator with fourteen memory-backed coefficient contexts. A lane word
@@ -130,7 +138,7 @@ the immediate barrel frontend. At Set II, the integrated bitwise CMUX emits as
 module list contains `BitwiseNegacyclicReorder` and no
 `NegacyclicBarrelRotator`. The comparable barrel CMUX is 3.03 MB and lints
 across 12.91 MB in 14 modules. These text/elaboration sizes are not FPGA area
-results. The bitwise schedule is 219 cycles after acceptance (220
+results. The bitwise schedule is 224 cycles after acceptance (225
 launch-inclusive), exactly 17 cycles beyond the barrel schedule as in the
 end-to-end small regression. Complete RTL lint and the split paper-size
 Verilator executable both pass. The executable also exactly preserves a
@@ -141,7 +149,7 @@ alternates two transposed working sets: one streams buffered digits while the
 other rotates the next command, and the first can prefetch its following
 context after decomposition releases the coefficient banks. A complete small
 model checks exact digits, updates, drains, and a no-bubble row interval. The
-Set-II top uses fifteen contexts and measures 229-cycle latency at II=16. It
+Set-II top uses fifteen contexts and has a 234-cycle latency at II=16. It
 emits as 11.09 MB and lints with the generated transforms across 35.97 MB in
 25 modules. CIRCT emits 128 instances of a `120 x 128` synchronous array, and
 the module list contains no `NegacyclicBarrelRotator`. Placement is still
@@ -195,8 +203,8 @@ map, versus 15:19 and 21.3 GiB for the bitwise map; those host costs do not
 represent FPGA area.
 
 The memory-backed comparison is the more relevant sustained-throughput point.
-The barrel design has fourteen contexts and a 212-cycle latency; the bitwise
-design has fifteen contexts, two complete working cores, and a 229-cycle
+The barrel design has fourteen contexts and a 217-cycle latency; the bitwise
+design has fifteen contexts, two complete working cores, and a 234-cycle
 latency. Both accept a command every 16 cycles:
 
 | Metric | 14-context barrel | 15-context bitwise | Change |
