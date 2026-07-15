@@ -107,6 +107,18 @@ module list contains no `NegacyclicBarrelRotator`. Placement is still required
 to determine whether the extra transposed working set costs less LUT/route
 pressure than the removed 1024-way 32-bit barrel.
 
+At the mux-network boundary, the source-level reduction is concrete. The
+shared barrel has `1024 * log2(1024) * 32 = 327,680` mux-bit stages. The
+single bitwise engine has two component networks at two bits, or 40,960 stages
+(8x fewer). Duplicating the complete working set for sustained batching gives
+81,920 stages (4x fewer than the shared 32-bit barrel). This does not predict
+LUT packing or routing, but it is the mechanism the U280 comparison is meant
+to measure. Reproduce the emitted hierarchy and counts with:
+
+```sh
+tools/report_bitwise_structure.sh
+```
+
 Regenerate the cyclic comparison and table from local SGen outputs with:
 
 ```sh

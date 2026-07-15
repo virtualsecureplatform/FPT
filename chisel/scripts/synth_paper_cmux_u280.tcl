@@ -1,6 +1,6 @@
 # Post-route a paper-shaped Chisel CMUX with separately generated SGen
 # BlackBoxes out of context on the U280 part. The optional TOP argument also
-# selects the twelve-context BatchedCmuxEngine emitted by the companion tool.
+# selects any emitted single or batched CmuxEngine variant.
 #
 # vivado -mode batch -source chisel/scripts/synth_paper_cmux_u280.tcl \
 #   -tclargs build/chisel-paper/CmuxEngine.sv \
