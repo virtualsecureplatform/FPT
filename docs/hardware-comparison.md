@@ -13,6 +13,11 @@ needed for continuous reuse, but its acceptance and completion interval
 remains 16 cycles. The paper-size regression issues fourteen distinct
 contexts and then wraps immediately to context zero.
 
+The bitwise-prefetched variant uses fifteen contexts and two transposed
+2-bit working sets. Its executable Set-II regression measures 229-cycle
+latency and the same 16-cycle acceptance and completion interval, then drains
+every context to verify exact preservation under a zero external product.
+
 Run the schedule check after generating the paper-size SGen sources:
 
 ```sh
@@ -31,7 +36,41 @@ FPT_PAPER_BANKED_BATCH=1 \
 FPT_SGEN_FORWARD=../build/sgen-fpt/forward.v \
 FPT_SGEN_INVERSE=../build/sgen-fpt/inverse.v \
 sbt 'testOnly fpt.PaperBankedBatchScheduleSpec'
+
+FPT_PAPER_BITWISE_SCHEDULE=1 \
+FPT_SGEN_FORWARD=../build/sgen-fpt/forward.v \
+FPT_SGEN_INVERSE=../build/sgen-fpt/inverse.v \
+sbt -J-Xmx12G 'testOnly fpt.PaperCmuxScheduleSpec'
+
+FPT_PAPER_BITWISE_BANKED_BATCH=1 \
+FPT_SGEN_FORWARD=../build/sgen-fpt/forward.v \
+FPT_SGEN_INVERSE=../build/sgen-fpt/inverse.v \
+sbt -J-Xmx16G 'testOnly fpt.PaperBankedBatchScheduleSpec'
 ```
+
+The paper tests default `FPT_VERILATOR_SPLIT` to 20,000 for both generated
+model and C-function splitting; override it to tune another Verilator host.
+`FPT_VERILATOR_COMPILER` selects Verilator's C++ compiler. The local Verilator
+5.027 development build also needed its broken parallel precompiled-header
+path disabled while retaining four-way compilation:
+
+```sh
+export MAKEFLAGS='-e -j4'
+export VK_PCH_I_FAST=
+export VK_PCH_I_SLOW=
+```
+
+Measured executable schedules on this host are:
+
+| Top | Accept cycles | Done cycles | Latency / II | Identity coverage |
+| --- | --- | --- | --- | --- |
+| Bitwise single CMUX | `0` | `219` | `219 / -` | 2,048 nonzero Torus words |
+| 14-context barrel batch | `0,16,...,224` | `212,228,...,436` | `212 / 16` | 28,672 nonzero Torus words |
+| 15-context bitwise batch | `0,16,...,240` | `229,245,...,469` | `229 / 16` | 30,720 nonzero Torus words |
+
+The single bitwise run took 2:15 and 8.37 GiB peak RSS. The barrel batch took
+0:41 and 3.39 GiB; the bitwise batch took 1:58 and 14.42 GiB. These are
+simulation host costs, not FPGA costs.
 
 ## Locally measurable transform tradeoff
 
@@ -93,21 +132,21 @@ module list contains `BitwiseNegacyclicReorder` and no
 across 12.91 MB in 14 modules. These text/elaboration sizes are not FPGA area
 results. The bitwise schedule is 219 cycles after acceptance (220
 launch-inclusive), exactly 17 cycles beyond the barrel schedule as in the
-end-to-end small regression. Complete RTL lint passes; the optional paper-size
-Verilator executable was not completed because its monolithic C++ compilation
-reached 46.5 GB RSS.
+end-to-end small regression. Complete RTL lint and the split paper-size
+Verilator executable both pass. The executable also exactly preserves a
+nonzero accumulator when the bootstrapping key is zero.
 
 The batched bitwise frontend keeps the replicated accumulator memories and
 alternates two transposed working sets: one streams buffered digits while the
 other rotates the next command, and the first can prefetch its following
 context after decomposition releases the coefficient banks. A complete small
 model checks exact digits, updates, drains, and a no-bubble row interval. The
-Set-II top uses fifteen contexts (predicted latency 229 cycles at II=16), emits
-as 11.09 MB, and lints with the generated transforms across 35.97 MB in 25
-modules. CIRCT emits 128 instances of a `120 x 128` synchronous array, and the
-module list contains no `NegacyclicBarrelRotator`. Placement is still required
-to determine whether the extra transposed working set costs less LUT/route
-pressure than the removed 1024-way 32-bit barrel.
+Set-II top uses fifteen contexts and measures 229-cycle latency at II=16. It
+emits as 11.09 MB and lints with the generated transforms across 35.97 MB in
+25 modules. CIRCT emits 128 instances of a `120 x 128` synchronous array, and
+the module list contains no `NegacyclicBarrelRotator`. Placement is still
+required to determine whether the extra transposed working set costs less
+LUT/route pressure than the removed 1024-way 32-bit barrel.
 
 At the mux-network boundary, the source-level reduction is concrete. The
 shared barrel has `1024 * log2(1024) * 32 = 327,680` mux-bit stages. The

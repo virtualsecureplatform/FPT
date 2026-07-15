@@ -93,9 +93,10 @@ replicated synchronous memory banks and two polynomial prefetch buffers.  Its
 eight-cycle prefetch overlaps the prior 16-cycle decomposition stream,
 retaining the 16-cycle interval with a 212-cycle latency and 14 contexts.  In
 the bitwise variant, two transposed working sets replace those buffers and the
-barrel; 15 contexts cover the predicted 229-cycle pipeline at the same
-interval. In all cases, the double-buffered External Product PISO drains at
-the 64-lane inverse width while the next transaction accumulates at the
+barrel. The Set-II executable measures a 229-cycle latency and 16-cycle
+completion interval; 15 contexts sustain reuse at that rate. In all cases,
+the double-buffered External Product PISO drains at the 64-lane inverse width
+while the next transaction accumulates at the
 128-lane forward width. `CmuxEngine` remains the simpler single-command
 correctness top.
 
@@ -203,15 +204,17 @@ inverse/update/drain path. The paper bitwise engine emits as 11.57 MB, lints
 with the real SGen sources across 37.34 MB in 19 modules, and contains no
 `NegacyclicBarrelRotator` module. Its control schedule is 219 cycles after
 command acceptance (220 launch-inclusive), 17 more than the barrel path; the
-end-to-end small model verifies the same 17-cycle offset. The optional
-paper-size executable simulation is not part of the checked regression: its
-monolithic C++ compile reached 46.5 GB RSS on this host and was stopped, while
-complete-design lint passed. The bitwise batched top alternates two transposed
-working sets over the replicated accumulator banks. Its paper shape uses 15
-contexts, emits as 11.09 MB, lints across 35.97 MB in 25 modules, preserves
-the `120 x 128` memory arrays, and contains no full-width barrel module. Its
-229-cycle latency is the 212-cycle memory-backed baseline plus the verified
-17-cycle bitwise fill, so 15 contexts cover sustained 16-cycle reuse.
+end-to-end small model verifies the same 17-cycle offset. The opt-in Set-II
+executable now uses bounded Verilator translation units instead of the former
+monolithic C++ output. It measures the same 219-cycle latency and exactly
+preserves all 2,048 nonzero Torus words with a zero external product. The
+bitwise batched top alternates two transposed working sets over the replicated
+accumulator banks. Its paper shape uses 15 contexts, emits as 11.09 MB, lints
+across 35.97 MB in 25 modules, preserves the `120 x 128` memory arrays, and
+contains no full-width barrel module. The executable accepts and completes 16
+commands at II=16, measures 229-cycle first-command latency, reuses context
+zero, and exactly preserves all 30,720 nonzero accumulator words. Thus 15
+contexts cover sustained 16-cycle reuse.
 Reproduce the standalone blocks with:
 
 ```sh
