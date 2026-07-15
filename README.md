@@ -103,8 +103,10 @@ correctness top.
 `SampleExtractIndexZero` converts the natural-order TRLWE drain to TFHEpp's
 index-zero TLWE order using synchronous mask memory. It sustains one Torus
 coefficient per cycle, including the reversed/negated mask, and preserves the
-output across arbitrary backpressure. It provides the output stage needed to
-align the FPT Blind Rotate comparison boundary with HOGE.
+output across arbitrary backpressure. `BatchedBlindRotateSampleExtractEngine`
+automatically drains every completed context through that stage, tags each
+result coefficient with its context, and marks only the last TLWE of the full
+batch. This aligns the FPT Blind Rotate output boundary with HOGE.
 
 ## RTL source policy
 
