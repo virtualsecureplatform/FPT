@@ -52,6 +52,8 @@ if(FPT_BUILD_RTL_TESTS)
                    "${CMAKE_CURRENT_BINARY_DIR}/rtl_sgen_fft_vectors.txt"
                    "${CMAKE_CURRENT_BINARY_DIR}/rtl_external_product_vectors.txt"
                    "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_frontend_vectors.txt"
+                   "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_vectors.txt"
+                   "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_twiddles.txt"
             COMMAND fpt_rtl_vector_gen
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_vectors.txt"
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_mac_vectors.txt"
@@ -65,6 +67,8 @@ if(FPT_BUILD_RTL_TESTS)
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_sgen_fft_vectors.txt"
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_external_product_vectors.txt"
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_frontend_vectors.txt"
+                    "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_vectors.txt"
+                    "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_twiddles.txt"
             DEPENDS fpt_rtl_vector_gen
             VERBATIM
         )
@@ -80,7 +84,9 @@ if(FPT_BUILD_RTL_TESTS)
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_untwist_twiddles.txt"
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_sgen_fft_vectors.txt"
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_external_product_vectors.txt"
-                    "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_frontend_vectors.txt")
+                    "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_frontend_vectors.txt"
+                    "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_vectors.txt"
+                    "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_twiddles.txt")
         add_test(NAME fpt_rtl_arithmetic
             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_rtl_test.sh"
                     "${FPT_IVERILOG_EXECUTABLE}"

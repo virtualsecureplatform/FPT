@@ -147,7 +147,7 @@ void cyclic_fft(std::vector<fpt::FixedComplex> &values, bool inverse = false)
 
 int main(int argc, char **argv)
 {
-    if (argc != 13)
+    if (argc != 15)
         throw std::invalid_argument(
             "expected all RTL vector and twiddle output paths");
     std::ofstream output(argv[1]);
@@ -318,6 +318,106 @@ int main(int argc, char **argv)
                         << cmux_accumulator[component][point + cmux_points];
         cmux_output << '\n';
     }
+
+    std::ofstream cmux_engine_output(argv[13]);
+    std::ofstream cmux_twiddle_output(argv[14]);
+    if (!cmux_engine_output || !cmux_twiddle_output)
+        throw std::runtime_error("could not open CMUX engine vectors");
+    std::array<std::array<std::uint32_t, cmux_polynomial_size>,
+               cmux_components>
+        engine_accumulator;
+    for (int index = 0; index < cmux_polynomial_size; ++index) {
+        for (int component = 0; component < cmux_components; ++component)
+            engine_accumulator[component][index] =
+                static_cast<std::uint32_t>(generator());
+        cmux_engine_output << engine_accumulator[0][index] << ' '
+                           << engine_accumulator[1][index] << '\n';
+    }
+
+    constexpr int engine_exponent = 13;
+    constexpr int engine_rows = cmux_components * cmux_levels;
+    using EngineKeyRow = std::array<
+        std::array<fpt::FixedComplex, cmux_points>, cmux_components>;
+    std::array<EngineKeyRow, engine_rows> engine_key;
+    for (int row = 0; row < engine_rows; ++row) {
+        for (int point = 0; point < cmux_points; ++point) {
+            for (int component = 0; component < cmux_components; ++component) {
+                engine_key[row][component][point] = {
+                    b_distribution(generator), b_distribution(generator)};
+                cmux_engine_output
+                    << engine_key[row][component][point].real << ' '
+                    << engine_key[row][component][point].imag
+                    << (component + 1 == cmux_components ? '\n' : ' ');
+            }
+        }
+    }
+
+    fpt::NegacyclicFFT engine_forward_plan(
+        {cmux_polynomial_size, mac_a_format, 4, {}});
+    fpt::NegacyclicFFT engine_inverse_plan(
+        {cmux_polynomial_size, accumulator_format, 4, {}});
+    std::array<std::vector<fpt::FixedComplex>, cmux_components>
+        engine_spectrum;
+    for (auto &component : engine_spectrum)
+        component.assign(cmux_points, {});
+    int engine_row = 0;
+    for (int component = 0; component < cmux_components; ++component) {
+        for (int level = 0; level < cmux_levels; ++level, ++engine_row) {
+            std::array<std::int64_t, cmux_polynomial_size> digits;
+            for (int index = 0; index < cmux_polynomial_size; ++index)
+                digits[index] = decompose_torus(
+                    rotate_subtract(engine_accumulator[component], index,
+                                    engine_exponent),
+                    level);
+            const auto transformed = engine_forward_plan.forward_integer(digits);
+            for (int output_component = 0;
+                 output_component < cmux_components; ++output_component)
+                for (int point = 0; point < cmux_points; ++point)
+                    engine_spectrum[output_component][point] = complex_mac(
+                        transformed.values[point],
+                        engine_key[engine_row][output_component][point],
+                        engine_spectrum[output_component][point]);
+        }
+    }
+    for (int component = 0; component < cmux_components; ++component) {
+        fpt::QuantizedSpectrum spectrum;
+        spectrum.values = engine_spectrum[component];
+        spectrum.format = accumulator_format;
+        const auto inverse = engine_inverse_plan.inverse(spectrum);
+        for (int index = 0; index < cmux_polynomial_size; ++index) {
+            const auto normalized_raw = static_cast<std::int64_t>(
+                std::floor(std::ldexp(inverse[index],
+                                      accumulator_format.fractional_bits)));
+            engine_accumulator[component][index] +=
+                static_cast<std::uint32_t>(normalized_raw * (1LL << 18));
+        }
+    }
+    for (int index = 0; index < cmux_polynomial_size; ++index)
+        cmux_engine_output << engine_accumulator[0][index] << ' '
+                           << engine_accumulator[1][index] << '\n';
+
+    const auto write_twiddle = [&](double angle,
+                                   const fpt::FixedFormat format) {
+        const double c = std::cos(angle);
+        const double d = std::sin(angle);
+        cmux_twiddle_output << fpt::quantize_double(c, format) << ' '
+                            << fpt::quantize_double(c - d, format) << ' '
+                            << fpt::quantize_double(c + d, format) << '\n';
+    };
+    constexpr fpt::FixedFormat forward_twiddle_format{2, 32};
+    constexpr fpt::FixedFormat inverse_twiddle_format{2, 35};
+    for (int index = 0; index < cmux_points / 2; ++index)
+        write_twiddle(-2.0 * std::numbers::pi * index / cmux_points,
+                      forward_twiddle_format);
+    for (int index = 0; index < cmux_points; ++index)
+        write_twiddle(std::numbers::pi * index / cmux_polynomial_size,
+                      forward_twiddle_format);
+    for (int index = 0; index < cmux_points / 2; ++index)
+        write_twiddle(2.0 * std::numbers::pi * index / cmux_points,
+                      inverse_twiddle_format);
+    for (int index = 0; index < cmux_points; ++index)
+        write_twiddle(-std::numbers::pi * index / cmux_polynomial_size,
+                      inverse_twiddle_format);
 
     constexpr std::size_t fft_points = 16;
     std::ofstream fft_output(argv[3]);

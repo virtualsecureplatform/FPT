@@ -72,6 +72,14 @@ Q18.12 units of the C++ radix-2 oracle; its inputs are bounded to exclude
 intermediate overflow because different radix factorizations need not agree
 after fixed-width overflow.
 
+`CmuxEngine` composes these blocks into an end-to-end correctness engine.  It
+reuses one native Chisel forward transform for all six decomposition rows and
+runs two inverse transforms in parallel.  The 32-coefficient, four-lane
+forward/two-lane inverse regression is bit-exact with the C++ CMUX model and
+takes 133 cycles.  This is a sequential correctness baseline; replacing its
+transform backends with the continuous-flow SGen BlackBoxes is the next
+throughput step.
+
 ## Legacy scheduling prototype
 
 The default build also generates deterministic vectors from the C++ model and
