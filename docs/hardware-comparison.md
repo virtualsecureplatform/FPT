@@ -261,12 +261,21 @@ FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
 tools/run_u280_comparison.sh ../SGen build/vivado-u280-comparison
 ```
 
+The complete raw-TLWE-to-TRLWE Blind Rotate scope uses the same constraints:
+
+```sh
+FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
+tools/run_u280_blind_rotate_comparison.sh ../SGen \
+  build/vivado-u280-blind-rotate-comparison
+```
+
 It regenerates the transforms and both batched tops, then routes the
 14-context barrel and 15-context/two-core bitwise designs at the same II=16,
 part, periods, and implementation settings. It records source hashes and
 writes routed resource/timing/power summaries plus pairwise differences.
 Vivado is not installed on this host, but the complete preparation-only path
-has been exercised. See `docs/u280-handoff.md` for the route-machine
+has been exercised for both the CMUX and Blind Rotate scopes. See
+`docs/u280-handoff.md` for the route-machine
 prerequisites and result definitions. Standalone forward and inverse routes
 remain useful for isolating FTT DSP packing; the complete batched result is
 the throughput-matched coefficient-path comparison.

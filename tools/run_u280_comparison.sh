@@ -9,9 +9,19 @@ period_list=${FPT_VIVADO_CLOCK_PERIODS:-5.0 3.425}
 jobs=${FPT_VIVADO_JOBS:-8}
 reuse=${FPT_VIVADO_REUSE:-0}
 prepare_only=${FPT_VIVADO_PREPARE_ONLY:-0}
+scope=${FPT_VIVADO_SCOPE:-cmux}
+blind_rotate_dimension=${FPT_BLIND_ROTATE_DIMENSION:-630}
 
 case "$reuse" in 0|1) ;; *) echo "FPT_VIVADO_REUSE must be 0 or 1" >&2; exit 1 ;; esac
 case "$prepare_only" in 0|1) ;; *) echo "FPT_VIVADO_PREPARE_ONLY must be 0 or 1" >&2; exit 1 ;; esac
+case "$scope" in
+    cmux|blind-rotate) ;;
+    *) echo "FPT_VIVADO_SCOPE must be cmux or blind-rotate" >&2; exit 1 ;;
+esac
+if [[ ! $blind_rotate_dimension =~ ^[1-9][0-9]*$ ]]; then
+    echo "FPT_BLIND_ROTATE_DIMENSION must be a positive integer" >&2
+    exit 1
+fi
 if [[ ! $jobs =~ ^[1-9][0-9]*$ ]]; then
     echo "FPT_VIVADO_JOBS must be a positive integer" >&2
     exit 1
@@ -67,13 +77,28 @@ if [[ ! -x $sgen_dir/sgen.bat ]]; then
 fi
 
 "$repo_root/tools/generate_sgen_fpt.sh" "$sgen_dir" "$sgen_sources"
-"$repo_root/tools/emit_paper_batched_cmux.sh" \
-    "$sgen_sources/forward.v" "$sgen_sources/inverse.v" "$barrel_sources"
-"$repo_root/tools/emit_paper_bitwise_batched_cmux.sh" \
-    "$sgen_sources/forward.v" "$sgen_sources/inverse.v" "$bitwise_sources"
+if [[ $scope == blind-rotate ]]; then
+    FPT_BLIND_ROTATE_DIMENSION=$blind_rotate_dimension \
+        "$repo_root/tools/emit_paper_batched_blind_rotate.sh" \
+        "$sgen_sources/forward.v" "$sgen_sources/inverse.v" \
+        "$barrel_sources"
+    FPT_BLIND_ROTATE_DIMENSION=$blind_rotate_dimension \
+        "$repo_root/tools/emit_paper_bitwise_batched_blind_rotate.sh" \
+        "$sgen_sources/forward.v" "$sgen_sources/inverse.v" \
+        "$bitwise_sources"
+    top_module=BatchedBlindRotateEngine
+else
+    "$repo_root/tools/emit_paper_batched_cmux.sh" \
+        "$sgen_sources/forward.v" "$sgen_sources/inverse.v" \
+        "$barrel_sources"
+    "$repo_root/tools/emit_paper_bitwise_batched_cmux.sh" \
+        "$sgen_sources/forward.v" "$sgen_sources/inverse.v" \
+        "$bitwise_sources"
+    top_module=BatchedCmuxEngine
+fi
 
-barrel_sv=$barrel_sources/BatchedCmuxEngine.sv
-bitwise_sv=$bitwise_sources/BatchedCmuxEngine.sv
+barrel_sv=$barrel_sources/$top_module.sv
+bitwise_sv=$bitwise_sources/$top_module.sv
 forward_v=$sgen_sources/forward.v
 inverse_v=$sgen_sources/inverse.v
 for source_file in "$barrel_sv" "$bitwise_sv" "$forward_v" "$inverse_v"; do
@@ -122,6 +147,22 @@ flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl")
     printf 'part\t%s\n' "$part"
     printf 'clock_periods_ns\t%s\n' "$period_list"
     printf 'vivado_jobs\t%s\n' "$jobs"
+    printf 'rtl_scope\t%s\n' "$scope"
+    printf 'top_module\t%s\n' "$top_module"
+    if [[ $scope == blind-rotate ]]; then
+        printf 'blind_rotate_dimension\t%s\n' "$blind_rotate_dimension"
+        printf 'cmuxes_per_blind_rotate\t%s\n' "$blind_rotate_dimension"
+        printf 'cmux_schedule_cycles_per_blind_rotate\t%s\n' \
+            "$((blind_rotate_dimension * 16))"
+        printf 'barrel_batch_commands\t%s\n' \
+            "$((blind_rotate_dimension * 14))"
+        printf 'barrel_batch_span_cycles\t%s\n' \
+            "$(((blind_rotate_dimension * 14 - 1) * 16 + 212))"
+        printf 'bitwise_batch_commands\t%s\n' \
+            "$((blind_rotate_dimension * 15))"
+        printf 'bitwise_batch_span_cycles\t%s\n' \
+            "$(((blind_rotate_dimension * 15 - 1) * 16 + 229))"
+    fi
     printf 'barrel_contexts\t14\n'
     printf 'barrel_latency_cycles\t212\n'
     printf 'bitwise_contexts\t15\n'
@@ -153,7 +194,7 @@ run_design() {
     source_sha=$(sha256 "$source_file")
     signature=$(printf '%s\n' \
         "$design" "$source_sha" "$forward_sha" "$inverse_sha" "$flow_sha" \
-        "$part" "$period" "$jobs" "$vivado_version" BatchedCmuxEngine | \
+        "$part" "$period" "$jobs" "$vivado_version" "$top_module" | \
         sha256sum | awk '{ print $1 }')
 
     mkdir -p "$run_dir"
@@ -175,7 +216,7 @@ run_design() {
         -journal "$run_dir/vivado.jou" \
         -source "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl" \
         -tclargs "$source_file" "$forward_v" "$inverse_v" \
-            "$run_dir" "$period" BatchedCmuxEngine "$part" "$jobs"
+            "$run_dir" "$period" "$top_module" "$part" "$jobs"
 }
 
 for period in "${periods[@]}"; do

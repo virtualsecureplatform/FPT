@@ -13,6 +13,14 @@ The comparison therefore includes the extra state needed by the bitwise
 design to preserve throughput. It does not compare a single working core
 against a throughput-matched barrel design.
 
+The same runner can instead route the complete Blind Rotate wrapper. That
+scope adds raw-TLWE loading, corrected modulus switching, the exponent store,
+rotated test-vector initialization, and the full bootstrapping-key scheduler
+to both designs. The default domain dimension is TFHEpp's 630. At II=16 this
+is 10,080 scheduled CMUX cycles per Blind Rotate. The manifest records the
+command count and first-acceptance-to-last-completion span for each batch
+shape; these are schedule-derived values, not post-route timing measurements.
+
 ## Prerequisites
 
 Use the `fpt` branch of
@@ -41,6 +49,15 @@ FPT_VIVADO_JOBS=8 \
 tools/run_u280_comparison.sh ../SGen build/vivado-u280-comparison
 ```
 
+For the complete Blind Rotate scope:
+
+```sh
+FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
+FPT_VIVADO_JOBS=8 \
+tools/run_u280_blind_rotate_comparison.sh ../SGen \
+  build/vivado-u280-blind-rotate-comparison
+```
+
 The two periods reproduce the paper's 200 MHz point and HOGE's reported
 292 MHz point. Runs are deliberately sequential because either elaborated
 design can consume tens of GiB of host memory.
@@ -56,6 +73,8 @@ Useful controls are:
 | `FPT_VIVADO_PREPARE_ONLY` | `0` | Generate and hash sources without invoking Vivado |
 | `FPT_SKIP_LINT` | `0` | Skip Verilator lint during Chisel emission |
 | `FPT_CHISEL_HEAP` | `12G` | Heap used by the bitwise Chisel emitter |
+| `FPT_VIVADO_SCOPE` | `cmux` | Select `cmux` or `blind-rotate`; the wrapper script sets the latter |
+| `FPT_BLIND_ROTATE_DIMENSION` | `630` | Raw TLWE mask dimension for the Blind Rotate scope |
 
 The preparation path can be checked on a machine without Vivado:
 

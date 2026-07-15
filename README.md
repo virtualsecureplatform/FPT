@@ -171,7 +171,20 @@ tools/emit_paper_bitwise_batched_cmux.sh build/sgen-fpt/forward.v \
   build/sgen-fpt/inverse.v build/chisel-paper-bitwise-batched
 tools/emit_paper_batched_cmux.sh build/sgen-fpt/forward.v \
   build/sgen-fpt/inverse.v build/chisel-paper-batched
+tools/emit_paper_batched_blind_rotate.sh build/sgen-fpt/forward.v \
+  build/sgen-fpt/inverse.v build/chisel-paper-blind-rotate
+tools/emit_paper_bitwise_batched_blind_rotate.sh \
+  build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
+  build/chisel-paper-bitwise-blind-rotate
 ```
+
+The Blind Rotate tops load raw TLWE mask coefficients and body, implement
+TFHEpp's corrected modulus switch, initialize each accumulator with the
+rotated test vector, and schedule one CMUX per bootstrapping-key index. Their
+external key address includes context, dimension, decomposition row, spectral
+point, switched exponent, and first-beat tags. The default input dimension is
+TFHEpp `lvl0param::n=630`; set `FPT_BLIND_ROTATE_DIMENSION` to elaborate a
+different parameter without changing the Chisel source.
 
 SGen remains a separate Verilog BlackBox in synthesis; CIRCT does not append
 the generated sources or its resource file list to `CmuxEngine.sv`.  The
@@ -245,6 +258,14 @@ identical constraints:
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
 tools/run_u280_comparison.sh ../SGen build/vivado-u280-comparison
+```
+
+Use the same flow on the complete Blind Rotate wrapper with:
+
+```sh
+FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
+tools/run_u280_blind_rotate_comparison.sh ../SGen \
+  build/vivado-u280-blind-rotate-comparison
 ```
 
 Set `FPT_VIVADO_PREPARE_ONLY=1` to validate source generation on a machine
