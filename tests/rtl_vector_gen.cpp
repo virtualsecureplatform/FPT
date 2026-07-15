@@ -1,0 +1,298 @@
+#include <cmath>
+#include <bit>
+#include <algorithm>
+#include <cstdint>
+#include <fstream>
+#include <numbers>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "fpt/fixed_point.hpp"
+#include "fpt/fft.hpp"
+
+namespace {
+
+constexpr fpt::FixedFormat data_format{18, 12};
+constexpr fpt::FixedFormat twiddle_format{2, 24};
+
+fpt::FixedComplex gauss_multiply(fpt::FixedComplex value, std::int64_t c,
+                                 std::int64_t c_minus_d,
+                                 std::int64_t c_plus_d)
+{
+    const std::int64_t a_minus_b =
+        fpt::sub_raw(value.real, value.imag, data_format);
+    const std::int64_t z = fpt::multiply_raw(
+        a_minus_b, data_format, c, twiddle_format, data_format);
+    const std::int64_t x = fpt::multiply_raw(
+        value.imag, data_format, c_minus_d, twiddle_format, data_format);
+    const std::int64_t y = fpt::multiply_raw(
+        value.real, data_format, c_plus_d, twiddle_format, data_format);
+    return {fpt::add_raw(x, z, data_format),
+            fpt::sub_raw(y, z, data_format)};
+}
+
+std::int64_t scaled_sum(std::int64_t lhs, std::int64_t rhs)
+{
+    return fpt::wrap_signed(fpt::floor_shift_right(
+                                static_cast<__int128>(lhs) + rhs, 1),
+                            data_format);
+}
+
+std::int64_t scaled_difference(std::int64_t lhs, std::int64_t rhs)
+{
+    return fpt::wrap_signed(fpt::floor_shift_right(
+                                static_cast<__int128>(lhs) - rhs, 1),
+                            data_format);
+}
+
+std::size_t reverse_bits(std::size_t value, int width)
+{
+    std::size_t result = 0;
+    for (int bit = 0; bit < width; ++bit) {
+        result = (result << 1) | (value & 1U);
+        value >>= 1;
+    }
+    return result;
+}
+
+void cyclic_fft(std::vector<fpt::FixedComplex> &values, bool inverse = false)
+{
+    const int log_points = static_cast<int>(std::countr_zero(values.size()));
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const std::size_t j = reverse_bits(i, log_points);
+        if (i < j) std::swap(values[i], values[j]);
+    }
+    for (std::size_t length = 2; length <= values.size(); length <<= 1) {
+        const std::size_t half = length / 2;
+        for (std::size_t start = 0; start < values.size(); start += length) {
+            for (std::size_t j = 0; j < half; ++j) {
+                const double direction = inverse ? 1.0 : -1.0;
+                const double angle = direction * 2.0 * std::numbers::pi *
+                                     static_cast<double>(j) /
+                                     static_cast<double>(length);
+                const double c_double = std::cos(angle);
+                const double d_double = std::sin(angle);
+                const auto odd = gauss_multiply(
+                    values[start + j + half],
+                    fpt::quantize_double(c_double, twiddle_format),
+                    fpt::quantize_double(c_double - d_double, twiddle_format),
+                    fpt::quantize_double(c_double + d_double, twiddle_format));
+                const auto even = values[start + j];
+                values[start + j] =
+                    {fpt::add_raw(even.real, odd.real, data_format),
+                     fpt::add_raw(even.imag, odd.imag, data_format)};
+                values[start + j + half] =
+                    {fpt::sub_raw(even.real, odd.real, data_format),
+                     fpt::sub_raw(even.imag, odd.imag, data_format)};
+            }
+        }
+    }
+}
+
+}  // namespace
+
+int main(int argc, char **argv)
+{
+    if (argc != 10)
+        throw std::invalid_argument(
+            "expected all RTL vector and twiddle output paths");
+    std::ofstream output(argv[1]);
+    if (!output) throw std::runtime_error("could not open vector output");
+
+    std::mt19937_64 generator(0x46505420221635ULL);
+    const std::int64_t data_limit = std::int64_t{1} << 27;
+    std::uniform_int_distribution<std::int64_t> data_distribution(
+        -data_limit, data_limit - 1);
+    std::uniform_real_distribution<double> angle_distribution(
+        -std::numbers::pi, std::numbers::pi);
+
+    for (int vector = 0; vector < 256; ++vector) {
+        const fpt::FixedComplex even{data_distribution(generator),
+                                     data_distribution(generator)};
+        const fpt::FixedComplex odd{data_distribution(generator),
+                                    data_distribution(generator)};
+        const double angle = angle_distribution(generator);
+        const double c_double = std::cos(angle);
+        const double d_double = std::sin(angle);
+        const std::int64_t c =
+            fpt::quantize_double(c_double, twiddle_format);
+        const std::int64_t c_minus_d =
+            fpt::quantize_double(c_double - d_double, twiddle_format);
+        const std::int64_t c_plus_d =
+            fpt::quantize_double(c_double + d_double, twiddle_format);
+        const auto twiddled =
+            gauss_multiply(odd, c, c_minus_d, c_plus_d);
+
+        const fpt::FixedComplex upper{
+            fpt::add_raw(even.real, twiddled.real, data_format),
+            fpt::add_raw(even.imag, twiddled.imag, data_format)};
+        const fpt::FixedComplex lower{
+            fpt::sub_raw(even.real, twiddled.real, data_format),
+            fpt::sub_raw(even.imag, twiddled.imag, data_format)};
+        const fpt::FixedComplex scaled_upper{
+            scaled_sum(even.real, twiddled.real),
+            scaled_sum(even.imag, twiddled.imag)};
+        const fpt::FixedComplex scaled_lower{
+            scaled_difference(even.real, twiddled.real),
+            scaled_difference(even.imag, twiddled.imag)};
+
+        output << even.real << ' ' << even.imag << ' ' << odd.real << ' '
+               << odd.imag << ' ' << c << ' ' << c_minus_d << ' '
+               << c_plus_d << ' ' << upper.real << ' ' << upper.imag << ' '
+               << lower.real << ' ' << lower.imag << ' '
+               << scaled_upper.real << ' ' << scaled_upper.imag << ' '
+               << scaled_lower.real << ' ' << scaled_lower.imag << '\n';
+    }
+
+    std::ofstream mac_output(argv[2]);
+    if (!mac_output) throw std::runtime_error("could not open MAC vectors");
+    constexpr fpt::FixedFormat a_format{18, 20};
+    constexpr fpt::FixedFormat b_format{8, 24};
+    constexpr fpt::FixedFormat accumulator_format{27, 14};
+    std::uniform_int_distribution<std::int64_t> a_distribution(
+        -(std::int64_t{1} << 27), (std::int64_t{1} << 27) - 1);
+    std::uniform_int_distribution<std::int64_t> b_distribution(
+        -(std::int64_t{1} << 29), (std::int64_t{1} << 29) - 1);
+    std::uniform_int_distribution<std::int64_t> accumulator_distribution(
+        -(std::int64_t{1} << 39), (std::int64_t{1} << 39) - 1);
+    for (int vector = 0; vector < 256; ++vector) {
+        const std::int64_t a_real = a_distribution(generator);
+        const std::int64_t a_imag = a_distribution(generator);
+        const std::int64_t b_real = b_distribution(generator);
+        const std::int64_t b_imag = b_distribution(generator);
+        const std::int64_t accumulator_real =
+            accumulator_distribution(generator);
+        const std::int64_t accumulator_imag =
+            accumulator_distribution(generator);
+        const int product_fractional =
+            a_format.fractional_bits + b_format.fractional_bits;
+        const std::int64_t product_real = fpt::requantize_raw(
+            static_cast<__int128>(a_real) * b_real -
+                static_cast<__int128>(a_imag) * b_imag,
+            product_fractional, accumulator_format);
+        const std::int64_t product_imag = fpt::requantize_raw(
+            static_cast<__int128>(a_real) * b_imag +
+                static_cast<__int128>(a_imag) * b_real,
+            product_fractional, accumulator_format);
+        const std::int64_t result_real = fpt::add_raw(
+            accumulator_real, product_real, accumulator_format);
+        const std::int64_t result_imag = fpt::add_raw(
+            accumulator_imag, product_imag, accumulator_format);
+        mac_output << a_real << ' ' << a_imag << ' ' << b_real << ' '
+                   << b_imag << ' ' << accumulator_real << ' '
+                   << accumulator_imag << ' ' << result_real << ' '
+                   << result_imag << '\n';
+    }
+
+    constexpr std::size_t fft_points = 16;
+    std::ofstream fft_output(argv[3]);
+    std::ofstream twiddle_output(argv[4]);
+    if (!fft_output || !twiddle_output)
+        throw std::runtime_error("could not open FFT RTL vectors");
+    for (std::size_t index = 0; index < fft_points / 2; ++index) {
+        const double angle = -2.0 * std::numbers::pi *
+                             static_cast<double>(index) /
+                             static_cast<double>(fft_points);
+        const double c_double = std::cos(angle);
+        const double d_double = std::sin(angle);
+        twiddle_output
+            << fpt::quantize_double(c_double, twiddle_format) << ' '
+            << fpt::quantize_double(c_double - d_double, twiddle_format) << ' '
+            << fpt::quantize_double(c_double + d_double, twiddle_format) << '\n';
+    }
+    for (int frame = 0; frame < 16; ++frame) {
+        std::vector<fpt::FixedComplex> input(fft_points);
+        for (auto &value : input)
+            value = {data_distribution(generator), data_distribution(generator)};
+        auto expected = input;
+        cyclic_fft(expected);
+        for (std::size_t index = 0; index < fft_points; ++index)
+            fft_output << input[index].real << ' ' << input[index].imag << ' '
+                       << expected[index].real << ' '
+                       << expected[index].imag << '\n';
+    }
+
+    std::ofstream tangent_output(argv[5]);
+    std::ofstream twist_output(argv[6]);
+    if (!tangent_output || !twist_output)
+        throw std::runtime_error("could not open tangent FFT RTL vectors");
+    fpt::NegacyclicFFT tangent_plan(
+        {2 * fft_points, data_format, 4, {}});
+    for (std::size_t index = 0; index < fft_points; ++index) {
+        const double angle = std::numbers::pi * static_cast<double>(index) /
+                             static_cast<double>(2 * fft_points);
+        const double c_double = std::cos(angle);
+        const double d_double = std::sin(angle);
+        twist_output
+            << fpt::quantize_double(c_double, twiddle_format) << ' '
+            << fpt::quantize_double(c_double - d_double, twiddle_format) << ' '
+            << fpt::quantize_double(c_double + d_double, twiddle_format) << '\n';
+    }
+    for (int frame = 0; frame < 8; ++frame) {
+        std::vector<std::int64_t> raw(2 * fft_points);
+        std::vector<double> coefficients(2 * fft_points);
+        for (std::size_t index = 0; index < raw.size(); ++index) {
+            raw[index] = data_distribution(generator);
+            coefficients[index] = fpt::dequantize(raw[index], data_format);
+        }
+        const auto expected = tangent_plan.forward(coefficients);
+        for (std::size_t index = 0; index < fft_points; ++index)
+            tangent_output << raw[index] << ' ' << raw[index + fft_points]
+                           << ' ' << expected.values[index].real << ' '
+                           << expected.values[index].imag << '\n';
+    }
+
+    std::ofstream ifft_output(argv[7]);
+    std::ofstream ifft_twiddle_output(argv[8]);
+    std::ofstream untwist_output(argv[9]);
+    if (!ifft_output || !ifft_twiddle_output || !untwist_output)
+        throw std::runtime_error("could not open inverse FFT RTL vectors");
+    for (std::size_t index = 0; index < fft_points / 2; ++index) {
+        const double angle = 2.0 * std::numbers::pi *
+                             static_cast<double>(index) /
+                             static_cast<double>(fft_points);
+        const double c_double = std::cos(angle);
+        const double d_double = std::sin(angle);
+        ifft_twiddle_output
+            << fpt::quantize_double(c_double, twiddle_format) << ' '
+            << fpt::quantize_double(c_double - d_double, twiddle_format) << ' '
+            << fpt::quantize_double(c_double + d_double, twiddle_format) << '\n';
+    }
+    for (std::size_t index = 0; index < fft_points; ++index) {
+        const double angle = -std::numbers::pi * static_cast<double>(index) /
+                             static_cast<double>(2 * fft_points);
+        const double c_double = std::cos(angle);
+        const double d_double = std::sin(angle);
+        untwist_output
+            << fpt::quantize_double(c_double, twiddle_format) << ' '
+            << fpt::quantize_double(c_double - d_double, twiddle_format) << ' '
+            << fpt::quantize_double(c_double + d_double, twiddle_format) << '\n';
+    }
+    for (int frame = 0; frame < 8; ++frame) {
+        std::vector<fpt::FixedComplex> input(fft_points);
+        for (auto &value : input)
+            value = {data_distribution(generator), data_distribution(generator)};
+        auto expected = input;
+        cyclic_fft(expected, true);
+        for (std::size_t index = 0; index < fft_points; ++index) {
+            const double angle = -std::numbers::pi *
+                                 static_cast<double>(index) /
+                                 static_cast<double>(2 * fft_points);
+            const double c_double = std::cos(angle);
+            const double d_double = std::sin(angle);
+            const auto untwisted = gauss_multiply(
+                expected[index],
+                fpt::quantize_double(c_double, twiddle_format),
+                fpt::quantize_double(c_double - d_double, twiddle_format),
+                fpt::quantize_double(c_double + d_double, twiddle_format));
+            const auto low = fpt::wrap_signed(
+                fpt::floor_shift_right(untwisted.real, 4), data_format);
+            const auto high = fpt::wrap_signed(
+                fpt::floor_shift_right(untwisted.imag, 4), data_format);
+            ifft_output << input[index].real << ' ' << input[index].imag << ' '
+                        << low << ' ' << high << '\n';
+        }
+    }
+}

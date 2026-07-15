@@ -1,0 +1,5 @@
+/build*/
+/chisel/target/
+/chisel/test_run_dir/
+/chisel/.bsp/
+/chisel/.metals/
