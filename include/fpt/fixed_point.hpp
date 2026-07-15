@@ -69,7 +69,8 @@ struct QuantizationStats {
 // two's-complement bit slice in SGen even for negative products.
 [[nodiscard]] inline __int128 floor_shift_right(__int128 value, int shift)
 {
-    if (shift <= 0) return value << (-shift);
+    if (shift <= 0)
+        return value * (static_cast<__int128>(1) << (-shift));
     if (value >= 0) return value >> shift;
     const __int128 bias = (static_cast<__int128>(1) << shift) - 1;
     return -(((-value) + bias) >> shift);
@@ -99,6 +100,26 @@ struct QuantizationStats {
                                        const FixedFormat format)
 {
     return std::ldexp(static_cast<double>(raw), -format.fractional_bits);
+}
+
+// Convert a signed fixed-point raw value to an unsigned Torus word without a
+// floating-point round trip. Increasing the fractional width is an exact left
+// shift; decreasing it is a defined arithmetic right shift. The final mask
+// implements reduction modulo 2^torus_bits.
+[[nodiscard]] inline std::uint64_t fixed_raw_to_torus(
+    std::int64_t raw, int source_fractional_bits, int torus_bits)
+{
+    if (source_fractional_bits < 0)
+        throw std::invalid_argument("negative source fractional width");
+    if (torus_bits < 1 || torus_bits > 64)
+        throw std::invalid_argument("Torus width must be between 1 and 64");
+
+    const __int128 scaled = floor_shift_right(
+        raw, source_fractional_bits - torus_bits);
+    std::uint64_t result = static_cast<std::uint64_t>(scaled);
+    if (torus_bits < 64)
+        result &= (std::uint64_t{1} << torus_bits) - 1;
+    return result;
 }
 
 [[nodiscard]] inline std::int64_t add_raw(std::int64_t lhs, std::int64_t rhs,
@@ -137,4 +158,3 @@ struct PackedComplex {
 };
 
 }  // namespace fpt
-

@@ -387,13 +387,10 @@ int main(int argc, char **argv)
             fpt::QuantizedSpectrum quantized;
             quantized.values = spectrum[component];
             quantized.format = accumulator_format;
-            const auto inverse = engine_inverse_plan.inverse(quantized);
+            const auto inverse = engine_inverse_plan.inverse_raw(quantized);
             for (int index = 0; index < cmux_polynomial_size; ++index) {
-                const auto normalized_raw = static_cast<std::int64_t>(
-                    std::floor(std::ldexp(
-                        inverse[index], accumulator_format.fractional_bits)));
                 accumulator[component][index] += static_cast<std::uint32_t>(
-                    normalized_raw * (1LL << 18));
+                    inverse[index] * (1LL << 18));
             }
         }
     };

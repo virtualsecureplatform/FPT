@@ -76,7 +76,14 @@ class NegacyclicFFT {
         QuantizationStats *stats = nullptr) const;
 
     // The inverse performs an unnormalized fixed-point inverse FFT internally,
-    // then applies 1/(N/2) and compensates all recorded stage scale factors.
+    // then applies 1/(N/2) and compensates all recorded stage scale factors
+    // with a fixed-width signed power-of-two shift. inverse_raw exposes the
+    // exact normalized raw coefficients used by RTL; inverse only dequantizes
+    // those values for numerical callers.
+    [[nodiscard]] std::vector<std::int64_t> inverse_raw(
+        const QuantizedSpectrum &spectrum,
+        QuantizationStats *stats = nullptr) const;
+
     [[nodiscard]] std::vector<double> inverse(
         const QuantizedSpectrum &spectrum,
         QuantizationStats *stats = nullptr) const;
@@ -134,4 +141,3 @@ void multiply_accumulate_spectra(std::span<FixedComplex> accumulator,
     std::span<const double> lhs, std::span<const double> rhs);
 
 }  // namespace fpt
-

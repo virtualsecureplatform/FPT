@@ -13,6 +13,8 @@ Implemented features:
 - the negacyclic twist and inverse twist;
 - fixed-point butterflies with two's-complement wrap and truncating products,
   matching SGen's fixed-point operators;
+- signed power-of-two inverse normalization and direct modular Torus output,
+  without retaining hidden precision through a floating-point conversion;
 - Q2 twiddle factors with four fewer total bits than the FFT datapath;
 - the three formats reported in Table 2 of the paper;
 - configurable per-stage scaling, because the exact FPT schedule is not part
@@ -393,7 +395,11 @@ parameters (N=1024), not a paper-specific parameter class.  Offline key
 preparation creates genuine noisy TRGSW encryptions with uniform Torus masks,
 uses the double tangent FFT to form each coefficient-domain mask product, and
 then stores only the quantized FPT spectra.  Blind Rotate itself uses the
-fixed-point forward FFT, pointwise multiply-accumulate, and inverse FFT.
+fixed-point forward FFT, pointwise multiply-accumulate, inverse FFT, and exact
+integer conversion from the normalized inverse format back to the Torus.
+The integration test also rejects any output coefficient with nonzero bits
+below that format's Torus quantum, so a future floating-point shortcut cannot
+silently restore precision that the RTL does not have.
 
 Because TFHEpp's decomposition parameters differ from the paper's, the adapter
 currently uses a guarded profile (BK Q8.24, FFT Q18.20, IFFT Q27.14).  The

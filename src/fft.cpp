@@ -192,7 +192,7 @@ QuantizedSpectrum NegacyclicFFT::forward_integer(
     return forward(converted, stats);
 }
 
-std::vector<double> NegacyclicFFT::inverse(
+std::vector<std::int64_t> NegacyclicFFT::inverse_raw(
     const QuantizedSpectrum &spectrum, QuantizationStats *stats) const
 {
     if (spectrum.values.size() != complex_size_)
@@ -204,19 +204,31 @@ std::vector<double> NegacyclicFFT::inverse(
     std::vector<FixedComplex> data = spectrum.values;
     fft_in_place(data, true, stats);
 
-    const int compensation_exponent =
-        spectrum.scale_exponent + stage_scale_exponent_;
-    const double normalization =
-        std::ldexp(1.0 / static_cast<double>(complex_size_),
-                   compensation_exponent);
-    std::vector<double> result(polynomial_size_);
+    const int normalize_shift =
+        log_complex_size_ - spectrum.scale_exponent - stage_scale_exponent_;
+    std::vector<std::int64_t> result(polynomial_size_);
     for (std::size_t i = 0; i < complex_size_; ++i) {
         const FixedComplex untwisted =
             multiply_twiddle(data[i], inverse_twist_[i], stats);
-        result[i] = dequantize(untwisted.real, data_format_) * normalization;
-        result[i + complex_size_] =
-            dequantize(untwisted.imag, data_format_) * normalization;
+        result[i] = wrap_signed(
+            floor_shift_right(untwisted.real, normalize_shift),
+            data_format_, stats);
+        result[i + complex_size_] = wrap_signed(
+            floor_shift_right(untwisted.imag, normalize_shift),
+            data_format_, stats);
     }
+    return result;
+}
+
+std::vector<double> NegacyclicFFT::inverse(
+    const QuantizedSpectrum &spectrum, QuantizationStats *stats) const
+{
+    const auto raw = inverse_raw(spectrum, stats);
+    std::vector<double> result(raw.size());
+    std::transform(raw.begin(), raw.end(), result.begin(),
+                   [&](std::int64_t value) {
+                       return dequantize(value, data_format_);
+                   });
     return result;
 }
 

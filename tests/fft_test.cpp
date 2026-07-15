@@ -41,6 +41,15 @@ void test_fixed_point_primitives()
     fpt::QuantizationStats stats;
     (void)fpt::quantize_double(4.0, q3_2, &stats);
     require(stats.overflows == 1, "overflow accounting failed");
+
+    require(fpt::fixed_raw_to_torus(3, 3, 32) == UINT64_C(3) << 29,
+            "positive fixed-point-to-Torus conversion failed");
+    require(fpt::fixed_raw_to_torus(-3, 3, 32) ==
+                ((UINT64_C(1) << 32) - (UINT64_C(3) << 29)),
+            "negative fixed-point-to-Torus conversion failed");
+    require(fpt::fixed_raw_to_torus(-257, 40, 32) ==
+                UINT64_C(0xfffffffe),
+            "narrow fixed-point-to-Torus conversion must shift arithmetically");
 }
 
 void test_reference_round_trip()
@@ -123,6 +132,27 @@ void test_scaling_schedule_is_compensated()
             "stage scale compensation failed");
 }
 
+void test_inverse_normalizes_in_fixed_point()
+{
+    constexpr std::size_t n = 8;
+    constexpr fpt::FixedFormat format{6, 4};
+    fpt::NegacyclicFFT plan({n, format, 4, {}});
+    fpt::QuantizedSpectrum spectrum;
+    spectrum.values.resize(n / 2);
+    spectrum.values[0].real = -7;
+    spectrum.format = format;
+
+    const auto raw = plan.inverse_raw(spectrum);
+    const auto dequantized = plan.inverse(spectrum);
+    require(raw[0] == -2,
+            "inverse normalization must be a signed arithmetic shift");
+    require(dequantized[0] == -0.125,
+            "inverse must dequantize the normalized fixed-point result");
+    for (std::size_t i = 0; i < raw.size(); ++i)
+        require(dequantized[i] == fpt::dequantize(raw[i], format),
+                "inverse raw and dequantized results disagree");
+}
+
 void test_paper_formats()
 {
     constexpr auto set_i = fpt::ArithmeticProfile::parameter_set_i();
@@ -145,6 +175,7 @@ int main()
         test_reference_negacyclic_product();
         test_paper_parameter_set_i_product();
         test_scaling_schedule_is_compensated();
+        test_inverse_normalizes_in_fixed_point();
         test_paper_formats();
         std::cout << "All fixed-point FFT tests passed.\n";
         return 0;
@@ -154,4 +185,3 @@ int main()
         return 1;
     }
 }
-

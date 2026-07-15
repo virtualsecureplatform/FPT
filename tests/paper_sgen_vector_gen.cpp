@@ -78,14 +78,13 @@ void write_inverse_vectors(std::ostream &output, std::mt19937_64 &generator)
                 fpt::dequantize(spectrum.values[index].imag, inverse_format)};
         }
 
-        const auto fixed = plan.inverse(spectrum);
+        const auto fixed = plan.inverse_raw(spectrum);
         const auto reference = plan.reference_inverse(reference_input);
         for (std::size_t index = 0; index < transform_size; ++index) {
             output << spectrum.values[index].real << ' '
                    << spectrum.values[index].imag << ' '
-                   << fpt::quantize_double(fixed[index], inverse_format) << ' '
-                   << fpt::quantize_double(
-                          fixed[index + transform_size], inverse_format)
+                   << fixed[index] << ' '
+                   << fixed[index + transform_size]
                    << ' '
                    << fpt::quantize_double(reference[index], inverse_format)
                    << ' '

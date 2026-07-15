@@ -79,6 +79,17 @@ int main()
                 output, input, *bootstrapping_key, test_vector, &stats);
             bootstrap_seconds[trial++] = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - bootstrap_start).count();
+            constexpr auto profile = fpt::tfhepp::profile_for<Target>();
+            constexpr int torus_quantum_bits =
+                std::numeric_limits<typename Target::T>::digits -
+                profile.inverse_fft.fractional_bits;
+            constexpr typename Target::T torus_quantum_mask =
+                (typename Target::T{1} << torus_quantum_bits) - 1;
+            for (const auto coefficient : output)
+                if ((coefficient & torus_quantum_mask) != 0)
+                    throw std::runtime_error(
+                        "fixed-point Blind Rotate retained hidden "
+                        "sub-quantum Torus bits");
             const bool decrypted = TFHEpp::tlweSymDecrypt<Target>(
                 output, secret_key.key.get<Target>());
             const Target::T phase = TFHEpp::tlweSymPhase<Target>(

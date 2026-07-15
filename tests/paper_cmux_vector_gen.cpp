@@ -1,7 +1,6 @@
 #include "fpt/fft.hpp"
 
 #include <array>
-#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -93,13 +92,11 @@ void apply_cmux(Accumulator &accumulator, const Key &key)
         fpt::QuantizedSpectrum spectrum;
         spectrum.values = spectra[component];
         spectrum.format = inverse_format;
-        const auto update = inverse_plan.inverse(spectrum);
+        const auto update = inverse_plan.inverse_raw(spectrum);
         for (std::size_t index = 0; index < polynomial_size; ++index) {
-            const auto raw = static_cast<std::int64_t>(
-                std::floor(std::ldexp(update[index],
-                                      inverse_format.fractional_bits)));
             accumulator[component][index] +=
-                static_cast<std::uint32_t>(raw * (std::int64_t{1} << 29));
+                static_cast<std::uint32_t>(
+                    update[index] * (std::int64_t{1} << 29));
         }
     }
 }

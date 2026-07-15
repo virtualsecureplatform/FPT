@@ -324,10 +324,13 @@ void ExternalProductFPT(TFHEpp::TRLWE<P> &result,
         spectrum.values = std::move(accumulators[component]);
         spectrum.format = profile.inverse_fft;
         spectrum.scale_exponent = forward_plan<P>().stage_scale_exponent();
-        const auto coefficients = inverse_plan<P>().inverse(
+        const auto coefficients = inverse_plan<P>().inverse_raw(
             spectrum, stats == nullptr ? nullptr : &stats->inverse_fft);
         for (std::size_t i = 0; i < P::n; ++i)
-            result[component][i] = NormalizedToTorus<P>(coefficients[i]);
+            result[component][i] = static_cast<typename P::T>(
+                fixed_raw_to_torus(
+                    coefficients[i], profile.inverse_fft.fractional_bits,
+                    std::numeric_limits<typename P::T>::digits));
     }
 }
 
