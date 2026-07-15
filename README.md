@@ -351,6 +351,14 @@ See `docs/hardware-comparison.md` for the reproduced 208/217-cycle Set-II CMUX
 schedule, generated multiplier-expression comparison, and the remaining
 U280 measurement checklist.
 
+For a pre-route comparison against HOGE, run
+`tools/synthesize_fpt_hoge_transforms.sh` after preparing the common-U280
+handoff. The current Yosys map finds 3.271x/2.092x forward/inverse throughput
+per estimated logic cell, but only 0.832x/0.689x throughput per mapped DSP.
+That result isolates the paper's private per-stage width and multiplier
+mapping as a material remaining implementation gap; raw counts and caveats
+are in `docs/fpt-hoge-comparison.md`.
+
 The integration currently supports native 32-bit Torus parameters.  Its
 bootstrapping key is normalized to real Torus units before being quantized to
 the paper's BK format; this is why it is a distinct key type rather than a
