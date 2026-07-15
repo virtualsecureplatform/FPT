@@ -11,9 +11,11 @@ jobs=${FPT_VIVADO_JOBS:-8}
 reuse=${FPT_VIVADO_REUSE:-0}
 prepare_only=${FPT_VIVADO_PREPARE_ONLY:-0}
 design_list=${FPT_HOGE_DESIGNS:-fpt-forward hoge-forward fpt-inverse hoge-inverse fpt-blind-rotate hoge-blind-rotate}
+skip_hoge_schedule=${FPT_SKIP_HOGE_SCHEDULE:-0}
 
 case "$reuse" in 0|1) ;; *) echo "FPT_VIVADO_REUSE must be 0 or 1" >&2; exit 1 ;; esac
 case "$prepare_only" in 0|1) ;; *) echo "FPT_VIVADO_PREPARE_ONLY must be 0 or 1" >&2; exit 1 ;; esac
+case "$skip_hoge_schedule" in 0|1) ;; *) echo "FPT_SKIP_HOGE_SCHEDULE must be 0 or 1" >&2; exit 1 ;; esac
 if [[ ! $jobs =~ ^[1-9][0-9]*$ ]]; then
     echo "FPT_VIVADO_JOBS must be a positive integer" >&2
     exit 1
@@ -116,6 +118,44 @@ if [[ $hoge_forward_multipliers != 31 || \
     exit 1
 fi
 
+hoge_br_batch_cycles=unmeasured
+hoge_br_cycles_per_result=unmeasured
+hoge_br_input_beats=unmeasured
+hoge_br_key_beats_per_bus=unmeasured
+hoge_br_maximum_key_beat_skew=unmeasured
+hoge_br_output_beats=unmeasured
+if [[ $skip_hoge_schedule == 0 ]] && command -v verilator >/dev/null; then
+    "$repo_root/tools/measure_hoge_blind_rotate_schedule.sh" "$hoge_dir" \
+        "$hoge_sources" "$output_root/hoge-schedule"
+    hoge_br_batch_cycles=$(awk -F= \
+        '$1 == "hoge_blind_rotate_batch_cycles" { print $2 }' \
+        "$output_root/hoge-schedule/schedule.txt")
+    hoge_br_cycles_per_result=$(awk -F= \
+        '$1 == "hoge_blind_rotate_cycles_per_result" { print $2 }' \
+        "$output_root/hoge-schedule/schedule.txt")
+    hoge_br_input_beats=$(awk -F= \
+        '$1 == "hoge_input_beats" { print $2 }' \
+        "$output_root/hoge-schedule/schedule.txt")
+    hoge_br_key_beats_per_bus=$(awk -F= \
+        '$1 == "hoge_key_beats_per_bus" { print $2 }' \
+        "$output_root/hoge-schedule/schedule.txt")
+    hoge_br_maximum_key_beat_skew=$(awk -F= \
+        '$1 == "hoge_maximum_key_beat_skew" { print $2 }' \
+        "$output_root/hoge-schedule/schedule.txt")
+    hoge_br_output_beats=$(awk -F= \
+        '$1 == "hoge_output_beats" { print $2 }' \
+        "$output_root/hoge-schedule/schedule.txt")
+    if [[ ! $hoge_br_batch_cycles =~ ^[0-9]+$ || \
+          ! $hoge_br_cycles_per_result =~ ^[0-9]+([.][0-9]+)?$ || \
+          ! $hoge_br_input_beats =~ ^[0-9]+$ || \
+          ! $hoge_br_key_beats_per_bus =~ ^[0-9]+$ || \
+          ! $hoge_br_maximum_key_beat_skew =~ ^[0-9]+$ || \
+          ! $hoge_br_output_beats =~ ^[0-9]+$ ]]; then
+        echo "Could not parse the HOGE Blind Rotate schedule" >&2
+        exit 1
+    fi
+fi
+
 vivado_version=unavailable
 if command -v vivado >/dev/null; then
     vivado_output=$(vivado -version 2>&1)
@@ -171,6 +211,15 @@ composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl"
     printf 'fpt_blind_rotate_schedule_cycles\t10080\n'
     printf 'hoge_blind_rotate_dimension\t636\n'
     printf 'hoge_blind_rotate_contexts\t2\n'
+    printf 'hoge_blind_rotate_batch_cycles\t%s\n' "$hoge_br_batch_cycles"
+    printf 'hoge_blind_rotate_cycles_per_result\t%s\n' \
+        "$hoge_br_cycles_per_result"
+    printf 'hoge_blind_rotate_input_beats\t%s\n' "$hoge_br_input_beats"
+    printf 'hoge_blind_rotate_key_beats_per_bus\t%s\n' \
+        "$hoge_br_key_beats_per_bus"
+    printf 'hoge_blind_rotate_maximum_key_beat_skew\t%s\n' \
+        "$hoge_br_maximum_key_beat_skew"
+    printf 'hoge_blind_rotate_output_beats\t%s\n' "$hoge_br_output_beats"
     printf 'hoge_forward_intorus_mul_instances\t%s\n' "$hoge_forward_multipliers"
     printf 'hoge_inverse_intorus_mul_instances\t%s\n' "$hoge_inverse_multipliers"
     printf 'hoge_blind_rotate_intorus_mul_instances\t%s\n' "$hoge_br_multipliers"

@@ -6,6 +6,7 @@ output_root=${1:-$repo_root/build/vivado-u280-fpt-hoge-comparison}
 runs_dir=$output_root/runs
 summary_file=$output_root/summary.tsv
 comparison_file=$output_root/comparison.tsv
+manifest_file=$output_root/manifest.tsv
 
 metric_value() {
     local metrics_file=$1
@@ -38,13 +39,28 @@ is_number() {
     [[ $1 =~ ^-?[0-9]+([.][0-9]+)?$ ]]
 }
 
+manifest_value() {
+    local key=$1
+    if [[ ! -f $manifest_file ]]; then
+        printf '%s\n' -
+        return
+    fi
+    awk -F '\t' -v key="$key" '
+        $1 == key { print $2; found = 1; exit }
+        END { if (!found) print "-" }
+    ' "$manifest_file"
+}
+
 design_ii() {
     case "$1" in
         fpt-forward) printf '%s\n' 4 ;;
         hoge-forward) printf '%s\n' 32 ;;
         fpt-inverse) printf '%s\n' 8 ;;
         hoge-inverse) printf '%s\n' 32 ;;
-        fpt-blind-rotate) printf '%s\n' 10080 ;;
+        fpt-blind-rotate)
+            manifest_value fpt_blind_rotate_schedule_cycles ;;
+        hoge-blind-rotate)
+            manifest_value hoge_blind_rotate_cycles_per_result ;;
         *) printf '%s\n' - ;;
     esac
 }

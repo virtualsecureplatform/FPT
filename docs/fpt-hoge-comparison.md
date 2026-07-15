@@ -11,7 +11,7 @@ efficiency over HOGE's 64-bit modular NTT.
 | --- | --- | --- |
 | Forward transform | 512 complex tangent points, 128 lanes, frame II 4 | 1024 modular coefficients, 32 lanes, frame II 32 |
 | Inverse transform | 512 complex tangent points, 64 lanes, frame II 8 | 1024 modular coefficients, 32 lanes, frame II 32 |
-| Blind Rotate | `n=630`, 15 contexts, base-10 level 2, 10,080 scheduled cycles/result | `n=636`, 2 contexts, base-6 level 3 |
+| Blind Rotate | `n=630`, 15 contexts, base-10 level 2, 10,080 scheduled CMUX cycles/result | `n=636`, 2 contexts, base-6 level 3, 158,318.5 measured wrapper cycles/result |
 
 Both transform frames represent one 1024-coefficient negacyclic polynomial.
 The FPT transforms come from the tracked SGen `fpt` branch. The HOGE wrappers
@@ -42,7 +42,12 @@ tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
 
 This regenerates and lints all six RTL inputs, records all three Git commits
 and worktree states, checks HOGE's multiplier structure, and hashes every
-synthesis source and Tcl flow.
+synthesis source and Tcl flow. When Verilator is available it also drives two
+zero TLWEs and continuous zero BK streams through the HOGE wrapper. The final
+`TLAST` occurs after 316,637 cycles (158,318.5 cycles/result). Each of the
+eight BK streams consumes 122,512 beats, with a maximum inter-port skew of
+eight beats. Set `FPT_SKIP_HOGE_SCHEDULE=1` to skip that measurement on a
+route host that lacks Verilator.
 
 ## Route on the Vivado machine
 
@@ -86,7 +91,8 @@ the primary benefit indicators:
 - routed WNS and power show whether the extra parallelism remains physically
   usable.
 
-The HOGE Blind Rotate frame interval is deliberately left unset until it is
-measured from the wrapped RTL. Raw Blind Rotate resource differences are
-still emitted, but no throughput-normalized claim should be made from them
-yet. Vivado vectorless power is an estimate, not board power.
+For Blind Rotate, FPT's 10,080 value covers its sustained CMUX schedule while
+HOGE's 158,318.5 value covers TLWE load through final sample-extracted TLWE.
+The resulting normalization is useful as an architectural upper-level view,
+but is less controlled than the transform-only comparison and must retain
+that qualification. Vivado vectorless power is an estimate, not board power.

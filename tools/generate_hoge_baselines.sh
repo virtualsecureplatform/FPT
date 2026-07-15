@@ -22,7 +22,12 @@ rm -rf "$stage_dir"
 mkdir -p "$stage_dir"
 
 cleanup() {
-    rm -rf "$stage_dir"
+    # sbt can finish writing its global log just after the run command exits.
+    # Retry once so that a harmless log-creation race cannot fail the flow.
+    rm -rf "$stage_dir" 2>/dev/null || {
+        sleep 0.1
+        rm -rf "$stage_dir"
+    }
 }
 trap cleanup EXIT
 

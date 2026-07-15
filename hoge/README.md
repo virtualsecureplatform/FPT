@@ -32,3 +32,15 @@ whereas the current FPT top drains TRLWE accumulators for 14 or 15 contexts.
 Transform-only results isolate the arithmetic representation; complete-top
 results must also report throughput and batch size instead of comparing raw
 resource totals alone.
+
+Measure the current two-context wrapper schedule with:
+
+```sh
+tools/measure_hoge_blind_rotate_schedule.sh ../HOGE \
+  build/hoge-baselines build/hoge-blind-rotate-sim
+```
+
+With zero TLWEs and continuous zero BK streams, the checked wrapper consumes
+40 input beats and 122,512 beats per BK bus, with a maximum inter-port skew of
+eight beats, then emits 2,050 result beats. The final `TLAST` occurs at
+316,637 cycles, or 158,318.5 cycles per result.
