@@ -14,7 +14,8 @@ final class ExternalProductSpec
     with Matchers {
   private val config = ExternalProductConfig(
     points = 16,
-    lanes = 4,
+    inputLanes = 4,
+    outputLanes = 2,
     rows = 6,
     outputComponents = 2,
     spectrum = FixedFormat(18, 20),
@@ -60,11 +61,11 @@ final class ExternalProductSpec
       dut.io.start.poke(false.B)
 
       for (row <- 0 until config.rows) {
-        for (beat <- 0 until config.frameBeats) {
+        for (beat <- 0 until config.inputFrameBeats) {
           dut.io.inputReady.expect(true.B)
           dut.io.keyRow.expect(row.U)
-          for (lane <- 0 until config.lanes) {
-            val point = beat * config.lanes + lane
+          for (lane <- 0 until config.inputLanes) {
+            val point = beat * config.inputLanes + lane
             val vector = rows(row * config.points + point)
             dut.io.pointIndex(lane).expect(point.U)
             dut.io.decomposition(lane).real.poke(vector(0).S)
@@ -86,7 +87,7 @@ final class ExternalProductSpec
       dut.io.inputValid.poke(false.B)
       dut.io.outputValid.expect(true.B)
 
-      for (beat <- 0 until config.frameBeats) {
+      for (beat <- 0 until config.outputFrameBeats) {
         // Exercise the supported output backpressure without changing data.
         if (beat == 1) {
           dut.io.outputReady.poke(false.B)
@@ -98,8 +99,8 @@ final class ExternalProductSpec
           dut.io.output(0)(0).imag.expect(heldImag.S)
         }
         dut.io.outputReady.poke(true.B)
-        for (lane <- 0 until config.lanes) {
-          val point = beat * config.lanes + lane
+        for (lane <- 0 until config.outputLanes) {
+          val point = beat * config.outputLanes + lane
           val vector = rows((config.rows - 1) * config.points + point)
           for (component <- 0 until config.outputComponents) {
             val offset = 2 + 2 * config.outputComponents + 2 * component

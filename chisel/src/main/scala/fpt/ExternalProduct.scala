@@ -5,7 +5,8 @@ import chisel3.util._
 
 final case class ExternalProductConfig(
     points: Int,
-    lanes: Int,
+    inputLanes: Int,
+    outputLanes: Int,
     rows: Int,
     outputComponents: Int,
     spectrum: FixedFormat,
@@ -13,11 +14,13 @@ final case class ExternalProductConfig(
     accumulator: FixedFormat
 ) {
   require(points >= 1 && isPow2(points))
-  require(lanes >= 1 && isPow2(lanes) && lanes <= points)
+  require(inputLanes >= 1 && isPow2(inputLanes) && inputLanes <= points)
+  require(outputLanes >= 1 && isPow2(outputLanes) && outputLanes <= points)
   require(rows >= 1)
   require(outputComponents >= 1)
 
-  val frameBeats: Int = points / lanes
+  val inputFrameBeats: Int = points / inputLanes
+  val outputFrameBeats: Int = points / outputLanes
   val productFractionalBits: Int =
     spectrum.fractionalBits + bootstrappingKey.fractionalBits
   val productShift: Int = productFractionalBits - accumulator.fractionalBits
@@ -29,10 +32,12 @@ final case class ExternalProductConfig(
 }
 
 /** Lane-parallel frequency-domain accumulator for a TFHE External Product.
-  * One transformed decomposition row is supplied over `frameBeats` cycles,
-  * followed immediately by the next row. A start pulse precedes the first
-  * input beat by one cycle. The first row overwrites stale storage, so no
-  * multi-cycle memory clear is required.
+  * One transformed decomposition row is supplied over `inputFrameBeats`
+  * cycles, followed immediately by the next row. The output lane count is
+  * independent so the paper's wider forward and narrower inverse streams can
+  * meet here without another repacking memory. A start pulse precedes the
+  * first input beat by one cycle. The first row overwrites stale storage, so
+  * no multi-cycle memory clear is required.
   *
   * This reference uses a banked register array. The same interface can later
   * be backed by lane-banked RAM without changing CMUX scheduling.
@@ -42,7 +47,8 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
   import TransformUtil._
 
   private val rowWidth = counterWidth(config.rows)
-  private val beatWidth = counterWidth(config.frameBeats)
+  private val inputBeatWidth = counterWidth(config.inputFrameBeats)
+  private val outputBeatWidth = counterWidth(config.outputFrameBeats)
   private val pointWidth = counterWidth(config.points)
 
   val io = IO(new Bundle {
@@ -50,26 +56,26 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
     val inputValid = Input(Bool())
     val inputReady = Output(Bool())
     val decomposition = Input(
-      Vec(config.lanes, new ComplexSInt(config.spectrum.width))
+      Vec(config.inputLanes, new ComplexSInt(config.spectrum.width))
     )
     val bootstrappingKey = Input(
       Vec(
         config.outputComponents,
         Vec(
-          config.lanes,
+          config.inputLanes,
           new ComplexSInt(config.bootstrappingKey.width)
         )
       )
     )
     val keyRow = Output(UInt(rowWidth.W))
-    val pointIndex = Output(Vec(config.lanes, UInt(pointWidth.W)))
+    val pointIndex = Output(Vec(config.inputLanes, UInt(pointWidth.W)))
 
     val outputValid = Output(Bool())
     val outputReady = Input(Bool())
     val output = Output(
       Vec(
         config.outputComponents,
-        Vec(config.lanes, new ComplexSInt(config.accumulator.width))
+        Vec(config.outputLanes, new ComplexSInt(config.accumulator.width))
       )
     )
     val busy = Output(Bool())
@@ -85,8 +91,8 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
   val inputActive = RegInit(false.B)
   val outputActive = RegInit(false.B)
   val row = RegInit(0.U(rowWidth.W))
-  val inputBeat = RegInit(0.U(beatWidth.W))
-  val outputBeat = RegInit(0.U(beatWidth.W))
+  val inputBeat = RegInit(0.U(inputBeatWidth.W))
+  val outputBeat = RegInit(0.U(outputBeatWidth.W))
   val doneReg = RegInit(false.B)
 
   io.inputReady := inputActive
@@ -96,20 +102,22 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
   io.keyRow := row
   doneReg := false.B
 
-  val inputAddress = Wire(Vec(config.lanes, UInt(pointWidth.W)))
-  val outputAddress = Wire(Vec(config.lanes, UInt(pointWidth.W)))
-  for (lane <- 0 until config.lanes) {
+  val inputAddress = Wire(Vec(config.inputLanes, UInt(pointWidth.W)))
+  val outputAddress = Wire(Vec(config.outputLanes, UInt(pointWidth.W)))
+  for (lane <- 0 until config.inputLanes) {
     inputAddress(lane) := indexedAddress(
-      inputBeat, config.lanes, lane, pointWidth
-    )
-    outputAddress(lane) := indexedAddress(
-      outputBeat, config.lanes, lane, pointWidth
+      inputBeat, config.inputLanes, lane, pointWidth
     )
     io.pointIndex(lane) := inputAddress(lane)
   }
+  for (lane <- 0 until config.outputLanes) {
+    outputAddress(lane) := indexedAddress(
+      outputBeat, config.outputLanes, lane, pointWidth
+    )
+  }
 
   for (component <- 0 until config.outputComponents) {
-    for (lane <- 0 until config.lanes) {
+    for (lane <- 0 until config.outputLanes) {
       io.output(component)(lane) :=
         accumulatorMemory(component)(outputAddress(lane))
     }
@@ -129,7 +137,7 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
 
   when(io.inputValid && io.inputReady) {
     for (component <- 0 until config.outputComponents) {
-      for (lane <- 0 until config.lanes) {
+      for (lane <- 0 until config.inputLanes) {
         val a = io.decomposition(lane)
         val b = io.bootstrappingKey(component)(lane)
         val ac = a.real * b.real
@@ -171,7 +179,7 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
       }
     }
 
-    when(inputBeat === (config.frameBeats - 1).U) {
+    when(inputBeat === (config.inputFrameBeats - 1).U) {
       inputBeat := 0.U
       when(row === (config.rows - 1).U) {
         row := 0.U
@@ -187,7 +195,7 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
   }
 
   when(io.outputValid && io.outputReady) {
-    when(outputBeat === (config.frameBeats - 1).U) {
+    when(outputBeat === (config.outputFrameBeats - 1).U) {
       outputBeat := 0.U
       outputActive := false.B
       doneReg := true.B
