@@ -87,7 +87,7 @@ fi
 
 "$repo_root/tools/generate_sgen_fpt.sh" "$sgen_dir" "$sgen_sources"
 "$repo_root/tools/generate_hoge_baselines.sh" "$hoge_dir" "$hoge_sources"
-"$repo_root/tools/emit_paper_bitwise_batched_blind_rotate.sh" \
+"$repo_root/tools/emit_paper_bitwise_batched_blind_rotate_sample_extract.sh" \
     "$sgen_sources/forward.v" "$sgen_sources/inverse.v" "$fpt_br_sources"
 
 fpt_forward=$sgen_sources/forward.v
@@ -95,7 +95,7 @@ fpt_inverse=$sgen_sources/inverse.v
 hoge_forward=$hoge_sources/HOGEForwardINTTBaseline.v
 hoge_inverse=$hoge_sources/HOGEInverseNTTBaseline.v
 hoge_br=$hoge_sources/HOGEBlindRotateBaseline.v
-fpt_br=$fpt_br_sources/BatchedBlindRotateEngine.sv
+fpt_br=$fpt_br_sources/BatchedBlindRotateSampleExtractEngine.sv
 for source_file in "$fpt_forward" "$fpt_inverse" "$hoge_forward" \
     "$hoge_inverse" "$hoge_br" "$fpt_br"; do
     if [[ ! -s $source_file ]]; then
@@ -208,9 +208,14 @@ composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl"
     printf 'hoge_inverse_frame_ii_cycles\t32\n'
     printf 'fpt_blind_rotate_dimension\t630\n'
     printf 'fpt_blind_rotate_contexts\t15\n'
+    printf 'fpt_blind_rotate_top\tBatchedBlindRotateSampleExtractEngine\n'
     printf 'fpt_blind_rotate_schedule_cycles\t10080\n'
+    printf 'fpt_blind_rotate_output\tsample-extracted-tlwe\n'
+    printf 'fpt_blind_rotate_output_beats\t15375\n'
     printf 'hoge_blind_rotate_dimension\t636\n'
     printf 'hoge_blind_rotate_contexts\t2\n'
+    printf 'hoge_blind_rotate_top\tHOGEBlindRotateBaseline\n'
+    printf 'hoge_blind_rotate_output\tsample-extracted-tlwe\n'
     printf 'hoge_blind_rotate_batch_cycles\t%s\n' "$hoge_br_batch_cycles"
     printf 'hoge_blind_rotate_cycles_per_result\t%s\n' \
         "$hoge_br_cycles_per_result"
@@ -291,7 +296,7 @@ run_fpt_blind_rotate() {
         -journal "$run_dir/vivado.jou" \
         -source "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl" \
         -tclargs "$fpt_br" "$fpt_forward" "$fpt_inverse" "$run_dir" \
-            "$period" BatchedBlindRotateEngine "$part" "$jobs"
+            "$period" BatchedBlindRotateSampleExtractEngine "$part" "$jobs"
 }
 
 for period in "${periods[@]}"; do

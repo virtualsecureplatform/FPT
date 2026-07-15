@@ -270,6 +270,42 @@ object EmitPaperBitwiseBatchedBlindRotate extends App {
   )
 }
 
+object EmitPaperBitwiseBatchedBlindRotateSampleExtract extends App {
+  require(
+    args.length == 3 || args.length == 4,
+    "usage: EmitPaperBitwiseBatchedBlindRotateSampleExtract OUTPUT_DIR " +
+      "SGEN_FORWARD_V SGEN_INVERSE_V [DOMAIN_DIMENSION]"
+  )
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
+  val inversePath = Path.of(args(2)).toAbsolutePath.normalize
+  val domainDimension =
+    if (args.length == 4) args(3).toInt
+    else PaperSetII.blindRotateDomainDimension
+  require(domainDimension >= 1, "DOMAIN_DIMENSION must be positive")
+  val engine = PaperSetII.cmuxEngine(
+    forwardPath.toString,
+    inversePath.toString,
+    includeVerilogSource = false,
+    bitwiseBitsPerCycle = Some(2)
+  )
+  val config = BatchedBlindRotateEngineConfig(
+    BatchedCmuxEngineConfig(
+      engine,
+      batchContexts = PaperSetII.bitwiseBatchContexts,
+      coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks
+    ),
+    domainDimension
+  )
+
+  ChiselStage.emitSystemVerilogFile(
+    new BatchedBlindRotateSampleExtractEngine(config),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+  )
+}
+
 object EmitPaperAccumulatorBanks extends App {
   require(
     args.length == 1,

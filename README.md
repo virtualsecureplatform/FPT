@@ -152,6 +152,9 @@ tools/emit_paper_batched_blind_rotate.sh build/sgen-fpt/forward.v \
 tools/emit_paper_bitwise_batched_blind_rotate.sh \
   build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
   build/chisel-paper-bitwise-blind-rotate
+tools/emit_paper_bitwise_batched_blind_rotate_sample_extract.sh \
+  build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
+  build/chisel-paper-bitwise-blind-rotate-sample-extract
 ```
 
 The Blind Rotate tops load raw TLWE mask coefficients and body, implement
@@ -160,7 +163,9 @@ rotated test vector, and schedule one CMUX per bootstrapping-key index. Their
 external key address includes context, dimension, decomposition row, spectral
 point, switched exponent, and first-beat tags. The default input dimension is
 TFHEpp `lvl0param::n=630`; set `FPT_BLIND_ROTATE_DIMENSION` to elaborate a
-different parameter without changing the Chisel source.
+different parameter without changing the Chisel source. The
+`sample_extract` variant automatically returns index-zero TLWEs and is the top
+used for the complete FPT-versus-HOGE route comparison.
 
 SGen remains a separate Verilog BlackBox in synthesis; CIRCT does not append
 the generated sources or its resource file list to `CmuxEngine.sv`.  The

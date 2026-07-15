@@ -11,7 +11,7 @@ efficiency over HOGE's 64-bit modular NTT.
 | --- | --- | --- |
 | Forward transform | 512 complex tangent points, 128 lanes, frame II 4 | 1024 modular coefficients, 32 lanes, frame II 32 |
 | Inverse transform | 512 complex tangent points, 64 lanes, frame II 8 | 1024 modular coefficients, 32 lanes, frame II 32 |
-| Blind Rotate | `n=630`, 15 contexts, base-10 level 2, 10,080 scheduled CMUX cycles/result | `n=636`, 2 contexts, base-6 level 3, 158,318.5 measured wrapper cycles/result |
+| Blind Rotate | `n=630`, 15 contexts, base-10 level 2, index-zero sample extraction, 10,080 scheduled CMUX cycles/result | `n=636`, 2 contexts, base-6 level 3, index-zero sample extraction, 158,318.5 measured wrapper cycles/result |
 
 Both transform frames represent one 1024-coefficient negacyclic polynomial.
 The FPT transforms come from the tracked SGen `fpt` branch. The HOGE wrappers
@@ -22,11 +22,13 @@ Blind Rotate path.
 
 The Blind Rotate tops exclude IKS, Vitis DataMover IP, and on-chip
 bootstrapping-key storage. Both receive bootstrapping-key data externally.
-HOGE retains its sample extraction and returns two TLWEs; FPT retains its
-15-context accumulator drain and returns TRLWEs. Consequently, complete-top
-resource totals must be reported with batch size and throughput. The
-transform-only pairs are the cleaner measurement of the FTT-versus-NTT
-arithmetic representation.
+Both now retain index-zero sample extraction: HOGE returns two TLWEs and FPT
+returns fifteen TLWEs. FPT's Chisel wrapper drains each completed TRLWE into
+synchronous mask memory, emits `a(0), -a(N-1), ..., -a(1), b(0)`, and marks
+only the last coefficient of the full batch. Complete-top resource totals
+must still be reported with batch size and throughput. The transform-only
+pairs remain the cleaner measurement of the FTT-versus-NTT arithmetic
+representation.
 
 The parameters are intentionally not identical at this stage, as requested.
 They are recorded in `manifest.tsv` so a later parameter-alignment experiment
@@ -91,8 +93,10 @@ the primary benefit indicators:
 - routed WNS and power show whether the extra parallelism remains physically
   usable.
 
-For Blind Rotate, FPT's 10,080 value covers its sustained CMUX schedule while
-HOGE's 158,318.5 value covers TLWE load through final sample-extracted TLWE.
-The resulting normalization is useful as an architectural upper-level view,
-but is less controlled than the transform-only comparison and must retain
-that qualification. Vivado vectorless power is an estimate, not board power.
+For Blind Rotate, the resource boundaries now both end in sample-extracted
+TLWEs, but the normalization remains asymmetric: FPT's 10,080 value covers
+its sustained CMUX schedule, while HOGE's 158,318.5 value covers TLWE load
+through the final result. The resulting normalization is useful as an
+architectural upper-level view, but is less controlled than the
+transform-only comparison and must retain that qualification. Vivado
+vectorless power is an estimate, not board power.
