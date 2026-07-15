@@ -234,8 +234,25 @@ frontends as well. Results and full logs are written below
 single and sustained-throughput batched comparisons and their limitations.
 
 Vivado scripts run the transform alone or the complete CMUX out of context on
-the U280.  The default 3.425 ns constraint matches HOGE's reported 292 MHz;
-pass `5.0` as the final argument to reproduce FPT's 200 MHz operating point:
+the U280. The reproducible comparison runner regenerates both SGen transforms
+and both sustained-II=16 Chisel tops, records commits and source hashes, then
+routes the 14-context barrel and 15-context bitwise designs sequentially with
+identical constraints:
+
+```sh
+FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
+tools/run_u280_comparison.sh ../SGen build/vivado-u280-comparison
+```
+
+Set `FPT_VIVADO_PREPARE_ONLY=1` to validate source generation on a machine
+without Vivado, or `FPT_VIVADO_REUSE=1` to retain runs that already have
+machine-readable metrics. See [the U280 handoff](docs/u280-handoff.md) for
+prerequisites, output layout, primitive-count definitions, and the standalone
+transform flow.
+
+The lower-level commands remain available. The default 3.425 ns constraint
+matches HOGE's reported 292 MHz; pass `5.0` to reproduce FPT's 200 MHz
+operating point:
 
 ```sh
 vivado -mode batch -source chisel/scripts/synth_sgen_u280.tcl \
@@ -259,10 +276,12 @@ vivado -mode batch -source chisel/scripts/synth_paper_cmux_u280.tcl \
   build/vivado-paper-bitwise-batched-cmux 5.0 BatchedCmuxEngine
 ```
 
-These scripts produce hierarchical utilization, timing, power, and routed
-checkpoint reports.  Vivado is not installed in this workspace, so the
-checked regression stops at Chisel tests plus complete-design Verilator lint;
-hardware benefit claims must wait for those U280 reports.
+These scripts produce pre- and post-route utilization and timing, route
+status, DRC, vectorless power, routed checkpoints, and compact TSV metrics.
+The clock constraint is loaded before synthesis. Vivado is not installed in
+this workspace, so the checked regression stops at Chisel tests, complete-
+design Verilator lint, and source-only handoff generation; hardware benefit
+claims must wait for those U280 reports.
 
 See `docs/hardware-comparison.md` for the reproduced 203/212-cycle Set-II CMUX
 schedule, generated multiplier-expression comparison, and the remaining

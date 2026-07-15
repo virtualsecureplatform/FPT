@@ -214,12 +214,23 @@ reference numbers, not measurements from this repository:
 | IFFT 512/64 | 130k | 255k | 1,486 | 0 |
 
 The exact U280 result must come from Vivado because generic synthesis does not
-model DSP48E2 packing for the signed asymmetric fixed-point products. Run
-both generated transforms, the single-command CMUX, and `BatchedCmuxEngine`
-through the scripts in
-`chisel/scripts/`, at 5.0 ns for the paper point and 3.425 ns for a direct
-HOGE-frequency comparison.  Record DSP, LUT, FF, BRAM/URAM, achieved timing,
-and power from the routed reports.
+model DSP48E2 packing for the signed asymmetric fixed-point products. The
+first apples-to-apples route is automated as:
+
+```sh
+FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
+tools/run_u280_comparison.sh ../SGen build/vivado-u280-comparison
+```
+
+It regenerates the transforms and both batched tops, then routes the
+14-context barrel and 15-context/two-core bitwise designs at the same II=16,
+part, periods, and implementation settings. It records source hashes and
+writes routed resource/timing/power summaries plus pairwise differences.
+Vivado is not installed on this host, but the complete preparation-only path
+has been exercised. See `docs/u280-handoff.md` for the route-machine
+prerequisites and result definitions. Standalone forward and inverse routes
+remain useful for isolating FTT DSP packing; the complete batched result is
+the throughput-matched coefficient-path comparison.
 
 HOGE's checked-in tree reports about 1.55 ms per gate at 292 MHz, but contains
 no utilization report to normalize against.  Its transform structure uses
