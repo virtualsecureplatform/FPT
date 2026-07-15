@@ -16,6 +16,9 @@ namespace {
 
 constexpr fpt::FixedFormat data_format{18, 12};
 constexpr fpt::FixedFormat twiddle_format{2, 24};
+constexpr fpt::FixedFormat mac_a_format{18, 20};
+constexpr fpt::FixedFormat mac_b_format{8, 24};
+constexpr fpt::FixedFormat accumulator_format{27, 14};
 
 fpt::FixedComplex gauss_multiply(fpt::FixedComplex value, std::int64_t c,
                                  std::int64_t c_minus_d,
@@ -45,6 +48,24 @@ std::int64_t scaled_difference(std::int64_t lhs, std::int64_t rhs)
     return fpt::wrap_signed(fpt::floor_shift_right(
                                 static_cast<__int128>(lhs) - rhs, 1),
                             data_format);
+}
+
+fpt::FixedComplex complex_mac(fpt::FixedComplex a, fpt::FixedComplex b,
+                              fpt::FixedComplex accumulator)
+{
+    const int product_fractional = mac_a_format.fractional_bits +
+                                   mac_b_format.fractional_bits;
+    const std::int64_t product_real = fpt::requantize_raw(
+        static_cast<__int128>(a.real) * b.real -
+            static_cast<__int128>(a.imag) * b.imag,
+        product_fractional, accumulator_format);
+    const std::int64_t product_imag = fpt::requantize_raw(
+        static_cast<__int128>(a.real) * b.imag +
+            static_cast<__int128>(a.imag) * b.real,
+        product_fractional, accumulator_format);
+    return {fpt::add_raw(accumulator.real, product_real, accumulator_format),
+            fpt::add_raw(accumulator.imag, product_imag,
+                         accumulator_format)};
 }
 
 std::size_t reverse_bits(std::size_t value, int width)
@@ -95,7 +116,7 @@ void cyclic_fft(std::vector<fpt::FixedComplex> &values, bool inverse = false)
 
 int main(int argc, char **argv)
 {
-    if (argc != 11)
+    if (argc != 12)
         throw std::invalid_argument(
             "expected all RTL vector and twiddle output paths");
     std::ofstream output(argv[1]);
@@ -148,9 +169,6 @@ int main(int argc, char **argv)
 
     std::ofstream mac_output(argv[2]);
     if (!mac_output) throw std::runtime_error("could not open MAC vectors");
-    constexpr fpt::FixedFormat a_format{18, 20};
-    constexpr fpt::FixedFormat b_format{8, 24};
-    constexpr fpt::FixedFormat accumulator_format{27, 14};
     std::uniform_int_distribution<std::int64_t> a_distribution(
         -(std::int64_t{1} << 27), (std::int64_t{1} << 27) - 1);
     std::uniform_int_distribution<std::int64_t> b_distribution(
@@ -166,24 +184,48 @@ int main(int argc, char **argv)
             accumulator_distribution(generator);
         const std::int64_t accumulator_imag =
             accumulator_distribution(generator);
-        const int product_fractional =
-            a_format.fractional_bits + b_format.fractional_bits;
-        const std::int64_t product_real = fpt::requantize_raw(
-            static_cast<__int128>(a_real) * b_real -
-                static_cast<__int128>(a_imag) * b_imag,
-            product_fractional, accumulator_format);
-        const std::int64_t product_imag = fpt::requantize_raw(
-            static_cast<__int128>(a_real) * b_imag +
-                static_cast<__int128>(a_imag) * b_real,
-            product_fractional, accumulator_format);
-        const std::int64_t result_real = fpt::add_raw(
-            accumulator_real, product_real, accumulator_format);
-        const std::int64_t result_imag = fpt::add_raw(
-            accumulator_imag, product_imag, accumulator_format);
+        const auto result = complex_mac(
+            {a_real, a_imag}, {b_real, b_imag},
+            {accumulator_real, accumulator_imag});
         mac_output << a_real << ' ' << a_imag << ' ' << b_real << ' '
                    << b_imag << ' ' << accumulator_real << ' '
-                   << accumulator_imag << ' ' << result_real << ' '
-                   << result_imag << '\n';
+                   << accumulator_imag << ' ' << result.real << ' '
+                   << result.imag << '\n';
+    }
+
+    constexpr int external_points = 16;
+    constexpr int external_rows = 6;
+    constexpr int external_components = 2;
+    std::ofstream external_output(argv[11]);
+    if (!external_output)
+        throw std::runtime_error("could not open External Product vectors");
+    std::array<std::array<fpt::FixedComplex, external_points>,
+               external_components>
+        external_accumulators{};
+    for (int row = 0; row < external_rows; ++row) {
+        for (int point = 0; point < external_points; ++point) {
+            const fpt::FixedComplex a{a_distribution(generator),
+                                      a_distribution(generator)};
+            std::array<fpt::FixedComplex, external_components> b;
+            for (int component = 0; component < external_components;
+                 ++component) {
+                b[component] = {b_distribution(generator),
+                                b_distribution(generator)};
+                external_accumulators[component][point] = complex_mac(
+                    a, b[component],
+                    row == 0 ? fpt::FixedComplex{}
+                             : external_accumulators[component][point]);
+            }
+            external_output << a.real << ' ' << a.imag;
+            for (const auto value : b)
+                external_output << ' ' << value.real << ' ' << value.imag;
+            for (int component = 0; component < external_components;
+                 ++component)
+                external_output
+                    << ' ' << external_accumulators[component][point].real
+                    << ' ' << external_accumulators[component][point].imag;
+            external_output << '\n';
+        }
     }
 
     constexpr std::size_t fft_points = 16;
