@@ -6,7 +6,8 @@ final case class SGenBackendConfig(
     moduleName: String,
     verilogPath: String,
     inputLeadCycles: Int = 1,
-    includeVerilogSource: Boolean = true
+    includeVerilogSource: Boolean = true,
+    integratedTangent: Boolean = false
 ) {
   require(moduleName.nonEmpty)
   require(!includeVerilogSource || verilogPath.nonEmpty)
@@ -66,7 +67,8 @@ final class SGenForwardTangentBackend(
       generated.moduleName,
       generated.verilogPath,
       generated.inputLeadCycles,
-      generated.includeVerilogSource
+      generated.includeVerilogSource,
+      generated.integratedTangent
     )
   )
   core.io.start := io.start
@@ -143,7 +145,8 @@ final class SGenInverseTangentBackend(
       generated.moduleName,
       generated.verilogPath,
       generated.inputLeadCycles,
-      generated.includeVerilogSource
+      generated.includeVerilogSource,
+      generated.integratedTangent
     )
   )
   core.io.start := io.start

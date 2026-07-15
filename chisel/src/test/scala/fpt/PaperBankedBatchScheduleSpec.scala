@@ -10,7 +10,7 @@ import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
 
 /** Opt-in Set-II throughput regression for the synthesis-oriented accumulator
-  * banks. Thirteen contexts cover the 201-cycle prefetched pipeline and the
+  * banks. Fourteen contexts cover the 212-cycle prefetched pipeline and the
   * test wraps to context zero to prove sustained 16-cycle reuse.
   */
 final class PaperBankedBatchScheduleSpec
@@ -19,7 +19,7 @@ final class PaperBankedBatchScheduleSpec
     with Matchers {
   behavior of "the paper-shaped memory-backed CMUX pipeline"
 
-  it should "reuse thirteen Set-II contexts every 16 cycles" in {
+  it should "reuse fourteen Set-II contexts every 16 cycles" in {
     if (!sys.env.get("FPT_PAPER_BANKED_BATCH").contains("1")) {
       cancel(
         "set FPT_PAPER_BANKED_BATCH=1 to run the paper-size banked batch RTL"
@@ -44,7 +44,7 @@ final class PaperBankedBatchScheduleSpec
     )
     val config = BatchedCmuxEngineConfig(
       engine,
-      batchContexts = 13,
+      batchContexts = 14,
       coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks
     )
     val issuedContexts = (0 until config.batchContexts) :+ 0
@@ -152,7 +152,7 @@ final class PaperBankedBatchScheduleSpec
         doneCycles.sliding(2).foreach { pair =>
           pair(1) - pair(0) should be(config.commandInterval)
         }
-        doneCycles.head - acceptCycles.head should be(201)
+        doneCycles.head - acceptCycles.head should be(212)
         info(
           s"banked Set-II interval ${config.commandInterval}, " +
             s"latency ${doneCycles.head - acceptCycles.head}, " +

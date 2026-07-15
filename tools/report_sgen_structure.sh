@@ -2,12 +2,15 @@
 set -euo pipefail
 
 stock_forward=${1:-build/sgen/dft512_l128.v}
-fpt_forward=${2:-build/sgen/dft512_l128_fpt.v}
-stock_inverse=${3:-build/sgen/idft512_l64.v}
-fpt_inverse=${4:-build/sgen-fpt/inverse.v}
+cyclic_forward=${2:-build/sgen-cyclic/forward.v}
+tangent_forward=${3:-build/sgen-fpt/forward.v}
+stock_inverse=${4:-build/sgen/idft512_l64.v}
+cyclic_inverse=${5:-build/sgen-cyclic/inverse.v}
+tangent_inverse=${6:-build/sgen-fpt/inverse.v}
 
 for source in \
-    "$stock_forward" "$fpt_forward" "$stock_inverse" "$fpt_inverse"; do
+    "$stock_forward" "$cyclic_forward" "$tangent_forward" \
+    "$stock_inverse" "$cyclic_inverse" "$tangent_inverse"; do
     if [[ ! -f "$source" ]]; then
         echo "Missing generated SGen source: $source" >&2
         exit 1
@@ -39,6 +42,8 @@ row() {
 
 printf 'design\tlatency\tinterval\treal-multiply-expressions\tconstant-multiplies\n'
 row stock-forward "$stock_forward"
-row fpt-forward "$fpt_forward"
+row fpt-cyclic-forward "$cyclic_forward"
+row fpt-tangent-forward "$tangent_forward"
 row stock-inverse "$stock_inverse"
-row fpt-inverse "$fpt_inverse"
+row fpt-cyclic-inverse "$cyclic_inverse"
+row fpt-tangent-inverse "$tangent_inverse"

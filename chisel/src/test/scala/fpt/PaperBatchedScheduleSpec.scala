@@ -10,8 +10,8 @@ import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
 
 /** Opt-in Set-II batch-throughput regression using the generated 512-point
-  * transforms. It verifies the paper's twelve-context, 16-cycle initiation
-  * interval rather than only single-command latency.
+  * tangent transforms. Thirteen contexts cover the 203-cycle pipeline while
+  * retaining the paper's 16-cycle initiation interval.
   */
 final class PaperBatchedScheduleSpec
     extends AnyFlatSpec
@@ -40,7 +40,8 @@ final class PaperBatchedScheduleSpec
       inversePath.toString,
       includeVerilogSource = true
     )
-    val config = BatchedCmuxEngineConfig(engine, batchContexts = 12)
+    val config = BatchedCmuxEngineConfig(engine, batchContexts = 13)
+    val issuedContexts = (0 until config.batchContexts) :+ 0
 
     test(new BatchedCmuxEngine(config))
       .withAnnotations(
@@ -122,7 +123,7 @@ final class PaperBatchedScheduleSpec
           cycle += 1
         }
 
-        for (context <- 0 until config.batchContexts) {
+        for (context <- issuedContexts) {
           dut.io.commandContext.poke(context.U)
           while (!dut.io.commandReady.peek().litToBoolean) {
             step()
@@ -136,15 +137,15 @@ final class PaperBatchedScheduleSpec
           pair(1) - pair(0) should be(config.commandInterval)
         }
 
-        while (doneContexts.size < config.batchContexts) {
+        while (doneContexts.size < issuedContexts.size) {
           step()
           cycle should be < 512
         }
-        doneContexts.toSeq should be(0 until config.batchContexts)
+        doneContexts.toSeq should be(issuedContexts)
         doneCycles.sliding(2).foreach { pair =>
           pair(1) - pair(0) should be(config.commandInterval)
         }
-        doneCycles.head - acceptCycles.head should be(192)
+        doneCycles.head - acceptCycles.head should be(203)
         info(
           s"Set-II batch interval ${config.commandInterval}, " +
             s"latency ${doneCycles.head - acceptCycles.head} launch-inclusive cycles"

@@ -1,19 +1,17 @@
 # Fixed-point FTT hardware comparison status
 
-The paper-shaped implementation now reproduces both FPT Set II schedule
-numbers in real generated RTL. Its Chisel CMUX uses `N=1024`, four
-decomposition rows, a 512-point/128-lane forward transform, and two parallel
-512-point/64-lane inverse transforms. The single-command regression observes
-`done` 191 cycles after command acceptance, or 192 cycles when the launch
-cycle is included. The twelve-context batched regression accepts and completes
-a different context every 16 cycles, in order, with the same 192-cycle
-launch-inclusive latency.
+The paper-shaped implementation uses `N=1024`, four decomposition rows, a
+512-point/128-lane forward tangent transform, and two parallel
+512-point/64-lane inverse tangent transforms. The twist and untwist constants
+are now generated inside SGen instead of arriving through runtime Chisel
+ports. The single-command regression observes `done` 202 cycles after command
+acceptance, or 203 cycles when the launch cycle is included.
 
-The synthesis-oriented variant replaces those twelve register contexts with
-replicated synchronous memory banks and two prefetch buffers. It has a
-201-cycle latency, so thirteen contexts are needed for continuous reuse, but
-its acceptance and completion interval remains 16 cycles. The regression
-issues thirteen distinct contexts and then wraps immediately to context zero.
+The synthesis-oriented variant uses replicated synchronous memory banks and
+two prefetch buffers. It has a 212-cycle latency, so fourteen contexts are
+needed for continuous reuse, but its acceptance and completion interval
+remains 16 cycles. The paper-size regression issues fourteen distinct
+contexts and then wraps immediately to context zero.
 
 Run the schedule check after generating the paper-size SGen sources:
 
@@ -42,39 +40,42 @@ generated RTL.  They are useful before technology mapping, but they are not
 DSP48 counts: Vivado may decompose one wide expression into multiple DSPs or
 implement a constant multiply in LUTs.
 
-| Transform | Stock SGen multiplies | FPT-adapted | Reduction | Stock/FPT latency | Launch interval |
+| Transform | Stock SGen | FPT cyclic | FPT tangent | Latency stock/cyclic/tangent | Interval |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 512-point, 128-lane forward | 1006 | 808 | 19.7% | 59 / 64 | 4 / 4 |
-| 512-point, 64-lane inverse | 506 | 411 | 18.8% | 80 / 102 | 8 / 8 |
+| 512-point, 128-lane forward | 1006 | 808 | 1192 | 59 / 64 / 70 | 4 |
+| 512-point, 64-lane inverse | 506 | 411 | 603 | 80 / 102 / 107 | 8 |
 
-The adapted design uses the three-real-multiply Gauss form and changes
-twiddle literals from 30 to 26 bits.  Pipeline depth increases, especially in
-the inverse with its per-stage scaling, but frame throughput is unchanged.
-CMUX exploits that distinction: all four forward decomposition rows enter at
-the four-cycle launch interval, and both inverse components run concurrently.
-The result is the launch-inclusive 192-cycle schedule even though the forward
-and inverse pipelines themselves are 64 and 102 cycles deep.
+The cyclic adapted design uses the three-real-multiply Gauss form and changes
+twiddle literals from 30 to 26 bits. The tangent columns add exactly three
+real multipliers per lane: 384 in the forward and 192 in the inverse. Those
+same multipliers previously sat outside SGen in Chisel, so moving them is not
+itself an arithmetic-count reduction. The benefit is faithful specialization:
+the constants are generated in ROMs, their pipelines are included in SGen's
+schedule, and they are no longer runtime top-level inputs. Frame throughput
+remains unchanged. CMUX launches all four forward decomposition rows at the
+four-cycle interval and runs both inverse components concurrently, producing
+the 203-cycle launch-inclusive schedule.
 
 The physical batch top combines a tagged, double-buffered External Product
-accumulator with thirteen memory-backed coefficient contexts. A lane word
+accumulator with fourteen memory-backed coefficient contexts. A lane word
 packs both polynomial halves and both TRLWE components. Sixty-four banks are
 duplicated, giving forward prefetch and delayed inverse read-modify-write one
 read port each while writes are mirrored. For Set II, CIRCT preserves this as
-128 instances of a `104 x 128` synchronous array. The emitted Chisel top falls
-from 9.5 MB and 28,745 scalar register declarations to 4.2 MB and 8,545,
-respectively. These are structural source counts, not placed resource counts.
+128 instances of a `112 x 128` synchronous array. The emitted Chisel top is
+4.09 MB with 8,545 scalar register declarations; complete-design Verilator
+lint processes 15.92 MB across 19 modules. These are structural source counts,
+not placed resource counts.
 
 The two prefetch buffers still feed a combinational ten-stage negacyclic
 barrel rotator. Reproducing the paper's bitwise stream reorder remains the
 next timing/area optimization; the memory-backed top establishes a much more
 credible synthesis baseline without claiming that unpublished organization.
 
-Regenerate the table from local SGen outputs with:
+Regenerate the cyclic comparison and table from local SGen outputs with:
 
 ```sh
-tools/report_sgen_structure.sh \
-  build/sgen/dft512_l128.v build/sgen/dft512_l128_fpt.v \
-  build/sgen/idft512_l64.v build/sgen-fpt/inverse.v
+INTEGRATED_TANGENT=0 tools/generate_sgen_fpt.sh ../SGen build/sgen-cyclic
+tools/report_sgen_structure.sh
 ```
 
 ## What remains before claiming a real U280 benefit

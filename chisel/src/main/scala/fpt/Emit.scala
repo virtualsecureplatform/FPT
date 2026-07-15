@@ -55,14 +55,16 @@ object PaperSetII {
         SGenBackendConfig(
           "FptSGenForward",
           forwardPath,
-          includeVerilogSource = includeVerilogSource
+          includeVerilogSource = includeVerilogSource,
+          integratedTangent = true
         )
       ),
       inverseSGen = Some(
         SGenBackendConfig(
           "FptSGenInverse",
           inversePath,
-          includeVerilogSource = includeVerilogSource
+          includeVerilogSource = includeVerilogSource,
+          integratedTangent = true
         )
       )
     )
@@ -129,7 +131,7 @@ object EmitPaperBankedBatchedCmux extends App {
   )
   val config = BatchedCmuxEngineConfig(
     engine,
-    batchContexts = 13,
+    batchContexts = 14,
     coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks
   )
 

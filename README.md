@@ -44,9 +44,10 @@ ctest --test-dir build-tfhepp -R fpt_tfhepp --output-on-failure
 ## Chisel RTL
 
 The synthesizable implementation is being developed in `chisel/`.  Chisel
-owns the fixed-point arithmetic, tangent boundaries, External Product, CMUX
-control, and top-level interfaces.  Generated SGen Verilog may be instantiated
-as a black box for its continuous-flow cyclic FFT permutation network.
+owns the fixed-point arithmetic around the transform, External Product, CMUX
+control, and top-level interfaces.  Generated SGen Verilog is instantiated as
+a black box for the continuous-flow tangent FFT, including its fixed twist and
+untwist ROMs.
 
 Generate the deterministic C++ vectors, then build the Chisel design and run
 its regressions:
@@ -76,22 +77,21 @@ after fixed-width overflow.
 can select native Chisel or generated SGen transform backends and runs two
 inverse transforms in parallel.  In the 32-coefficient, four-lane forward /
 two-lane inverse regression, the native iterative backend is bit-exact with
-the C++ CMUX model and takes 133 cycles.  The SGen backend overlaps the six
-forward decomposition rows at one frame every four cycles, takes 138 cycles,
-and differs by at most one Q27.14-to-Torus quantum (`2^18`) from the radix-2
-C++ result.  The small case is dominated by pipeline fill; the paper-sized
-throughput/resource comparison is generated separately.
+the C++ CMUX model and takes 133 cycles.  The integrated-tangent SGen backend
+overlaps the six forward decomposition rows at one frame every four cycles,
+takes 149 cycles, and differs by at most one Q27.14-to-Torus quantum (`2^18`)
+from the radix-2 C++ result.  The small case is dominated by pipeline fill;
+the paper-sized throughput/resource comparison is generated separately.
 
-`BatchedCmuxEngine` supports two coefficient-storage implementations.  The
-twelve-context register version is the exact schedule oracle: it accepts and
-completes contexts every 16 cycles with a 192-cycle launch-inclusive latency.
-The emitted physical top instead uses replicated synchronous memory banks and
-two polynomial prefetch buffers.  Its eight-cycle prefetch overlaps the prior
-16-cycle decomposition stream, retaining the 16-cycle interval with a
-201-cycle latency and thirteen contexts for sustained reuse.  In both cases,
-the double-buffered External Product PISO drains at the 64-lane inverse width
-while the next transaction accumulates at the 128-lane forward width.
-`CmuxEngine` remains the simpler single-command correctness top.
+`BatchedCmuxEngine` supports two coefficient-storage implementations.  With
+the integrated transforms, the register schedule is 203 cycles and needs 13
+contexts for sustained 16-cycle reuse.  The emitted physical top instead uses
+replicated synchronous memory banks and two polynomial prefetch buffers.  Its
+eight-cycle prefetch overlaps the prior 16-cycle decomposition stream,
+retaining the 16-cycle interval with a 212-cycle latency and 14 contexts.  In
+both cases, the double-buffered External Product PISO drains at the 64-lane
+inverse width while the next transaction accumulates at the 128-lane forward
+width. `CmuxEngine` remains the simpler single-command correctness top.
 
 ## Legacy scheduling prototype
 
@@ -140,12 +140,14 @@ UltraScale+ DSP mapping is not representative of Vivado's signed asymmetric
 DSP48E2 mapping.
 
 For the continuous-flow comparison path, the `fpt` branch of
-`virtualsecureplatform/SGen` carries the Gauss complex multiplier and narrower
-twiddle profile. `tools/generate_sgen_fpt.sh` generates configurable
-full-throughput cyclic FFT/IFFT Verilog with stable `FptSGenForward` and
-`FptSGenInverse` module names.  The defaults reproduce the paper's 512-point,
-128-lane forward and 64-lane inverse transform shapes.  See `sgen/README.md`
-for the remaining differences from the unpublished FPT generator extensions.
+`virtualsecureplatform/SGen` carries the Gauss complex multiplier, narrower
+twiddle profile, and generator-level tangent twist/untwist operators.
+`tools/generate_sgen_fpt.sh` generates configurable full-throughput tangent
+FFT/IFFT Verilog with stable `FptSGenForward` and `FptSGenInverse` module
+names. The defaults reproduce the paper's 512-point, 128-lane forward and
+64-lane inverse transform shapes; set `INTEGRATED_TANGENT=0` for the cyclic
+comparison cores. See `sgen/README.md` for the remaining differences from the
+unpublished FPT generator extensions.
 
 The paper-shaped Chisel top uses Set II's `N=1024`, two components, two
 decomposition levels, 128 forward lanes, and 64 inverse lanes.  Generate the
@@ -161,10 +163,10 @@ tools/emit_paper_batched_cmux.sh build/sgen-fpt/forward.v \
 
 SGen remains a separate Verilog BlackBox in synthesis; CIRCT does not append
 the generated sources or its resource file list to `CmuxEngine.sv`.  The
-physical batch accumulator is 64 banks of 104 packed 128-bit words, duplicated
+physical batch accumulator is 64 banks of 112 packed 128-bit words, duplicated
 to provide independent prefetch and inverse-update reads while writes are
 mirrored.  CIRCT emits 128 synchronous arrays rather than the register
-version's 786k accumulator flip-flop bits.  Two 1024-coefficient buffers feed
+version's context storage as flip-flops.  Two 1024-coefficient buffers feed
 one shared ten-stage negacyclic barrel rotator.  The External Product
 accumulator is also lane-banked as 128 banks by four spectral points and
 repacks directly to the 64-lane inverse stream.
@@ -192,7 +194,7 @@ checkpoint reports.  Vivado is not installed in this workspace, so the
 checked regression stops at Chisel tests plus complete-design Verilator lint;
 hardware benefit claims must wait for those U280 reports.
 
-See `docs/hardware-comparison.md` for the reproduced 192-cycle Set-II CMUX
+See `docs/hardware-comparison.md` for the reproduced 203/212-cycle Set-II CMUX
 schedule, generated multiplier-expression comparison, and the remaining
 U280 measurement checklist.
 

@@ -89,8 +89,8 @@ abstract class BatchedCmuxCoefficientStoreBase(
   * The forward side streams all decomposition rows of one context and may
   * switch directly to the next context on the final beat. Independently, the
   * inverse side writes a delayed result back to a different context. With
-  * twelve contexts at Set II, a context is revisited only after the
-  * 192-cycle CMUX pipeline has released it.
+  * enough contexts, a context is revisited only after the CMUX pipeline has
+  * released it.
   */
 final class BatchedCmuxCoefficientStore(
     override val config: CmuxCoefficientConfig,

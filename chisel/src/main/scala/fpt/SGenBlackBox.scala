@@ -30,9 +30,9 @@ private final class SGenPorts(val lanes: Int, val wordWidth: Int)
   )
 }
 
-/** The only non-Chisel RTL exception in the implementation: an
-  * upstream-generated SGen cyclic FFT. All arithmetic around the BlackBox is
-  * typed and controlled by Chisel.
+/** The only non-Chisel RTL exception in the implementation: an SGen-generated
+  * cyclic or tangent FFT. All arithmetic around the BlackBox is typed and
+  * controlled by Chisel.
   */
 private abstract class SGenBlackBoxBase(
     val lanes: Int,
@@ -226,7 +226,8 @@ final class SGenTangentFft(
     val moduleName: String,
     val verilogPath: String,
     val inputLeadCycles: Int = 1,
-    val includeVerilogSource: Boolean = true
+    val includeVerilogSource: Boolean = true,
+    val integratedTangent: Boolean = false
 ) extends Module {
   import TransformUtil._
   private val beatWidth = counterWidth(config.frameBeats)
@@ -262,29 +263,37 @@ final class SGenTangentFft(
   io.output := backend.io.output
   io.done := backend.io.done
 
-  val pairBeat = RegInit(0.U(beatWidth.W))
-  when(io.start) { pairBeat := 0.U }
-  for (lane <- 0 until config.lanes) {
-    io.twistIndex(lane) := indexedAddress(
-      pairBeat, config.lanes, lane, config.logPoints
-    )
-    val twist = Module(
-      new GaussMultiply(
-        config.dataWidth,
-        config.twiddleWidth,
-        config.twiddleFractionalBits
+  if (integratedTangent) {
+    io.twistIndex := 0.U.asTypeOf(io.twistIndex)
+    for (lane <- 0 until config.lanes) {
+      backend.io.input(lane).real := io.coefficientLow(lane)
+      backend.io.input(lane).imag := io.coefficientHigh(lane)
+    }
+  } else {
+    val pairBeat = RegInit(0.U(beatWidth.W))
+    when(io.start) { pairBeat := 0.U }
+    for (lane <- 0 until config.lanes) {
+      io.twistIndex(lane) := indexedAddress(
+        pairBeat, config.lanes, lane, config.logPoints
       )
-    )
-    twist.io.value.real := io.coefficientLow(lane)
-    twist.io.value.imag := io.coefficientHigh(lane)
-    twist.io.twiddle := io.twist(lane)
-    backend.io.input(lane) := twist.io.result
-  }
-  when(io.pairValid && io.pairReady) {
-    when(pairBeat === (config.frameBeats - 1).U) {
-      pairBeat := 0.U
-    }.otherwise {
-      pairBeat := pairBeat + 1.U
+      val twist = Module(
+        new GaussMultiply(
+          config.dataWidth,
+          config.twiddleWidth,
+          config.twiddleFractionalBits
+        )
+      )
+      twist.io.value.real := io.coefficientLow(lane)
+      twist.io.value.imag := io.coefficientHigh(lane)
+      twist.io.twiddle := io.twist(lane)
+      backend.io.input(lane) := twist.io.result
+    }
+    when(io.pairValid && io.pairReady) {
+      when(pairBeat === (config.frameBeats - 1).U) {
+        pairBeat := 0.U
+      }.otherwise {
+        pairBeat := pairBeat + 1.U
+      }
     }
   }
 }
@@ -295,7 +304,8 @@ final class SGenTangentIfft(
     val moduleName: String,
     val verilogPath: String,
     val inputLeadCycles: Int = 1,
-    val includeVerilogSource: Boolean = true
+    val includeVerilogSource: Boolean = true,
+    val integratedTangent: Boolean = false
 ) extends Module {
   import TransformUtil._
   require(normalizeShift >= 0 && normalizeShift < config.dataWidth)
@@ -334,28 +344,38 @@ final class SGenTangentIfft(
   io.outputValid := backend.io.outputValid
   io.done := backend.io.done
 
-  val outputBeat = RegInit(0.U(beatWidth.W))
-  when(backend.io.outputValid) {
-    when(outputBeat === (config.frameBeats - 1).U) {
-      outputBeat := 0.U
-    }.otherwise {
-      outputBeat := outputBeat + 1.U
+  if (integratedTangent) {
+    io.untwistIndex := 0.U.asTypeOf(io.untwistIndex)
+    for (lane <- 0 until config.lanes) {
+      io.coefficientLow(lane) :=
+        backend.io.output(lane).real >> normalizeShift
+      io.coefficientHigh(lane) :=
+        backend.io.output(lane).imag >> normalizeShift
     }
-  }
-  for (lane <- 0 until config.lanes) {
-    io.untwistIndex(lane) := indexedAddress(
-      outputBeat, config.lanes, lane, config.logPoints
-    )
-    val untwist = Module(
-      new GaussMultiply(
-        config.dataWidth,
-        config.twiddleWidth,
-        config.twiddleFractionalBits
+  } else {
+    val outputBeat = RegInit(0.U(beatWidth.W))
+    when(backend.io.outputValid) {
+      when(outputBeat === (config.frameBeats - 1).U) {
+        outputBeat := 0.U
+      }.otherwise {
+        outputBeat := outputBeat + 1.U
+      }
+    }
+    for (lane <- 0 until config.lanes) {
+      io.untwistIndex(lane) := indexedAddress(
+        outputBeat, config.lanes, lane, config.logPoints
       )
-    )
-    untwist.io.value := backend.io.output(lane)
-    untwist.io.twiddle := io.untwist(lane)
-    io.coefficientLow(lane) := untwist.io.result.real >> normalizeShift
-    io.coefficientHigh(lane) := untwist.io.result.imag >> normalizeShift
+      val untwist = Module(
+        new GaussMultiply(
+          config.dataWidth,
+          config.twiddleWidth,
+          config.twiddleFractionalBits
+        )
+      )
+      untwist.io.value := backend.io.output(lane)
+      untwist.io.twiddle := io.untwist(lane)
+      io.coefficientLow(lane) := untwist.io.result.real >> normalizeShift
+      io.coefficientHigh(lane) := untwist.io.result.imag >> normalizeShift
+    }
   }
 }

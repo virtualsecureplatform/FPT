@@ -21,6 +21,22 @@ fft_fractional_bits=${FFT_FRACTIONAL_BITS:-12}
 ifft_integer_bits=${IFFT_INTEGER_BITS:-27}
 ifft_fractional_bits=${IFFT_FRACTIONAL_BITS:-3}
 ifft_stage_scale=${IFFT_STAGE_SCALE:-0.5}
+integrated_tangent=${INTEGRATED_TANGENT:-1}
+
+case "$integrated_tangent" in
+    1)
+        forward_transform=fptdft
+        inverse_transform=fptidft
+        ;;
+    0)
+        forward_transform=dft
+        inverse_transform=idft
+        ;;
+    *)
+        echo "INTEGRATED_TANGENT must be 0 or 1" >&2
+        exit 1
+        ;;
+esac
 
 if [[ ! -x "$sgen_dir/sgen.bat" ]]; then
     echo "SGen executable not found; run '(cd $sgen_dir && sbt assembly)'" >&2
@@ -36,12 +52,12 @@ mkdir -p "$output_dir"
 "$sgen_dir/sgen.bat" -nologo \
     -n "$fft_log_points" -k "$fft_log_lanes" -r "$radix_log" \
     -hw complex fixedpoint "$fft_integer_bits" "$fft_fractional_bits" \
-    -o "$output_dir/forward.raw.v" dft
+    -o "$output_dir/forward.raw.v" "$forward_transform"
 "$sgen_dir/sgen.bat" -nologo \
     -n "$fft_log_points" -k "$ifft_log_lanes" -r "$radix_log" \
     -sf "$ifft_stage_scale" \
     -hw complex fixedpoint "$ifft_integer_bits" "$ifft_fractional_bits" \
-    -o "$output_dir/inverse.raw.v" idft
+    -o "$output_dir/inverse.raw.v" "$inverse_transform"
 
 sed "0,/module main(/s//module $forward_module(/" \
     "$output_dir/forward.raw.v" > "$output_dir/forward.v"
@@ -49,4 +65,5 @@ sed "0,/module main(/s//module $inverse_module(/" \
     "$output_dir/inverse.raw.v" > "$output_dir/inverse.v"
 rm -f "$output_dir/forward.raw.v" "$output_dir/inverse.raw.v"
 
-echo "Generated FPT-adapted SGen transforms in $output_dir"
+printf 'Generated FPT-adapted SGen transforms in %s (integrated tangent: %s)\n' \
+    "$output_dir" "$integrated_tangent"

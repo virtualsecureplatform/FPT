@@ -66,14 +66,16 @@ final class BatchedCmuxEngineSpec
     forwardSGen = Some(
       SGenBackendConfig(
         "FptSGenForwardGuarded16x4",
-        generatedPath("FptSGenForwardGuarded16x4.v")
+        generatedPath("FptSGenForwardGuarded16x4.v"),
+        integratedTangent = true
       )
     ),
     inverseSGen = Some(
       SGenBackendConfig(
         "FptSGenInverseGuarded16x2",
         generatedPath("FptSGenInverseGuarded16x2.v"),
-        inputLeadCycles = 4
+        inputLeadCycles = 4,
+        integratedTangent = true
       )
     )
   )

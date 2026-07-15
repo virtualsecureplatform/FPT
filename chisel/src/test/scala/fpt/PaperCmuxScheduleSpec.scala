@@ -119,7 +119,7 @@ final class PaperCmuxScheduleSpec
           s"paper-shaped SGen CMUX latency: $cycles cycles after acceptance " +
             s"(${cycles + 1} launch-inclusive cycles)"
         )
-        cycles should be(191)
+        cycles should be(202)
       }
   }
 }
