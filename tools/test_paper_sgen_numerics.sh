@@ -39,7 +39,8 @@ trap cleanup EXIT
 cmake -S "$repo_root" -B "$cmake_output" \
     -DFPT_BUILD_TESTS=OFF -DFPT_BUILD_TFHEPP_TESTS=OFF \
     -DFPT_BUILD_RTL_TESTS=ON
-cmake --build "$cmake_output" -j --target fpt_paper_sgen_vectors
+cmake --build "$cmake_output" -j --target \
+    fpt_paper_sgen_vectors fpt_paper_cmux_vectors
 
 (
     cd "$repo_root/chisel"
@@ -50,8 +51,11 @@ cmake --build "$cmake_output" -j --target fpt_paper_sgen_vectors
 "$cmake_output/rtl_paper_sgen_forward_vectors.txt" \
     FPT_PAPER_SGEN_INVERSE_VECTORS=\
 "$cmake_output/rtl_paper_sgen_inverse_vectors.txt" \
+    FPT_PAPER_CMUX_NUMERICS=1 \
+    FPT_PAPER_CMUX_VECTORS="$cmake_output/rtl_paper_cmux_vectors.txt" \
     MAKEFLAGS="${MAKEFLAGS:--e -j4}" \
     VK_PCH_I_FAST= \
     VK_PCH_I_SLOW= \
-        sbt -J-Xmx8G 'testOnly fpt.PaperSGenNumericalSpec'
+        sbt -J-Xmx8G \
+            'testOnly fpt.PaperSGenNumericalSpec fpt.PaperCmuxNumericalSpec'
 )

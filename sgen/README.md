@@ -36,8 +36,15 @@ tools/test_paper_sgen_numerics.sh ../SGen build/paper-sgen-numerics
 ```
 
 It compares four 512-point frames against both the fixed radix-2 C++ model and
-a quantized double-precision tangent-transform oracle. The current maximum
-errors are 518 raw Q18.12 units forward and 8 raw Q27.3 units inverse. SGen's
+a quantized double-precision tangent-transform oracle, then drives one dense
+nonzero Set-II CMUX through coefficient decomposition, all four forward
+transforms, the external product, both inverse transforms, and Torus update.
+The current core maximum errors are 518 raw Q18.12 units forward and 8 raw
+Q27.3 units inverse. The CMUX matches the C++ model exactly on 731 of 2,048
+coefficients and is within one inverse raw unit on 1,495; its complete cyclic
+error histogram is `[731,764,386,138,29]` for zero through four raw units.
+Because Q27.3 has only eight Torus phase bins, the regression checks the
+distribution as well as the inherently bounded cyclic maximum. SGen's
 radix-8 inverse with `0.5` scaling at every stage still corrupts some nonzero
 512-point vectors; set `IFFT_RADIX_LOG=3` only for investigating that known
 generator limitation. The radix choice is deliberately not presented as a
