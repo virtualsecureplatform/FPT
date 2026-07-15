@@ -306,7 +306,10 @@ final class BlindRotateEngineSpec
       }
   }
 
-  it should "match two chained fixed-point CMUXes from the C++ oracle" in {
+  private def exerciseOracle(
+      testConfig: BatchedBlindRotateEngineConfig,
+      label: String
+  ): Unit = {
     val rows = vectors("rtl_blind_rotate_vectors.txt")
     val inputRows = rows.take(contexts)
     val keyCount = domainDimension * external.rows * external.points
@@ -327,7 +330,7 @@ final class BlindRotateEngineSpec
     val inverseOffset = forward.points / 2 + forward.points
     val inverseUntwists = twiddles.drop(inverseOffset + inverse.points / 2)
 
-    test(new BatchedBlindRotateEngine(config))
+    test(new BatchedBlindRotateEngine(testConfig))
       .withAnnotations(
         Seq(
           VerilatorBackendAnnotation,
@@ -478,8 +481,10 @@ final class BlindRotateEngineSpec
             }
           )
         keyTransactions.toSeq should be(expectedTransactions)
-        keyCycles.sliding(2).foreach { pair =>
-          pair(1) - pair(0) should be(config.cmux.commandInterval)
+        keyCycles.grouped(contexts).foreach { wave =>
+          wave.sliding(2).foreach { pair =>
+            pair(1) - pair(0) should be(testConfig.cmux.commandInterval)
+          }
         }
         completedContexts.toSeq should be(0 until contexts)
 
@@ -487,10 +492,21 @@ final class BlindRotateEngineSpec
         var maximumError = BigInt(0)
         for (context <- 0 until contexts) {
           dut.io.drainContext.poke(context.U)
-          dut.io.drainStartReady.expect(true.B)
+          var drainStartWait = 0
+          while (!dut.io.drainStartReady.peek().litToBoolean) {
+            step()
+            drainStartWait += 1
+            drainStartWait should be <= coefficient.polynomialBeats + 4
+          }
           dut.io.drainStart.poke(true.B)
           step()
           dut.io.drainStart.poke(false.B)
+          var drainWait = 0
+          while (!dut.io.drainValid.peek().litToBoolean) {
+            step()
+            drainWait += 1
+            drainWait should be <= coefficient.inverseBeats + 2
+          }
           for (beat <- 0 until coefficient.polynomialBeats) {
             dut.io.drainValid.expect(true.B)
             for (lane <- 0 until coefficient.inverseLanes) {
@@ -512,8 +528,37 @@ final class BlindRotateEngineSpec
         }
         maximumError should be <= (BigInt(1) << 19)
         info(
-          s"C++ Blind Rotate oracle maximum wrapped error: $maximumError"
+          s"$label C++ Blind Rotate oracle maximum wrapped error: " +
+            s"$maximumError"
         )
       }
+  }
+
+  it should "match the C++ oracle with register-backed contexts" in {
+    exerciseOracle(config, "register-backed")
+  }
+
+  it should "match the C++ oracle with replicated accumulator banks" in {
+    exerciseOracle(
+      config.copy(
+        cmux = config.cmux.copy(
+          coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks
+        )
+      ),
+      "replicated-bank"
+    )
+  }
+
+  it should "match the C++ oracle with the folded bitwise store" in {
+    exerciseOracle(
+      config.copy(
+        cmux = config.cmux.copy(
+          engine = engine.copy(bitwiseBitsPerCycle = Some(2)),
+          coefficientStorage =
+            BatchedCoefficientStorage.BitwiseReplicatedBanks
+        )
+      ),
+      "bitwise-bank"
+    )
   }
 }
