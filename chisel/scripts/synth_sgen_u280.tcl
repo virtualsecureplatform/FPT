@@ -3,7 +3,7 @@
 # vivado -mode batch -source chisel/scripts/synth_sgen_u280.tcl \
 #   -tclargs build/sgen-fpt/forward.v FptSGenForward \
 #            build/vivado-sgen-forward 3.425 \
-#            xcu280-fsvh2892-2L-e 8
+#            xcu280-fsvh2892-2L-e 8 clk
 
 set source_file [lindex $argv 0]
 set top [lindex $argv 1]
@@ -11,13 +11,15 @@ set output_dir [lindex $argv 2]
 set clock_period [lindex $argv 3]
 set part [lindex $argv 4]
 set jobs [lindex $argv 5]
+set clock_port [lindex $argv 6]
 if {$source_file eq "" || $top eq ""} {
-    error "usage: SOURCE_V TOP ?OUTPUT_DIR? ?CLOCK_PERIOD_NS? ?PART? ?JOBS?"
+    error "usage: SOURCE_V TOP ?OUTPUT_DIR? ?CLOCK_PERIOD_NS? ?PART? ?JOBS? ?CLOCK_PORT?"
 }
 if {$output_dir eq ""} { set output_dir build/vivado-$top }
 if {$clock_period eq ""} { set clock_period 3.425 }
 if {$part eq ""} { set part xcu280-fsvh2892-2L-e }
 if {$jobs eq ""} { set jobs 8 }
+if {$clock_port eq ""} { set clock_port clk }
 if {![string is double -strict $clock_period] || $clock_period <= 0} {
     error "CLOCK_PERIOD_NS must be positive: $clock_period"
 }
@@ -33,7 +35,7 @@ set_param general.maxThreads $jobs
 
 set clock_xdc [file join $output_dir clock.xdc]
 set clock_file [open $clock_xdc w]
-puts $clock_file "create_clock -name ap_clk -period $clock_period \[get_ports clk\]"
+puts $clock_file "create_clock -name ap_clk -period $clock_period \[get_ports $clock_port\]"
 close $clock_file
 
 read_verilog $source_file
@@ -89,6 +91,7 @@ set metrics_file [open [file join $output_dir metrics.tsv] w]
 puts $metrics_file "metric\tvalue"
 foreach {metric value} [list \
     top $top \
+    clock_port $clock_port \
     part $part \
     clock_period_ns $clock_period \
     wns_ns $wns \

@@ -131,3 +131,7 @@ vivado -mode batch -source chisel/scripts/synth_sgen_u280.tcl \
 
 These transform-only results isolate fixed-point FTT DSP packing and timing;
 the batched CMUX comparison remains the end-to-end throughput-matched result.
+
+For the direct FPT-versus-HOGE route, including source-faithful HOGE transform
+and Blind Rotate tops, use the separate
+[`fpt-hoge-comparison.md`](fpt-hoge-comparison.md) flow.

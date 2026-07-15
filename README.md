@@ -268,6 +268,19 @@ tools/run_u280_blind_rotate_comparison.sh ../SGen \
   build/vivado-u280-blind-rotate-comparison
 ```
 
+The direct fixed-point FTT versus HOGE modular-NTT comparison uses both
+checkouts and routes matched forward, inverse, and Blind Rotate boundaries:
+
+```sh
+FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
+tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
+  build/vivado-u280-fpt-hoge-comparison
+```
+
+See [the FPT/HOGE comparison guide](docs/fpt-hoge-comparison.md) for the
+precise boundaries, throughput normalization, source-only preparation, and
+interpretation limits.
+
 Set `FPT_VIVADO_PREPARE_ONLY=1` to validate source generation on a machine
 without Vivado, or `FPT_VIVADO_REUSE=1` to retain runs that already have
 machine-readable metrics. See [the U280 handoff](docs/u280-handoff.md) for

@@ -280,10 +280,18 @@ prerequisites and result definitions. Standalone forward and inverse routes
 remain useful for isolating FTT DSP packing; the complete batched result is
 the throughput-matched coefficient-path comparison.
 
-HOGE's checked-in tree reports about 1.55 ms per gate at 292 MHz, but contains
-no utilization report to normalize against.  Its transform structure uses
-32-lane, 64-bit modular NTT/INTT datapaths with 32 `INTorusMUL` instances per
-transform; each `INTorusMUL` contains a 64-by-64 multiply and modular
-reduction.  Comparing that source-level count directly with FPT's narrower
-real products would be misleading, so the common U280 post-route flow is the
-measurement boundary.
+HOGE's checked-in tree reports about 1.55 ms per gate at 292 MHz. Its current
+transform structure uses 32-lane, 64-bit modular NTT/INTT datapaths. A staged,
+unmodified-source elaboration finds 31 `INTorusMUL` instances in the forward
+INTT, 32 in the inverse NTT, and 127 in its Blind Rotate path. Each multiplier
+contains a 64-by-64 product and modular reduction. The direct common-U280 flow
+now routes those exact HOGE cores beside the FPT FTT cores and reports frame
+rate per LUT/DSP instead of comparing source-level multiplier counts:
+
+```sh
+FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
+tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
+  build/vivado-u280-fpt-hoge-comparison
+```
+
+See `docs/fpt-hoge-comparison.md` for boundary and normalization details.
