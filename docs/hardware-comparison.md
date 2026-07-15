@@ -292,6 +292,14 @@ tools/check_fpt_synthesis_boundary.sh
 These results confirm synthesizable storage behavior but do not predict
 placed utilization, routing, clock rate, DSP packing, or board power.
 
+The composed routed-top behavior also has a nonzero small-parameter oracle,
+not only a zero-data schedule test. It applies two chained Blind Rotate CMUXes
+to seven contexts through the folded-bitwise replicated store, automatically
+sample-extracts each completed TRLWE under backpressure, and checks all 231
+TLWE words against the C++ reference. Context zero is bit-exact; the maximum
+wrapped error is `2^19` Torus units, equal to the existing guarded-format
+Blind Rotate bound.
+
 Regenerate the cyclic comparison and table from local SGen outputs with:
 
 ```sh
@@ -312,9 +320,12 @@ reference numbers, not measurements from this repository:
 | FFT 512/128 | 222k | 449k | 2,958 | 0 |
 | IFFT 512/64 | 130k | 255k | 1,486 | 0 |
 
-The exact U280 result must come from Vivado because generic synthesis does not
-model DSP48E2 packing for the signed asymmetric fixed-point products. The
-first apples-to-apples route is automated as:
+The local Yosys UltraScale+ map now places each DSP-sized signed product in
+exactly one DSP48E2 and reproduces a pre-route throughput-per-DSP advantage
+over HOGE: 1.664x forward and 1.378x inverse. The exact U280 result must still
+come from Vivado because only placement and routing determine achieved clock,
+congestion, routed resources, and power. The first apples-to-apples route is
+automated as:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \

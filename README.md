@@ -106,7 +106,12 @@ coefficient per cycle, including the reversed/negated mask, and preserves the
 output across arbitrary backpressure. `BatchedBlindRotateSampleExtractEngine`
 automatically drains every completed context through that stage, tags each
 result coefficient with its context, and marks only the last TLWE of the full
-batch. This aligns the FPT Blind Rotate output boundary with HOGE.
+batch. This aligns the FPT Blind Rotate output boundary with HOGE. A nonzero
+end-to-end regression now drives the C++ Blind Rotate oracle through the
+folded-bitwise replicated context store and this automatic extraction path
+under output backpressure. It returns all 231 words of seven index-zero TLWEs
+in order; context zero is exact and the maximum wrapped error is the existing
+guarded-format bound of `2^19` Torus units.
 
 ## RTL source policy
 
