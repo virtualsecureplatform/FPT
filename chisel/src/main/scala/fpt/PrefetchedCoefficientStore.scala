@@ -225,14 +225,29 @@ final class PrefetchedBatchedCmuxCoefficientStore(
     }
   }
 
-  val rowComponents = VecInit(
-    (0 until rows).map(index => (index / config.levels).U(componentWidth.W))
-  )
-  val rowLevels = VecInit(
-    (0 until rows).map(index => (index % config.levels).U(levelWidth.W))
-  )
-  val selectedComponent = rowComponents(row)
-  val selectedLevel = rowLevels(row)
+  // Keep the four row choices as an explicit mux tree. A dynamic Vec of
+  // constants becomes a SystemVerilog assignment pattern that stock Yosys
+  // cannot parse and obscures the intended small selector in synthesis.
+  def balancedSelect(values: IndexedSeq[UInt], selector: UInt): UInt = {
+    def select(values: IndexedSeq[UInt], bit: Int): UInt =
+      if (values.size == 1) values.head
+      else {
+        val (low, high) = values.splitAt(values.size / 2)
+        Mux(selector(bit), select(high, bit - 1), select(low, bit - 1))
+      }
+
+    select(values, log2Ceil(values.size) - 1)
+  }
+
+  val encodedRows = 1 << rowWidth
+  val rowComponents = IndexedSeq.tabulate(encodedRows) { index =>
+    (if (index < rows) index / config.levels else 0).U(componentWidth.W)
+  }
+  val rowLevels = IndexedSeq.tabulate(encodedRows) { index =>
+    (if (index < rows) index % config.levels else 0).U(levelWidth.W)
+  }
+  val selectedComponent = balancedSelect(rowComponents, row)
+  val selectedLevel = balancedSelect(rowLevels, row)
   val selectedExponent = bufferExponent(selectedBuffer)
   val selectedPolynomial: Seq[UInt] =
     (0 until config.polynomialSize).map { index =>
