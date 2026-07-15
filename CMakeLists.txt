@@ -127,6 +127,9 @@ if(FPT_BUILD_RTL_TESTS)
         add_test(NAME fpt_rtl_source_policy
             COMMAND bash
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_rtl_source_policy.sh")
+        add_test(NAME fpt_prepared_u280_handoff
+            COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/prepared_u280_handoff_test.sh")
 endif()
 
 if(FPT_BUILD_TFHEPP_TESTS)

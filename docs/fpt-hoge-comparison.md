@@ -145,6 +145,35 @@ resource and timing results.
 
 ## Route on the Vivado machine
 
+For the lowest-drift route, package the already validated prepared sources
+and copy only that bundle to the Vivado machine:
+
+```sh
+tools/package_u280_fpt_hoge_handoff.sh \
+  build/vivado-u280-fpt-hoge-prepared \
+  build/u280-fpt-hoge-portable
+
+FPT_PREPARED_VERIFY_ONLY=1 \
+  build/u280-fpt-hoge-portable/tools/run_prepared_u280_fpt_hoge_comparison.sh \
+  build/u280-fpt-hoge-portable
+```
+
+The copied runner verifies the clean Git provenance, all six manifest source
+hashes, all three route-flow hashes, and the complete bundle checksum before
+Vivado starts. It does not require the SGen or HOGE checkouts, JDK, sbt,
+Verilator, or Yosys. On the route machine, remove the verification-only
+variable and select periods/jobs normally:
+
+```sh
+FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
+FPT_VIVADO_JOBS=8 \
+  ./u280-fpt-hoge-portable/tools/run_prepared_u280_fpt_hoge_comparison.sh \
+  ./u280-fpt-hoge-portable
+```
+
+The regeneration-capable route remains available when all sibling checkouts
+and generator dependencies are intentionally present:
+
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
 FPT_VIVADO_JOBS=8 \

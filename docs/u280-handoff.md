@@ -42,6 +42,37 @@ The route machine needs:
   FPT/HOGE flow;
 - standard `bash`, `git`, `awk`, `realpath`, and `sha256sum` utilities.
 
+The generator prerequisites above apply when regenerating RTL on the route
+machine. A portable prepared bundle avoids that source of drift and needs only
+Vivado plus standard shell utilities. Create it on the validated development
+machine with:
+
+```sh
+tools/package_u280_fpt_hoge_handoff.sh \
+  build/vivado-u280-fpt-hoge-prepared \
+  build/u280-fpt-hoge-portable
+```
+
+The approximately 21 MB directory contains only the six synthesis RTL files,
+the exact three route Tcl files, the route-acceptance/report tools, provenance
+manifest, documentation, and `bundle.sha256`. It excludes generated C++
+schedule objects, Scala build products, and unrelated HOGE FIRRTL artifacts.
+Every source and flow is checked against `manifest.tsv` while packaging, and
+every packaged file is checked again before a route starts. The runner also
+rejects a manifest prepared from any tracked-dirty checkout.
+
+After copying that directory to the Vivado host, verify it without starting a
+route:
+
+```sh
+FPT_PREPARED_VERIFY_ONLY=1 \
+  ./u280-fpt-hoge-portable/tools/run_prepared_u280_fpt_hoge_comparison.sh \
+  ./u280-fpt-hoge-portable
+```
+
+No FPT, SGen, HOGE, JDK, sbt, Verilator, or Yosys installation is required for
+this prepared-input mode.
+
 ## Run the comparison
 
 From the FPT checkout:
@@ -64,6 +95,23 @@ tools/run_u280_blind_rotate_comparison.sh ../SGen \
 The two periods reproduce the paper's 200 MHz point and HOGE's reported
 292 MHz point. Runs are deliberately sequential because either elaborated
 design can consume tens of GiB of host memory.
+
+To route the exact portable inputs instead of regenerating them, run:
+
+```sh
+FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
+FPT_VIVADO_JOBS=8 \
+  ./u280-fpt-hoge-portable/tools/run_prepared_u280_fpt_hoge_comparison.sh \
+  ./u280-fpt-hoge-portable
+```
+
+The part, periods, job count, and six-design selection default to the prepared
+manifest and accept the same environment overrides as the direct runner.
+Routes and reports are written back under the bundle. `route-manifest.tsv`
+records the actual Vivado version and route-time selections, while each run's
+content signature includes the source, flow, part, period, job count, top,
+clock port, and Vivado version. `FPT_VIVADO_REUSE=1` therefore cannot reuse a
+result produced from a different tool or input contract.
 
 Useful controls are:
 
@@ -99,6 +147,9 @@ tools/run_u280_comparison.sh ../SGen build/vivado-u280-prepared
 
 # Exercise the clock, route, DRC, reuse, and report acceptance contract.
 tests/u280_route_contract_test.sh
+
+# Exercise portable packaging, checksum rejection, mocked routing, and reuse.
+tests/prepared_u280_handoff_test.sh
 ```
 
 ## Outputs

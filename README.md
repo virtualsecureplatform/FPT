@@ -291,6 +291,24 @@ tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
   build/vivado-u280-fpt-hoge-comparison
 ```
 
+For the other machine, package the exact already-generated RTL and route it
+without SGen, HOGE, JDK, or sbt:
+
+```sh
+tools/package_u280_fpt_hoge_handoff.sh \
+  build/vivado-u280-fpt-hoge-prepared \
+  build/u280-fpt-hoge-portable
+
+FPT_PREPARED_VERIFY_ONLY=1 \
+  build/u280-fpt-hoge-portable/tools/run_prepared_u280_fpt_hoge_comparison.sh \
+  build/u280-fpt-hoge-portable
+```
+
+The portable bundle checks clean Git provenance plus every RTL/flow checksum
+before Vivado can start. Remove `FPT_PREPARED_VERIFY_ONLY=1` on the route
+machine; the standard period, job, design-selection, and reuse controls still
+apply.
+
 With Verilator available, preparation also validates and measures both full
 Blind Rotate wrappers. The current FPT batch completes 15 raw-TLWE inputs and
 sample-extracted outputs in 183,257 cycles, or 12,217.1 cycles/result. The
