@@ -89,3 +89,26 @@ object EmitPaperCmux extends App {
     firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
   )
 }
+
+object EmitPaperBatchedCmux extends App {
+  require(
+    args.length == 3,
+    "usage: EmitPaperBatchedCmux OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V"
+  )
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
+  val inversePath = Path.of(args(2)).toAbsolutePath.normalize
+  val engine = PaperSetII.cmuxEngine(
+    forwardPath.toString,
+    inversePath.toString,
+    includeVerilogSource = false
+  )
+  val config = BatchedCmuxEngineConfig(engine, batchContexts = 12)
+
+  ChiselStage.emitSystemVerilogFile(
+    new BatchedCmuxEngine(config),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+  )
+}

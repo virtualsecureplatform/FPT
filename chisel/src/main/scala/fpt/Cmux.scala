@@ -43,6 +43,50 @@ final case class CmuxCoefficientConfig(
   val torusShift: Int = torusWidth - inverseFormat.fractionalBits
 }
 
+/** Polynomial-wide coefficient barrel rotator for multiplication by X^a in
+  * Z[X]/(X^N+1). Each low exponent bit conditionally applies a power-of-two
+  * rotation and negates coefficients that wrap; the high bit applies X^N.
+  */
+final class NegacyclicBarrelRotator(
+    val polynomialSize: Int,
+    val coefficientWidth: Int
+) extends Module {
+  require(polynomialSize >= 2 && isPow2(polynomialSize))
+  require(coefficientWidth >= 1)
+  private val indexWidth = log2Ceil(polynomialSize)
+
+  val io = IO(new Bundle {
+    val input = Input(Vec(polynomialSize, UInt(coefficientWidth.W)))
+    val exponent = Input(UInt((indexWidth + 1).W))
+    val output = Output(Vec(polynomialSize, UInt(coefficientWidth.W)))
+  })
+
+  def negate(value: UInt): UInt =
+    (0.U((coefficientWidth + 1).W) - value)(coefficientWidth - 1, 0)
+
+  var stage: Seq[UInt] = io.input.toSeq
+  for (bit <- 0 until indexWidth) {
+    val shift = 1 << bit
+    val previous = stage
+    stage = (0 until polynomialSize).map { index =>
+      val sourceIndex = (index - shift + polynomialSize) % polynomialSize
+      val shifted = if (index < shift) {
+        negate(previous(sourceIndex))
+      } else {
+        previous(sourceIndex)
+      }
+      Mux(io.exponent(bit), shifted, previous(index))
+    }
+  }
+  for (index <- 0 until polynomialSize) {
+    io.output(index) := Mux(
+      io.exponent(indexWidth),
+      negate(stage(index)),
+      stage(index)
+    )
+  }
+}
+
 /** Coefficient-side storage and arithmetic for CMUX.
   *
   * The row stream implements `(X^a - 1) * accumulator`, standard centered
@@ -176,12 +220,6 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
     }
   }
 
-  def negateTorus(value: UInt): UInt =
-    (0.U((config.torusWidth + 1).W) - value)(
-      config.torusWidth - 1,
-      0
-    )
-
   // Reconstruct the selected component with only a components-to-one mux per
   // coefficient. Each exponent bit then conditionally applies X^(2^bit),
   // including the sign on coefficients that wrap around X^N = -1. The high
@@ -196,24 +234,15 @@ final class CmuxCoefficientStore(val config: CmuxCoefficientConfig)
         )
       )(selectedComponent)
     }
-  var barrelStage: Seq[UInt] = selectedPolynomial
-  for (bit <- 0 until indexWidth) {
-    val shift = 1 << bit
-    val previous = barrelStage
-    barrelStage = (0 until config.polynomialSize).map { index =>
-      val sourceIndex = (index - shift + config.polynomialSize) %
-        config.polynomialSize
-      val shifted = if (index < shift) {
-        negateTorus(previous(sourceIndex))
-      } else {
-        previous(sourceIndex)
-      }
-      Mux(selectedExponent(bit), shifted, previous(index))
-    }
-  }
-  val rotatedPolynomial: Seq[UInt] = barrelStage.map(value =>
-    Mux(selectedExponent(indexWidth), negateTorus(value), value)
+  val rotator = Module(
+    new NegacyclicBarrelRotator(
+      config.polynomialSize,
+      config.torusWidth
+    )
   )
+  rotator.io.input := VecInit(selectedPolynomial)
+  rotator.io.exponent := selectedExponent
+  val rotatedPolynomial = rotator.io.output
 
   def decompose(source: UInt, current: UInt): SInt = {
     val difference = (source - current)(config.torusWidth - 1, 0)
