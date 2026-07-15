@@ -11,10 +11,12 @@ jobs=${FPT_VIVADO_JOBS:-8}
 reuse=${FPT_VIVADO_REUSE:-0}
 prepare_only=${FPT_VIVADO_PREPARE_ONLY:-0}
 design_list=${FPT_HOGE_DESIGNS:-fpt-forward hoge-forward fpt-inverse hoge-inverse fpt-blind-rotate hoge-blind-rotate}
+skip_fpt_schedule=${FPT_SKIP_FPT_SCHEDULE:-0}
 skip_hoge_schedule=${FPT_SKIP_HOGE_SCHEDULE:-0}
 
 case "$reuse" in 0|1) ;; *) echo "FPT_VIVADO_REUSE must be 0 or 1" >&2; exit 1 ;; esac
 case "$prepare_only" in 0|1) ;; *) echo "FPT_VIVADO_PREPARE_ONLY must be 0 or 1" >&2; exit 1 ;; esac
+case "$skip_fpt_schedule" in 0|1) ;; *) echo "FPT_SKIP_FPT_SCHEDULE must be 0 or 1" >&2; exit 1 ;; esac
 case "$skip_hoge_schedule" in 0|1) ;; *) echo "FPT_SKIP_HOGE_SCHEDULE must be 0 or 1" >&2; exit 1 ;; esac
 if [[ ! $jobs =~ ^[1-9][0-9]*$ ]]; then
     echo "FPT_VIVADO_JOBS must be a positive integer" >&2
@@ -56,6 +58,8 @@ done
 hoge_dir=$(realpath "$hoge_dir")
 sgen_dir=$(realpath "$sgen_dir")
 output_root=$(realpath -m "$output_root")
+fpt_schedule_dir=$(realpath -m \
+    "${FPT_SCHEDULE_BUILD_DIR:-$output_root/fpt-schedule}")
 sources_dir=$output_root/sources
 sgen_sources=$sources_dir/sgen
 hoge_sources=$sources_dir/hoge
@@ -116,6 +120,59 @@ if [[ $hoge_forward_multipliers != 31 || \
       $hoge_br_multipliers != 127 ]]; then
     echo "Unexpected HOGE multiplier structure: forward=$hoge_forward_multipliers inverse=$hoge_inverse_multipliers br=$hoge_br_multipliers" >&2
     exit 1
+fi
+
+fpt_br_batch_cycles=unmeasured
+fpt_br_cycles_per_result=unmeasured
+fpt_br_input_phase_cycles=unmeasured
+fpt_br_compute_phase_cycles=unmeasured
+fpt_br_drain_tail_cycles=unmeasured
+fpt_br_input_coefficients=unmeasured
+fpt_br_key_transactions=unmeasured
+fpt_br_schedule_output_beats=unmeasured
+verilator_version=unavailable
+if command -v verilator >/dev/null; then
+    verilator_version=$(verilator --version)
+fi
+if [[ $skip_fpt_schedule == 0 ]] && command -v verilator >/dev/null; then
+    "$repo_root/tools/measure_fpt_blind_rotate_schedule.sh" \
+        "$fpt_br_sources" "$sgen_sources" "$fpt_schedule_dir"
+    fpt_schedule_file=$fpt_schedule_dir/schedule.txt
+    fpt_br_batch_cycles=$(awk -F= \
+        '$1 == "fpt_blind_rotate_batch_cycles" { print $2 }' \
+        "$fpt_schedule_file")
+    fpt_br_cycles_per_result=$(awk -F= \
+        '$1 == "fpt_blind_rotate_cycles_per_result" { print $2 }' \
+        "$fpt_schedule_file")
+    fpt_br_input_phase_cycles=$(awk -F= \
+        '$1 == "fpt_blind_rotate_input_phase_cycles" { print $2 }' \
+        "$fpt_schedule_file")
+    fpt_br_compute_phase_cycles=$(awk -F= \
+        '$1 == "fpt_blind_rotate_compute_phase_cycles" { print $2 }' \
+        "$fpt_schedule_file")
+    fpt_br_drain_tail_cycles=$(awk -F= \
+        '$1 == "fpt_blind_rotate_drain_tail_cycles" { print $2 }' \
+        "$fpt_schedule_file")
+    fpt_br_input_coefficients=$(awk -F= \
+        '$1 == "fpt_input_coefficients" { print $2 }' \
+        "$fpt_schedule_file")
+    fpt_br_key_transactions=$(awk -F= \
+        '$1 == "fpt_key_transactions" { print $2 }' \
+        "$fpt_schedule_file")
+    fpt_br_schedule_output_beats=$(awk -F= \
+        '$1 == "fpt_output_beats" { print $2 }' \
+        "$fpt_schedule_file")
+    if [[ ! $fpt_br_batch_cycles =~ ^[0-9]+$ || \
+          ! $fpt_br_cycles_per_result =~ ^[0-9]+([.][0-9]+)?$ || \
+          ! $fpt_br_input_phase_cycles =~ ^[0-9]+$ || \
+          ! $fpt_br_compute_phase_cycles =~ ^[0-9]+$ || \
+          ! $fpt_br_drain_tail_cycles =~ ^[0-9]+$ || \
+          ! $fpt_br_input_coefficients =~ ^[0-9]+$ || \
+          ! $fpt_br_key_transactions =~ ^[0-9]+$ || \
+          ! $fpt_br_schedule_output_beats =~ ^[0-9]+$ ]]; then
+        echo "Could not parse the FPT Blind Rotate schedule" >&2
+        exit 1
+    fi
 fi
 
 hoge_br_batch_cycles=unmeasured
@@ -184,6 +241,14 @@ hoge_forward_sha=$(sha256 "$hoge_forward")
 hoge_inverse_sha=$(sha256 "$hoge_inverse")
 hoge_br_sha=$(sha256 "$hoge_br")
 fpt_br_sha=$(sha256 "$fpt_br")
+fpt_schedule_harness_sha=$(sha256 \
+    "$repo_root/tests/fpt_blind_rotate_schedule.cpp")
+hoge_schedule_harness_sha=$(sha256 \
+    "$repo_root/tests/hoge_blind_rotate_schedule.cpp")
+fpt_schedule_flow_sha=$(sha256 \
+    "$repo_root/tools/measure_fpt_blind_rotate_schedule.sh")
+hoge_schedule_flow_sha=$(sha256 \
+    "$repo_root/tools/measure_hoge_blind_rotate_schedule.sh")
 single_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_sgen_u280.tcl")
 composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl")
 
@@ -197,6 +262,7 @@ composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl"
     printf 'sgen_commit\t%s\n' "$(git -C "$sgen_dir" rev-parse HEAD)"
     printf 'sgen_tracked_state\t%s\n' "$(tracked_state "$sgen_dir")"
     printf 'vivado_version\t%s\n' "$vivado_version"
+    printf 'verilator_version\t%s\n' "$verilator_version"
     printf 'part\t%s\n' "$part"
     printf 'clock_periods_ns\t%s\n' "$period_list"
     printf 'vivado_jobs\t%s\n' "$jobs"
@@ -209,7 +275,22 @@ composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl"
     printf 'fpt_blind_rotate_dimension\t630\n'
     printf 'fpt_blind_rotate_contexts\t15\n'
     printf 'fpt_blind_rotate_top\tBatchedBlindRotateSampleExtractEngine\n'
-    printf 'fpt_blind_rotate_schedule_cycles\t10080\n'
+    printf 'fpt_blind_rotate_cmux_schedule_cycles\t10080\n'
+    printf 'fpt_blind_rotate_batch_cycles\t%s\n' "$fpt_br_batch_cycles"
+    printf 'fpt_blind_rotate_cycles_per_result\t%s\n' \
+        "$fpt_br_cycles_per_result"
+    printf 'fpt_blind_rotate_input_phase_cycles\t%s\n' \
+        "$fpt_br_input_phase_cycles"
+    printf 'fpt_blind_rotate_compute_phase_cycles\t%s\n' \
+        "$fpt_br_compute_phase_cycles"
+    printf 'fpt_blind_rotate_drain_tail_cycles\t%s\n' \
+        "$fpt_br_drain_tail_cycles"
+    printf 'fpt_blind_rotate_input_coefficients\t%s\n' \
+        "$fpt_br_input_coefficients"
+    printf 'fpt_blind_rotate_key_transactions\t%s\n' \
+        "$fpt_br_key_transactions"
+    printf 'fpt_blind_rotate_schedule_output_beats\t%s\n' \
+        "$fpt_br_schedule_output_beats"
     printf 'fpt_blind_rotate_output\tsample-extracted-tlwe\n'
     printf 'fpt_blind_rotate_output_beats\t15375\n'
     printf 'hoge_blind_rotate_dimension\t636\n'
@@ -234,6 +315,14 @@ composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl"
     printf 'hoge_inverse_sha256\t%s\n' "$hoge_inverse_sha"
     printf 'fpt_blind_rotate_sha256\t%s\n' "$fpt_br_sha"
     printf 'hoge_blind_rotate_sha256\t%s\n' "$hoge_br_sha"
+    printf 'fpt_blind_rotate_schedule_harness_sha256\t%s\n' \
+        "$fpt_schedule_harness_sha"
+    printf 'hoge_blind_rotate_schedule_harness_sha256\t%s\n' \
+        "$hoge_schedule_harness_sha"
+    printf 'fpt_blind_rotate_schedule_flow_sha256\t%s\n' \
+        "$fpt_schedule_flow_sha"
+    printf 'hoge_blind_rotate_schedule_flow_sha256\t%s\n' \
+        "$hoge_schedule_flow_sha"
     printf 'single_source_flow_sha256\t%s\n' "$single_flow_sha"
     printf 'composed_flow_sha256\t%s\n' "$composed_flow_sha"
 } > "$manifest"

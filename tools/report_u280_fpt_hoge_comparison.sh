@@ -52,13 +52,20 @@ manifest_value() {
 }
 
 design_ii() {
+    local ii
+
     case "$1" in
         fpt-forward) printf '%s\n' 4 ;;
         hoge-forward) printf '%s\n' 32 ;;
         fpt-inverse) printf '%s\n' 8 ;;
         hoge-inverse) printf '%s\n' 32 ;;
         fpt-blind-rotate)
-            manifest_value fpt_blind_rotate_schedule_cycles ;;
+            ii=$(manifest_value fpt_blind_rotate_cycles_per_result)
+            if [[ $ii == - ]]; then
+                manifest_value fpt_blind_rotate_schedule_cycles
+            else
+                printf '%s\n' "$ii"
+            fi ;;
         hoge-blind-rotate)
             manifest_value hoge_blind_rotate_cycles_per_result ;;
         *) printf '%s\n' - ;;

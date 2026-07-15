@@ -286,7 +286,9 @@ unmodified-source elaboration finds 31 `INTorusMUL` instances in the forward
 INTT, 32 in the inverse NTT, and 127 in its Blind Rotate path. Each multiplier
 contains a 64-by-64 product and modular reduction. The direct common-U280 flow
 now routes those exact HOGE cores beside the FPT FTT cores and reports frame
-rate per LUT/DSP instead of comparing source-level multiplier counts:
+rate per LUT/DSP instead of comparing source-level multiplier counts. Its
+full-wrapper schedule harness measures 12,049.1 cycles/result for the
+15-context FPT batch and 158,318.5 cycles/result for HOGE's two-context batch:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
