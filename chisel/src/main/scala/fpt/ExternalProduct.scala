@@ -232,3 +232,270 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
     }
   }
 }
+
+/** Full-throughput External Product accumulator with the PISO double buffer
+  * described in Section 3.3 of the FPT paper. One buffer accepts the next
+  * transaction's wide forward-FFT stream while the other emits the previous
+  * transaction through the narrower inverse-FFT interface.
+  *
+  * `inputFirst` marks the first decomposition beat and travels with `inputTag`.
+  * Transactions may be adjacent without an idle cycle. The output tag allows
+  * the downstream inverse pipeline to route its delayed result back to the
+  * corresponding batch accumulator.
+  */
+final class DoubleBufferedExternalProductAccumulator(
+    val config: ExternalProductConfig,
+    val tagWidth: Int
+) extends Module {
+  import TransformUtil._
+  require(tagWidth >= 1)
+
+  private val rowWidth = counterWidth(config.rows)
+  private val inputBeatWidth = counterWidth(config.inputFrameBeats)
+  private val outputBeatWidth = counterWidth(config.outputFrameBeats)
+  private val pointWidth = counterWidth(config.points)
+  private val bufferCount = 2
+
+  val io = IO(new Bundle {
+    val inputValid = Input(Bool())
+    val inputReady = Output(Bool())
+    val inputFirst = Input(Bool())
+    val inputTag = Input(UInt(tagWidth.W))
+    val decomposition = Input(
+      Vec(config.inputLanes, new ComplexSInt(config.spectrum.width))
+    )
+    val bootstrappingKey = Input(
+      Vec(
+        config.outputComponents,
+        Vec(
+          config.inputLanes,
+          new ComplexSInt(config.bootstrappingKey.width)
+        )
+      )
+    )
+    val keyRow = Output(UInt(rowWidth.W))
+    val pointIndex = Output(Vec(config.inputLanes, UInt(pointWidth.W)))
+
+    val outputValid = Output(Bool())
+    val outputReady = Input(Bool())
+    val outputFirst = Output(Bool())
+    val outputTag = Output(UInt(tagWidth.W))
+    val output = Output(
+      Vec(
+        config.outputComponents,
+        Vec(config.outputLanes, new ComplexSInt(config.accumulator.width))
+      )
+    )
+    val done = Output(Bool())
+    val doneTag = Output(UInt(tagWidth.W))
+    val busy = Output(Bool())
+  })
+
+  val accumulatorMemory = Reg(
+    Vec(
+      bufferCount,
+      Vec(
+        config.outputComponents,
+        Vec(
+          config.outputGroupsPerInputBeat,
+          Vec(
+            config.outputLanes,
+            Vec(
+              config.inputFrameBeats,
+              new ComplexSInt(config.accumulator.width)
+            )
+          )
+        )
+      )
+    )
+  )
+  val bankTags = Reg(Vec(bufferCount, UInt(tagWidth.W)))
+  val bankReady = RegInit(VecInit(Seq.fill(bufferCount)(false.B)))
+  val writeBank = RegInit(0.U(1.W))
+  val inputActive = RegInit(false.B)
+  val row = RegInit(0.U(rowWidth.W))
+  val inputBeat = RegInit(0.U(inputBeatWidth.W))
+  val outputActive = RegInit(false.B)
+  val outputBank = RegInit(0.U(1.W))
+  val outputBeat = RegInit(0.U(outputBeatWidth.W))
+  val doneReg = RegInit(false.B)
+  val doneTagReg = RegInit(0.U(tagWidth.W))
+
+  val writeBankFree = !bankReady(writeBank) &&
+    !(outputActive && outputBank === writeBank)
+  io.inputReady := inputActive || (io.inputFirst && writeBankFree)
+  val inputFire = io.inputValid && io.inputReady
+  val activeRow = Mux(inputActive, row, 0.U)
+  val activeInputBeat = Mux(inputActive, inputBeat, 0.U)
+  val finalInputBeat = inputFire &&
+    activeRow === (config.rows - 1).U &&
+    activeInputBeat === (config.inputFrameBeats - 1).U
+
+  io.keyRow := activeRow
+  for (lane <- 0 until config.inputLanes) {
+    io.pointIndex(lane) := indexedAddress(
+      activeInputBeat, config.inputLanes, lane, pointWidth
+    )
+  }
+
+  private val groupBits = log2Ceil(config.outputGroupsPerInputBeat)
+  val outputGroup = if (config.outputGroupsPerInputBeat == 1) {
+    0.U
+  } else {
+    outputBeat(groupBits - 1, 0)
+  }
+  val outputDepth = if (config.outputGroupsPerInputBeat == 1) {
+    outputBeat
+  } else {
+    outputBeat >> groupBits
+  }
+  for (component <- 0 until config.outputComponents) {
+    for (lane <- 0 until config.outputLanes) {
+      val bankValues = VecInit((0 until bufferCount).map { buffer =>
+        val groupValues = VecInit(
+          (0 until config.outputGroupsPerInputBeat).map(group =>
+            accumulatorMemory(buffer)(component)(group)(lane)(outputDepth)
+          )
+        )
+        groupValues(outputGroup)
+      })
+      io.output(component)(lane) := bankValues(outputBank)
+    }
+  }
+
+  io.outputValid := outputActive
+  io.outputFirst := outputActive && outputBeat === 0.U
+  io.outputTag := bankTags(outputBank)
+  io.done := doneReg
+  io.doneTag := doneTagReg
+  io.busy := inputActive || outputActive || bankReady.asUInt.orR
+  doneReg := false.B
+
+  when(io.inputValid) {
+    assert(
+      inputActive || io.inputFirst,
+      "first External Product beat must carry inputFirst"
+    )
+  }
+  when(io.inputFirst && io.inputValid) {
+    assert(!inputActive, "inputFirst asserted inside a transaction")
+  }
+
+  when(inputFire) {
+    when(io.inputFirst) {
+      bankTags(writeBank) := io.inputTag
+    }
+    for (buffer <- 0 until bufferCount) {
+      when(writeBank === buffer.U) {
+        for (component <- 0 until config.outputComponents) {
+          for (lane <- 0 until config.inputLanes) {
+            val inputGroup = lane / config.outputLanes
+            val outputLane = lane % config.outputLanes
+            val a = io.decomposition(lane)
+            val b = io.bootstrappingKey(component)(lane)
+            val ac = a.real * b.real
+            val bd = a.imag * b.imag
+            val ad = a.real * b.imag
+            val bc = a.imag * b.real
+            val productReal = ac -& bd
+            val productImag = ad +& bc
+            val quantizedReal = FixedPointBits.shiftedLowSigned(
+              productReal,
+              config.productShift,
+              config.accumulator.width
+            )
+            val quantizedImag = FixedPointBits.shiftedLowSigned(
+              productImag,
+              config.productShift,
+              config.accumulator.width
+            )
+            val previousReal = Mux(
+              activeRow === 0.U,
+              0.S(config.accumulator.width.W),
+              accumulatorMemory(buffer)(component)(inputGroup)(outputLane)(
+                activeInputBeat
+              ).real
+            )
+            val previousImag = Mux(
+              activeRow === 0.U,
+              0.S(config.accumulator.width.W),
+              accumulatorMemory(buffer)(component)(inputGroup)(outputLane)(
+                activeInputBeat
+              ).imag
+            )
+            accumulatorMemory(buffer)(component)(inputGroup)(outputLane)(
+              activeInputBeat
+            ).real := FixedPointBits.lowSigned(
+              previousReal + quantizedReal,
+              config.accumulator.width
+            )
+            accumulatorMemory(buffer)(component)(inputGroup)(outputLane)(
+              activeInputBeat
+            ).imag := FixedPointBits.lowSigned(
+              previousImag + quantizedImag,
+              config.accumulator.width
+            )
+          }
+        }
+      }
+    }
+
+    when(finalInputBeat) {
+      inputActive := false.B
+      row := 0.U
+      inputBeat := 0.U
+      writeBank := ~writeBank
+    }.otherwise {
+      inputActive := true.B
+      when(activeInputBeat === (config.inputFrameBeats - 1).U) {
+        inputBeat := 0.U
+        row := activeRow + 1.U
+      }.otherwise {
+        inputBeat := activeInputBeat + 1.U
+        row := activeRow
+      }
+    }
+  }
+
+  val outputFire = io.outputValid && io.outputReady
+  val finalOutputBeat = outputFire &&
+    outputBeat === (config.outputFrameBeats - 1).U
+  val readyNext = Wire(Vec(bufferCount, Bool()))
+  readyNext := bankReady
+  for (buffer <- 0 until bufferCount) {
+    when(finalInputBeat && writeBank === buffer.U) {
+      readyNext(buffer) := true.B
+    }
+    when(finalOutputBeat && outputBank === buffer.U) {
+      readyNext(buffer) := false.B
+    }
+  }
+  bankReady := readyNext
+
+  def startReadyOutput(): Unit = {
+    when(readyNext(0)) {
+      outputActive := true.B
+      outputBank := 0.U
+      outputBeat := 0.U
+    }.elsewhen(readyNext(1)) {
+      outputActive := true.B
+      outputBank := 1.U
+      outputBeat := 0.U
+    }.otherwise {
+      outputActive := false.B
+      outputBeat := 0.U
+    }
+  }
+
+  when(!outputActive) {
+    startReadyOutput()
+  }.elsewhen(outputFire) {
+    when(finalOutputBeat) {
+      doneReg := true.B
+      doneTagReg := bankTags(outputBank)
+      startReadyOutput()
+    }.otherwise {
+      outputBeat := outputBeat + 1.U
+    }
+  }
+}

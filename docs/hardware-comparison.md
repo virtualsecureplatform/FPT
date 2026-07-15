@@ -1,11 +1,13 @@
 # Fixed-point FTT hardware comparison status
 
-The paper-shaped implementation now reproduces FPT's transform schedule in
-real generated RTL.  Its Chisel CMUX uses `N=1024`, four decomposition rows,
-a 512-point/128-lane forward transform, and two parallel 512-point/64-lane
-inverse transforms.  The opt-in Verilator regression observes `done` 191
-cycles after command acceptance, or 192 cycles when the launch cycle is
-included.  That matches the 192-cycle CMUX latency reported for FPT Set II.
+The paper-shaped single-command implementation reproduces FPT's latency in
+real generated RTL. Its Chisel CMUX uses `N=1024`, four decomposition rows, a
+512-point/128-lane forward transform, and two parallel 512-point/64-lane
+inverse transforms. The opt-in Verilator regression observes `done` 191 cycles
+after command acceptance, or 192 cycles when the launch cycle is included.
+That matches the 192-cycle CMUX latency reported for FPT Set II. The batched
+top that accepts a different ciphertext every 16 cycles is still being
+integrated; latency alone must not be interpreted as that initiation interval.
 
 Run the schedule check after generating the paper-size SGen sources:
 
@@ -36,6 +38,12 @@ CMUX exploits that distinction: all four forward decomposition rows enter at
 the four-cycle launch interval, and both inverse components run concurrently.
 The result is the launch-inclusive 192-cycle schedule even though the forward
 and inverse pipelines themselves are 64 and 102 cycles deep.
+
+The first batch-specific primitive is implemented separately: a tagged,
+double-buffered External Product accumulator accepts the next 128-lane
+transaction while the previous result drains through its 64-lane PISO output.
+The remaining integration must keep twelve coefficient-accumulator contexts
+in flight and route each delayed inverse result back to its context.
 
 Regenerate the table from local SGen outputs with:
 

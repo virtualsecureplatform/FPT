@@ -120,4 +120,88 @@ final class ExternalProductSpec
       dut.io.done.expect(false.B)
     }
   }
+
+  it should "overlap the next accumulation with the previous PISO drain" in {
+    val rows = vectors("rtl_external_product_vectors.txt")
+    val transactionCount = 2
+
+    test(new DoubleBufferedExternalProductAccumulator(config, tagWidth = 2)) {
+      dut =>
+        dut.io.inputValid.poke(false.B)
+        dut.io.inputFirst.poke(false.B)
+        dut.io.inputTag.poke(0.U)
+        dut.io.outputReady.poke(true.B)
+        dut.reset.poke(true.B)
+        dut.clock.step(2)
+        dut.reset.poke(false.B)
+
+        var outputTransaction = 0
+        var outputBeat = 0
+
+        def checkOutput(): Unit = {
+          if (dut.io.outputValid.peek().litToBoolean) {
+            dut.io.outputTag.expect(outputTransaction.U)
+            dut.io.outputFirst.expect((outputBeat == 0).B)
+            for (lane <- 0 until config.outputLanes) {
+              val point = outputBeat * config.outputLanes + lane
+              val vector = rows((config.rows - 1) * config.points + point)
+              for (component <- 0 until config.outputComponents) {
+                val offset = 2 + 2 * config.outputComponents + 2 * component
+                dut.io.output(component)(lane).real.expect(vector(offset).S)
+                dut.io.output(component)(lane).imag.expect(
+                  vector(offset + 1).S
+                )
+              }
+            }
+            outputBeat += 1
+            if (outputBeat == config.outputFrameBeats) {
+              outputBeat = 0
+              outputTransaction += 1
+            }
+          }
+        }
+
+        for (transaction <- 0 until transactionCount) {
+          for (row <- 0 until config.rows) {
+            for (beat <- 0 until config.inputFrameBeats) {
+              val first = row == 0 && beat == 0
+              dut.io.inputFirst.poke(first.B)
+              dut.io.inputTag.poke(transaction.U)
+              dut.io.inputReady.expect(true.B)
+              dut.io.keyRow.expect(row.U)
+              for (lane <- 0 until config.inputLanes) {
+                val point = beat * config.inputLanes + lane
+                val vector = rows(row * config.points + point)
+                dut.io.pointIndex(lane).expect(point.U)
+                dut.io.decomposition(lane).real.poke(vector(0).S)
+                dut.io.decomposition(lane).imag.poke(vector(1).S)
+                for (component <- 0 until config.outputComponents) {
+                  val offset = 2 + 2 * component
+                  dut.io.bootstrappingKey(component)(lane).real.poke(
+                    vector(offset).S
+                  )
+                  dut.io.bootstrappingKey(component)(lane).imag.poke(
+                    vector(offset + 1).S
+                  )
+                }
+              }
+              dut.io.inputValid.poke(true.B)
+              checkOutput()
+              dut.clock.step()
+            }
+          }
+        }
+        dut.io.inputValid.poke(false.B)
+        dut.io.inputFirst.poke(false.B)
+
+        var tailCycles = 0
+        while (outputTransaction < transactionCount) {
+          checkOutput()
+          dut.clock.step()
+          tailCycles += 1
+          tailCycles should be < 2 * config.outputFrameBeats
+        }
+        dut.io.busy.expect(false.B)
+      }
+  }
 }

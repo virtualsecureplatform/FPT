@@ -82,6 +82,13 @@ and differs by at most one Q27.14-to-Torus quantum (`2^18`) from the radix-2
 C++ result.  The small case is dominated by pipeline fill; the paper-sized
 throughput/resource comparison is generated separately.
 
+`DoubleBufferedExternalProductAccumulator` implements the paper's PISO
+overlap boundary: one tagged transaction can drain at the inverse width while
+the next transaction accumulates at the forward width.  This is the first
+stage of the batched engine; `CmuxEngine` itself remains a sequential
+single-command correctness engine until the twelve in-flight accumulator
+contexts are integrated.
+
 ## Legacy scheduling prototype
 
 The default build also generates deterministic vectors from the C++ model and
