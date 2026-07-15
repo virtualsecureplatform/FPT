@@ -89,6 +89,9 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
         UInt(log2Ceil(externalConfig.points).W)
       )
     )
+    val keyValid = Output(Bool())
+    val keyFirst = Output(Bool())
+    val keyContext = Output(UInt(contextWidth.W))
 
     val forwardTwistIndex = Output(
       Vec(base.forwardTransform.lanes, UInt(base.forwardTransform.logPoints.W))
@@ -233,6 +236,13 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
   }
   io.keyRow := external.io.keyRow
   io.keyPoint := external.io.pointIndex
+  io.keyValid := external.io.inputValid
+  io.keyFirst := external.io.inputFirst
+  io.keyContext := Mux(
+    forwardTags.io.deq.valid,
+    forwardTags.io.deq.bits,
+    0.U
+  )
 
   // Pulse inverse start once when a PISO transaction reaches its first beat;
   // the beat itself remains held until SGen's input lead has elapsed.
