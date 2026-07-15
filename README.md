@@ -63,12 +63,14 @@ multi-lane cyclic FFT, forward/inverse tangent wrappers, and the typed boundary
 to a generated SGen continuous-flow FFT.  It also covers a six-row,
 two-component External Product accumulator with asymmetric input/output lanes
 and output backpressure, matching the paper's 128-lane forward versus 64-lane
-inverse boundary.  The native Chisel transforms and External Product
-arithmetic are bit-exact with the C++ model.  The 16-point SGen fixture
-processes 16 frames back-to-back and stays within 6 raw Q18.12 units of the
-C++ radix-2 oracle; its inputs are bounded to exclude intermediate overflow
-because different radix factorizations need not agree after fixed-width
-overflow.
+inverse boundary.  The CMUX coefficient store covers negacyclic rotation,
+centered gadget decomposition, fixed-point/Torus conversion, and in-place
+add-back.  The native Chisel transforms, External Product arithmetic, and
+coefficient-side CMUX operations are bit-exact with the C++ model.  The
+16-point SGen fixture processes 16 frames back-to-back and stays within 6 raw
+Q18.12 units of the C++ radix-2 oracle; its inputs are bounded to exclude
+intermediate overflow because different radix factorizations need not agree
+after fixed-width overflow.
 
 ## Legacy scheduling prototype
 

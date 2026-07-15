@@ -68,6 +68,37 @@ fpt::FixedComplex complex_mac(fpt::FixedComplex a, fpt::FixedComplex b,
                          accumulator_format)};
 }
 
+std::uint32_t rotate_subtract(
+    const std::array<std::uint32_t, 32> &polynomial, int index, int exponent)
+{
+    constexpr int polynomial_size = 32;
+    const int offset = exponent & (polynomial_size - 1);
+    const int source_index = (index - offset) & (polynomial_size - 1);
+    const bool negate = exponent < polynomial_size ? index < offset
+                                                   : index >= offset;
+    const std::uint32_t rotated =
+        negate ? std::uint32_t{0} - polynomial[source_index]
+               : polynomial[source_index];
+    return rotated - polynomial[index];
+}
+
+std::int32_t decompose_torus(std::uint32_t value, int level)
+{
+    constexpr int levels = 3;
+    constexpr int base_bits = 6;
+    constexpr std::uint32_t half_base = 1U << (base_bits - 1);
+    constexpr std::uint32_t mask = (1U << base_bits) - 1;
+    constexpr int remaining_bits = 32 - levels * base_bits;
+    constexpr std::uint32_t round_offset = 1U << (remaining_bits - 1);
+    constexpr std::uint32_t decomposition_offset =
+        (half_base << (32 - base_bits)) +
+        (half_base << (32 - 2 * base_bits)) +
+        (half_base << (32 - 3 * base_bits));
+    const std::uint32_t biased = value + decomposition_offset + round_offset;
+    const int shift = 32 - (level + 1) * base_bits;
+    return static_cast<std::int32_t>((biased >> shift) & mask) - half_base;
+}
+
 std::size_t reverse_bits(std::size_t value, int width)
 {
     std::size_t result = 0;
@@ -116,7 +147,7 @@ void cyclic_fft(std::vector<fpt::FixedComplex> &values, bool inverse = false)
 
 int main(int argc, char **argv)
 {
-    if (argc != 12)
+    if (argc != 13)
         throw std::invalid_argument(
             "expected all RTL vector and twiddle output paths");
     std::ofstream output(argv[1]);
@@ -226,6 +257,66 @@ int main(int argc, char **argv)
                     << ' ' << external_accumulators[component][point].imag;
             external_output << '\n';
         }
+    }
+
+    constexpr int cmux_polynomial_size = 32;
+    constexpr int cmux_points = cmux_polynomial_size / 2;
+    constexpr int cmux_components = 2;
+    constexpr int cmux_levels = 3;
+    std::ofstream cmux_output(argv[12]);
+    if (!cmux_output)
+        throw std::runtime_error("could not open CMUX frontend vectors");
+    std::array<std::array<std::uint32_t, cmux_polynomial_size>,
+               cmux_components>
+        cmux_accumulator;
+    for (int index = 0; index < cmux_polynomial_size; ++index) {
+        for (int component = 0; component < cmux_components; ++component)
+            cmux_accumulator[component][index] =
+                static_cast<std::uint32_t>(generator());
+        cmux_output << cmux_accumulator[0][index] << ' '
+                    << cmux_accumulator[1][index] << '\n';
+    }
+    for (int component = 0; component < cmux_components; ++component) {
+        for (int level = 0; level < cmux_levels; ++level) {
+            const int exponent = 7 + component * 11 + level * 5;
+            for (int point = 0; point < cmux_points; ++point) {
+                const auto low = decompose_torus(
+                    rotate_subtract(cmux_accumulator[component], point,
+                                    exponent),
+                    level);
+                const auto high = decompose_torus(
+                    rotate_subtract(cmux_accumulator[component],
+                                    point + cmux_points, exponent),
+                    level);
+                cmux_output << component << ' ' << level << ' ' << exponent
+                            << ' ' << point << ' '
+                            << static_cast<std::int64_t>(low) * (1LL << 20)
+                            << ' '
+                            << static_cast<std::int64_t>(high) * (1LL << 20)
+                            << '\n';
+            }
+        }
+    }
+    std::uniform_int_distribution<std::int64_t> inverse_distribution(
+        -(std::int64_t{1} << 20), (std::int64_t{1} << 20) - 1);
+    for (int point = 0; point < cmux_points; ++point) {
+        cmux_output << point;
+        std::array<fpt::FixedComplex, cmux_components> update;
+        for (int component = 0; component < cmux_components; ++component) {
+            update[component] = {inverse_distribution(generator),
+                                 inverse_distribution(generator)};
+            cmux_output << ' ' << update[component].real << ' '
+                        << update[component].imag;
+            cmux_accumulator[component][point] += static_cast<std::uint32_t>(
+                update[component].real * (1LL << 18));
+            cmux_accumulator[component][point + cmux_points] +=
+                static_cast<std::uint32_t>(update[component].imag *
+                                           (1LL << 18));
+        }
+        for (int component = 0; component < cmux_components; ++component)
+            cmux_output << ' ' << cmux_accumulator[component][point] << ' '
+                        << cmux_accumulator[component][point + cmux_points];
+        cmux_output << '\n';
     }
 
     constexpr std::size_t fft_points = 16;
