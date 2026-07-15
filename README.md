@@ -261,7 +261,9 @@ tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
 With Verilator available, preparation also validates and measures both full
 Blind Rotate wrappers. The current FPT batch completes 15 raw-TLWE inputs and
 sample-extracted outputs in 180,736 cycles, or 12,049.1 cycles/result. The
-compiled FPT model is signature-cached because its generated C++ is large.
+compiled schedule models use content signatures, so
+`FPT_SCHEDULE_BUILD_DIR` and `HOGE_SCHEDULE_BUILD_DIR` caches remain reusable
+when the same RTL is regenerated in a different handoff directory.
 When Yosys is installed, the same preparation independently checks the full
 Chisel/SGen synthesis hierarchy and the expected accumulator, exponent, and
 sample-extraction memory shapes. It also maps those memories through their

@@ -58,9 +58,11 @@ eight BK streams consumes 122,512 beats, with a maximum inter-port skew of
 eight beats. At an equal clock, these wrapper schedules imply 13.139 times
 the result rate for FPT, before accounting for routed frequency or resources.
 
-The first FPT Verilator build is large. Matching source and tool signatures
-reuse the compiled model on later runs. Set `FPT_SCHEDULE_BUILD_DIR` to keep
-that cache outside the handoff directory. Set `FPT_SKIP_FPT_SCHEDULE=1` or
+The first FPT Verilator build is large. Both schedule models use
+content-based source, harness, flow, and tool signatures, so identical RTL is
+reused even when it is regenerated under a different handoff directory. Set
+`FPT_SCHEDULE_BUILD_DIR` or `HOGE_SCHEDULE_BUILD_DIR` to keep the caches
+outside that directory. Set `FPT_SKIP_FPT_SCHEDULE=1` or
 `FPT_SKIP_HOGE_SCHEDULE=1` to omit the corresponding measurement; its
 throughput fields are then recorded as `unmeasured`.
 

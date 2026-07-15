@@ -62,6 +62,8 @@ sgen_dir=$(realpath "$sgen_dir")
 output_root=$(realpath -m "$output_root")
 fpt_schedule_dir=$(realpath -m \
     "${FPT_SCHEDULE_BUILD_DIR:-$output_root/fpt-schedule}")
+hoge_schedule_dir=$(realpath -m \
+    "${HOGE_SCHEDULE_BUILD_DIR:-$output_root/hoge-schedule}")
 fpt_yosys_boundary_dir=$(realpath -m \
     "${FPT_YOSYS_BOUNDARY_DIR:-$output_root/fpt-yosys-boundary}")
 sources_dir=$output_root/sources
@@ -242,25 +244,26 @@ hoge_br_maximum_key_beat_skew=unmeasured
 hoge_br_output_beats=unmeasured
 if [[ $skip_hoge_schedule == 0 ]] && command -v verilator >/dev/null; then
     "$repo_root/tools/measure_hoge_blind_rotate_schedule.sh" "$hoge_dir" \
-        "$hoge_sources" "$output_root/hoge-schedule"
+        "$hoge_sources" "$hoge_schedule_dir"
+    hoge_schedule_file=$hoge_schedule_dir/schedule.txt
     hoge_br_batch_cycles=$(awk -F= \
         '$1 == "hoge_blind_rotate_batch_cycles" { print $2 }' \
-        "$output_root/hoge-schedule/schedule.txt")
+        "$hoge_schedule_file")
     hoge_br_cycles_per_result=$(awk -F= \
         '$1 == "hoge_blind_rotate_cycles_per_result" { print $2 }' \
-        "$output_root/hoge-schedule/schedule.txt")
+        "$hoge_schedule_file")
     hoge_br_input_beats=$(awk -F= \
         '$1 == "hoge_input_beats" { print $2 }' \
-        "$output_root/hoge-schedule/schedule.txt")
+        "$hoge_schedule_file")
     hoge_br_key_beats_per_bus=$(awk -F= \
         '$1 == "hoge_key_beats_per_bus" { print $2 }' \
-        "$output_root/hoge-schedule/schedule.txt")
+        "$hoge_schedule_file")
     hoge_br_maximum_key_beat_skew=$(awk -F= \
         '$1 == "hoge_maximum_key_beat_skew" { print $2 }' \
-        "$output_root/hoge-schedule/schedule.txt")
+        "$hoge_schedule_file")
     hoge_br_output_beats=$(awk -F= \
         '$1 == "hoge_output_beats" { print $2 }' \
-        "$output_root/hoge-schedule/schedule.txt")
+        "$hoge_schedule_file")
     if [[ ! $hoge_br_batch_cycles =~ ^[0-9]+$ || \
           ! $hoge_br_cycles_per_result =~ ^[0-9]+([.][0-9]+)?$ || \
           ! $hoge_br_input_beats =~ ^[0-9]+$ || \

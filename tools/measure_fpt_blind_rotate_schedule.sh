@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+script_path=$(realpath "${BASH_SOURCE[0]}")
+repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
 source_dir=${1:-$repo_root/build/chisel-paper-bitwise-blind-rotate-sample-extract}
 sgen_dir=${2:-$repo_root/build/sgen-fpt}
 build_dir=${3:-$repo_root/build/fpt-blind-rotate-sim}
@@ -40,8 +41,12 @@ mkdir -p "$object_dir"
 
 signature=$(
     {
-        sha256sum "$source_file" "$forward" "$inverse" \
-            "$repo_root/tests/fpt_blind_rotate_schedule.cpp"
+        for signature_input in \
+            "$source_file" "$forward" "$inverse" \
+            "$repo_root/tests/fpt_blind_rotate_schedule.cpp" \
+            "$script_path"; do
+            sha256sum "$signature_input" | awk '{ print $1 }'
+        done
         printf '%s\n' "$(verilator --version)" "$top" "$jobs" "$split"
     } | sha256sum | awk '{ print $1 }'
 )

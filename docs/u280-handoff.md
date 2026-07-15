@@ -86,6 +86,11 @@ recorded as hierarchy-wide values, while the accumulator, exponent, and
 sample-extraction primitive counts come from smaller real-clock mapping
 contexts. Neither is a substitute for routed U280 utilization.
 
+`FPT_SCHEDULE_BUILD_DIR=...` and `HOGE_SCHEDULE_BUILD_DIR=...` keep the two
+Verilator schedule models outside a handoff directory. Their signatures are
+content-based, so an identical regenerated source tree reuses the compiled
+model even when its absolute path changes.
+
 The preparation path can be checked on a machine without Vivado:
 
 ```sh
