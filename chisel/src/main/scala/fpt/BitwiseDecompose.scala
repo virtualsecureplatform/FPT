@@ -163,6 +163,20 @@ final class BitwiseCmuxDecompositionFrontend(
     )
     val busy = Output(Bool())
     val done = Output(Bool())
+
+    val updateStart = Input(Bool())
+    val updateValid = Input(Bool())
+    val updateReady = Output(Bool())
+    val updateLow = Input(Vec(config.inverseLanes, UInt(config.torusWidth.W)))
+    val updateHigh = Input(Vec(config.inverseLanes, UInt(config.torusWidth.W)))
+    val updateDone = Output(Bool())
+
+    val drainStart = Input(Bool())
+    val drainValid = Output(Bool())
+    val drainReady = Input(Bool())
+    val drain = Output(Vec(config.inverseLanes, UInt(config.torusWidth.W)))
+    val drainDone = Output(Bool())
+    val loaded = Output(Bool())
   })
 
   val reorder = Module(
@@ -194,6 +208,18 @@ final class BitwiseCmuxDecompositionFrontend(
   io.rotateReady := rotateReady
   reorder.io.rotateStart := rotateFire
   reorder.io.exponent := io.exponent
+  reorder.io.updateStart := io.updateStart
+  reorder.io.updateValid := io.updateValid
+  reorder.io.updateLow := io.updateLow
+  reorder.io.updateHigh := io.updateHigh
+  io.updateReady := reorder.io.updateReady
+  io.updateDone := reorder.io.updateDone
+  reorder.io.drainStart := io.drainStart
+  reorder.io.drainReady := io.drainReady
+  io.drainValid := reorder.io.drainValid
+  io.drain := reorder.io.drain
+  io.drainDone := reorder.io.drainDone
+  io.loaded := reorder.io.loaded
 
   decomposer.io.start := rotateFire
   decomposer.io.inputValid := reorder.io.bitValid

@@ -64,11 +64,17 @@ final class BitwiseFoldSpec
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.rotateStart.poke(false.B)
+      dut.io.updateStart.poke(false.B)
+      dut.io.updateValid.poke(false.B)
+      dut.io.drainStart.poke(false.B)
+      dut.io.drainReady.poke(false.B)
       dut.io.exponent.poke(0.U)
       dut.io.pairReady.poke(false.B)
       for (component <- 0 until config.components) {
         for (lane <- 0 until config.inverseLanes) {
           dut.io.load(component)(lane).poke(0.U)
+          dut.io.updateLow(component)(lane).poke(0.S)
+          dut.io.updateHigh(component)(lane).poke(0.S)
         }
       }
       dut.reset.poke(true.B)
@@ -131,6 +137,52 @@ final class BitwiseFoldSpec
           config.forwardBeats)
         dut.clock.step()
       }
+
+      val updated = inputs.map(_.toArray).toArray
+      dut.io.updateStart.poke(true.B)
+      dut.clock.step()
+      dut.io.updateStart.poke(false.B)
+      dut.io.updateValid.poke(true.B)
+      for (beat <- 0 until config.inverseBeats) {
+        dut.io.updateReady.expect(true.B)
+        for (component <- 0 until config.components) {
+          for (lane <- 0 until config.inverseLanes) {
+            val lowDelta = component * 3 + beat * 2 + lane - 4
+            val highDelta = component * 2 - beat * 3 - lane + 1
+            dut.io.updateLow(component)(lane).poke(lowDelta.S)
+            dut.io.updateHigh(component)(lane).poke(highDelta.S)
+            val lowIndex = beat * config.inverseLanes + lane
+            val highIndex = config.points + lowIndex
+            updated(component)(lowIndex) =
+              (updated(component)(lowIndex) +
+                (BigInt(lowDelta) << config.torusShift)) & mask
+            updated(component)(highIndex) =
+              (updated(component)(highIndex) +
+                (BigInt(highDelta) << config.torusShift)) & mask
+          }
+        }
+        dut.clock.step()
+      }
+      dut.io.updateValid.poke(false.B)
+      dut.io.updateDone.expect(true.B)
+      dut.clock.step()
+
+      dut.io.drainStart.poke(true.B)
+      dut.clock.step()
+      dut.io.drainStart.poke(false.B)
+      dut.io.drainReady.poke(true.B)
+      for (beat <- 0 until config.polynomialBeats) {
+        dut.io.drainValid.expect(true.B)
+        for (component <- 0 until config.components) {
+          for (lane <- 0 until config.inverseLanes) {
+            dut.io.drain(component)(lane).expect(
+              updated(component)(beat * config.inverseLanes + lane).U
+            )
+          }
+        }
+        dut.clock.step()
+      }
+      dut.io.drainDone.expect(true.B)
     }
   }
 
@@ -185,11 +237,17 @@ final class BitwiseFoldSpec
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.rotateStart.poke(false.B)
+      dut.io.updateStart.poke(false.B)
+      dut.io.updateValid.poke(false.B)
+      dut.io.drainStart.poke(false.B)
+      dut.io.drainReady.poke(false.B)
       dut.io.exponent.poke(0.U)
       dut.io.pairReady.poke(true.B)
       for (component <- 0 until config.components) {
         for (lane <- 0 until config.inverseLanes) {
           dut.io.load(component)(lane).poke(0.U)
+          dut.io.updateLow(component)(lane).poke(0.S)
+          dut.io.updateHigh(component)(lane).poke(0.S)
         }
       }
       dut.reset.poke(true.B)

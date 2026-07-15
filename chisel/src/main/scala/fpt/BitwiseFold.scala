@@ -31,6 +31,7 @@ final class BitwiseFoldedDigitStreamer(val config: CmuxCoefficientConfig)
     )
     val rowIndex = Output(UInt(rowWidth.W))
     val pairLast = Output(Bool())
+    val transformStart = Output(Bool())
     val busy = Output(Bool())
     val done = Output(Bool())
   })
@@ -85,6 +86,7 @@ final class BitwiseFoldedDigitStreamer(val config: CmuxCoefficientConfig)
   val finalRow = row === (rows - 1).U
   val finishing = pairFire && finalBeat && finalRow
   io.pairLast := pairFire && finalBeat
+  io.transformStart := io.start || (pairFire && finalBeat && !finalRow)
   when(io.start) {
     assert(!active || finishing, "bitwise digit stream started while busy")
     active := true.B
@@ -127,6 +129,34 @@ final class BitwiseCmuxForwardFrontend(
     )
     val loadDone = Output(Bool())
 
+    val updateStart = Input(Bool())
+    val updateValid = Input(Bool())
+    val updateReady = Output(Bool())
+    val updateLow = Input(
+      Vec(
+        config.components,
+        Vec(config.inverseLanes, SInt(config.inverseFormat.width.W))
+      )
+    )
+    val updateHigh = Input(
+      Vec(
+        config.components,
+        Vec(config.inverseLanes, SInt(config.inverseFormat.width.W))
+      )
+    )
+    val updateDone = Output(Bool())
+
+    val drainStart = Input(Bool())
+    val drainValid = Output(Bool())
+    val drainReady = Input(Bool())
+    val drain = Output(
+      Vec(
+        config.components,
+        Vec(config.inverseLanes, UInt(config.torusWidth.W))
+      )
+    )
+    val drainDone = Output(Bool())
+
     val rotateStart = Input(Bool())
     val rotateReady = Output(Bool())
     val exponent = Input(UInt(config.exponentWidth.W))
@@ -140,6 +170,9 @@ final class BitwiseCmuxForwardFrontend(
     )
     val rowIndex = Output(UInt(rowWidth.W))
     val pairLast = Output(Bool())
+    val transformStart = Output(Bool())
+    val loaded = Output(Bool())
+    val idle = Output(Bool())
     val busy = Output(Bool())
     val done = Output(Bool())
   })
@@ -174,9 +207,23 @@ final class BitwiseCmuxForwardFrontend(
 
   val allLoadReady = components.map(_.io.loadReady).reduce(_ && _)
   val allLoadDone = components.map(_.io.loadDone).reduce(_ && _)
+  val allUpdateReady = components.map(_.io.updateReady).reduce(_ && _)
+  val allUpdateDone = components.map(_.io.updateDone).reduce(_ && _)
+  val allDrainValid = components.map(_.io.drainValid).reduce(_ && _)
+  val allDrainDone = components.map(_.io.drainDone).reduce(_ && _)
+  val allLoaded = components.map(_.io.loaded).reduce(_ && _)
   val allDecompositionDone = components.map(_.io.done).reduce(_ && _)
   val anyComponentBusy = components.map(_.io.busy).reduce(_ || _)
   val allRotateReady = components.map(_.io.rotateReady).reduce(_ && _)
+  val frontendBusy = anyComponentBusy || streamer.io.busy ||
+    bufferOccupied.asUInt.orR
+
+  when(PopCount(Cat(io.loadStart, io.updateStart, io.drainStart)) > 1.U) {
+    assert(false.B, "bitwise accumulator operations must not start together")
+  }
+  when(io.loadStart || io.updateStart || io.drainStart) {
+    assert(!frontendBusy, "bitwise accumulator operation started while busy")
+  }
 
   val finalOutputRow = streamer.io.rowIndex === (rows - 1).U
   val streamerFinishing = streamer.io.pairLast && finalOutputRow
@@ -199,18 +246,37 @@ final class BitwiseCmuxForwardFrontend(
 
   io.loadReady := allLoadReady
   io.loadDone := allLoadDone
+  io.updateReady := allUpdateReady
+  io.updateDone := allUpdateDone
+  io.drainValid := allDrainValid
+  io.drainDone := allDrainDone
+  io.loaded := allLoaded
   for ((frontend, component) <- components.zipWithIndex) {
     frontend.io.loadStart := io.loadStart
     frontend.io.loadValid := io.loadValid && allLoadReady
     frontend.io.load := io.load(component)
     frontend.io.rotateStart := rotateFire
     frontend.io.exponent := io.exponent
+    frontend.io.updateStart := io.updateStart
+    frontend.io.updateValid := io.updateValid && allUpdateReady
+    for (lane <- 0 until config.inverseLanes) {
+      frontend.io.updateLow(lane) := (io.updateLow(component)(lane).asUInt <<
+        config.torusShift)(config.torusWidth - 1, 0)
+      frontend.io.updateHigh(lane) := (io.updateHigh(component)(lane).asUInt <<
+        config.torusShift)(config.torusWidth - 1, 0)
+    }
+    frontend.io.drainStart := io.drainStart
+    frontend.io.drainReady := io.drainReady && allDrainValid
+    io.drain(component) := frontend.io.drain
   }
   when(io.loadValid) {
     assert(io.loadReady, "bitwise frontend load data presented while idle")
   }
   when(io.rotateStart) {
     assert(io.rotateReady, "bitwise frontend rotation started while unavailable")
+  }
+  when(io.updateValid) {
+    assert(io.updateReady, "bitwise frontend update data presented while idle")
   }
 
   when(allDecompositionDone) {
@@ -280,6 +346,8 @@ final class BitwiseCmuxForwardFrontend(
   io.coefficientHigh := streamer.io.coefficientHigh
   io.rowIndex := streamer.io.rowIndex
   io.pairLast := streamer.io.pairLast
-  io.busy := anyComponentBusy || streamer.io.busy || bufferOccupied.asUInt.orR
+  io.transformStart := streamer.io.transformStart
+  io.busy := frontendBusy
+  io.idle := !frontendBusy
   io.done := streamer.io.done
 }

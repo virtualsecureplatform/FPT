@@ -184,10 +184,12 @@ all four component/level rows in the forward FFT's folded 128-lane order. Its
 two digit buffers overlap the 16-cycle bitwise pass with the 16-cycle row
 stream, and the sustained test accepts one exponent every 16 cycles while the
 downstream remains ready. The paper-scale output is 7.51 MB and passes lint
-across 7.17 MB of sources. This frontend is still standalone; the live CMUX
-coefficient store continues to use the ten-stage 32-bit barrel network until
-the folded stream is connected to its forward transform. Reproduce the
-standalone blocks with:
+across 7.17 MB of sources before accumulator writeback. The complete stateful
+version adds lane-local inverse-update adders and a drain path, emits as 10.22
+MB, and passes lint across 9.75 MB of sources. It is still standalone; the live
+CMUX coefficient store continues to use the ten-stage 32-bit barrel network
+until this frontend is connected to its forward and inverse transforms.
+Reproduce the standalone blocks with:
 
 ```sh
 tools/emit_paper_bitwise_reorder.sh build/chisel-paper-bitwise

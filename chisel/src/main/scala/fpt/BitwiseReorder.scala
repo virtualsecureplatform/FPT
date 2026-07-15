@@ -20,14 +20,18 @@ final class BitwiseNegacyclicReorder(
 ) extends Module {
   require(polynomialSize >= 2 && isPow2(polynomialSize))
   require(loadLanes >= 1 && isPow2(loadLanes))
-  require(loadLanes <= polynomialSize && polynomialSize % loadLanes == 0)
+  require(
+    loadLanes <= polynomialSize / 2 && polynomialSize % loadLanes == 0
+  )
   require(coefficientWidth >= 2)
   require(bitsPerCycle >= 1 && coefficientWidth % bitsPerCycle == 0)
 
   private val indexWidth = log2Ceil(polynomialSize)
   private val loadBeats = polynomialSize / loadLanes
+  private val updateBeats = loadBeats / 2
   private val chunks = coefficientWidth / bitsPerCycle
   private val loadBeatWidth = TransformUtil.counterWidth(loadBeats)
+  private val updateBeatWidth = TransformUtil.counterWidth(updateBeats)
   private val chunkWidth = TransformUtil.counterWidth(chunks)
 
   val io = IO(new Bundle {
@@ -49,19 +53,35 @@ final class BitwiseNegacyclicReorder(
     val bitChunk = Output(Vec(polynomialSize, UInt(bitsPerCycle.W)))
     val rotateDone = Output(Bool())
 
+    val updateStart = Input(Bool())
+    val updateValid = Input(Bool())
+    val updateReady = Output(Bool())
+    val updateLow = Input(Vec(loadLanes, UInt(coefficientWidth.W)))
+    val updateHigh = Input(Vec(loadLanes, UInt(coefficientWidth.W)))
+    val updateDone = Output(Bool())
+
+    val drainStart = Input(Bool())
+    val drainValid = Output(Bool())
+    val drainReady = Input(Bool())
+    val drain = Output(Vec(loadLanes, UInt(coefficientWidth.W)))
+    val drainDone = Output(Bool())
+
     val loaded = Output(Bool())
     val busy = Output(Bool())
   })
 
-  val idle :: loading :: rotating :: Nil = Enum(3)
+  val idle :: loading :: rotating :: updating :: draining :: Nil = Enum(5)
   val state = RegInit(idle)
   val loadedReg = RegInit(false.B)
   val loadBeat = RegInit(0.U(loadBeatWidth.W))
+  val updateBeat = RegInit(0.U(updateBeatWidth.W))
   val chunkIndex = RegInit(0.U(chunkWidth.W))
   val exponentReg = RegInit(0.U((indexWidth + 1).W))
   val negateCarry = RegInit(VecInit(Seq.fill(polynomialSize)(false.B)))
   val loadDoneReg = RegInit(false.B)
   val rotateDoneReg = RegInit(false.B)
+  val updateDoneReg = RegInit(false.B)
+  val drainDoneReg = RegInit(false.B)
 
   // Transposition is explicit: a dynamic output selection touches only the
   // current small chunk rather than selecting a full coefficient and slicing
@@ -81,12 +101,22 @@ final class BitwiseNegacyclicReorder(
   io.bitValid := state === rotating
   io.bitIndex := chunkIndex
   io.rotateDone := rotateDoneReg
+  io.updateReady := state === updating
+  io.updateDone := updateDoneReg
+  io.drainValid := state === draining
+  io.drainDone := drainDoneReg
   io.loaded := loadedReg
   io.busy := state =/= idle
   loadDoneReg := false.B
   rotateDoneReg := false.B
+  updateDoneReg := false.B
+  drainDoneReg := false.B
 
-  when(io.loadStart && io.rotateStart) {
+  when(
+    PopCount(
+      Cat(io.loadStart, io.rotateStart, io.updateStart, io.drainStart)
+    ) > 1.U
+  ) {
     assert(false.B, "bitwise reorder operations must not start together")
   }
   when(io.loadStart) {
@@ -97,6 +127,13 @@ final class BitwiseNegacyclicReorder(
   }
   when(io.loadValid) {
     assert(io.loadReady, "bitwise reorder load data presented while idle")
+  }
+
+  def storedCoefficient(lane: Int, beat: UInt): UInt =
+    Cat((chunks - 1 to 0 by -1).map(chunk => chunkBanks(chunk)(lane)(beat)))
+
+  for (lane <- 0 until loadLanes) {
+    io.drain(lane) := storedCoefficient(lane, loadBeat)
   }
 
   val loadFire = io.loadValid && io.loadReady
@@ -114,6 +151,58 @@ final class BitwiseNegacyclicReorder(
       loadBeat := 0.U
       loadedReg := true.B
       loadDoneReg := true.B
+    }.otherwise {
+      loadBeat := loadBeat + 1.U
+    }
+  }
+
+  when(io.updateStart) {
+    assert(state === idle && loadedReg, "bitwise update started while unavailable")
+    state := updating
+    updateBeat := 0.U
+  }
+  when(io.updateValid) {
+    assert(io.updateReady, "bitwise update data presented while idle")
+  }
+  val updateFire = io.updateValid && io.updateReady
+  when(updateFire) {
+    val lowAddress = updateBeat.pad(loadBeatWidth)
+    val highAddress = lowAddress + updateBeats.U
+    for (lane <- 0 until loadLanes) {
+      val updatedLow = (storedCoefficient(lane, lowAddress) +
+        io.updateLow(lane))(coefficientWidth - 1, 0)
+      val updatedHigh = (storedCoefficient(lane, highAddress) +
+        io.updateHigh(lane))(coefficientWidth - 1, 0)
+      for (chunk <- 0 until chunks) {
+        chunkBanks(chunk)(lane)(lowAddress) := updatedLow(
+          (chunk + 1) * bitsPerCycle - 1,
+          chunk * bitsPerCycle
+        )
+        chunkBanks(chunk)(lane)(highAddress) := updatedHigh(
+          (chunk + 1) * bitsPerCycle - 1,
+          chunk * bitsPerCycle
+        )
+      }
+    }
+    when(updateBeat === (updateBeats - 1).U) {
+      updateBeat := 0.U
+      state := idle
+      updateDoneReg := true.B
+    }.otherwise {
+      updateBeat := updateBeat + 1.U
+    }
+  }
+
+  when(io.drainStart) {
+    assert(state === idle && loadedReg, "bitwise drain started while unavailable")
+    state := draining
+    loadBeat := 0.U
+  }
+  when(io.drainValid && io.drainReady) {
+    when(loadBeat === (loadBeats - 1).U) {
+      loadBeat := 0.U
+      state := idle
+      drainDoneReg := true.B
     }.otherwise {
       loadBeat := loadBeat + 1.U
     }

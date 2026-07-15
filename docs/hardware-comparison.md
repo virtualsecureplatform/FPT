@@ -79,10 +79,12 @@ The reorder alone emits as 3.02 MB; the combined Set-II frontend emits as
 rows in the FFT's 128-lane folded order. Two digit buffers overlap its 16
 bitwise cycles with 16 coefficient-wise output cycles, giving a tested
 initiation interval of 16 cycles when the downstream remains ready. It emits
-as 7.51 MB and passes lint across 7.17 MB of sources in eight modules. The
-standalone frontend still needs to replace the live CMUX coefficient store's
-full-width barrel network and connect to the forward transform; until then,
-the memory-backed top remains the conservative full-width rotation baseline.
+as 7.51 MB before writeback logic. Adding lane-local inverse updates and the
+accumulator drain path makes the stateful frontend 10.22 MB; it passes lint
+across 9.75 MB of sources in eight modules. The standalone frontend still
+needs to replace the live CMUX coefficient store's full-width barrel network
+and connect to the forward and inverse transforms; until then, the
+memory-backed top remains the conservative full-width rotation baseline.
 
 Regenerate the cyclic comparison and table from local SGen outputs with:
 

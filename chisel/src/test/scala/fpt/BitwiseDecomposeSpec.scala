@@ -58,9 +58,15 @@ final class BitwiseDecomposeSpec
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.rotateStart.poke(false.B)
+      dut.io.updateStart.poke(false.B)
+      dut.io.updateValid.poke(false.B)
+      dut.io.drainStart.poke(false.B)
+      dut.io.drainReady.poke(false.B)
       dut.io.exponent.poke(0.U)
       for (lane <- 0 until config.inverseLanes) {
         dut.io.load(lane).poke(0.U)
+        dut.io.updateLow(lane).poke(0.U)
+        dut.io.updateHigh(lane).poke(0.U)
       }
       dut.reset.poke(true.B)
       dut.clock.step(2)
