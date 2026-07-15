@@ -2,7 +2,7 @@ package fpt
 
 import chisel3._
 import chiseltest._
-import chiseltest.simulator.{VerilatorBackendAnnotation, VerilatorFlags}
+import chiseltest.simulator.VerilatorBackendAnnotation
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -21,7 +21,7 @@ final class PaperCmuxScheduleSpec
     with Matchers {
   behavior of "the paper-shaped CMUX scheduler"
 
-  it should "compose the four forward rows and two inverse streams" in {
+  it should "compose transforms and preserve a zero-product accumulator" in {
     val bitwise = sys.env.get("FPT_PAPER_BITWISE_SCHEDULE").contains("1")
     if (!sys.env.get("FPT_PAPER_SCHEDULE").contains("1") && !bitwise) {
       cancel(
@@ -51,14 +51,7 @@ final class PaperCmuxScheduleSpec
       .withAnnotations(
         Seq(
           VerilatorBackendAnnotation,
-          VerilatorFlags(
-            Seq(
-              "--output-split",
-              "99999999",
-              "--output-split-cfuncs",
-              "99999999"
-            )
-          )
+          PaperVerilator.flags
         )
       ) { dut =>
         dut.io.loadStart.poke(false.B)
@@ -67,9 +60,11 @@ final class PaperCmuxScheduleSpec
         dut.io.exponent.poke(1.U)
         dut.io.drainStart.poke(false.B)
         dut.io.drainReady.poke(false.B)
-        for (component <- 0 until config.coefficient.components) {
-          for (lane <- 0 until config.coefficient.inverseLanes) {
-            dut.io.load(component)(lane).poke(0.U)
+        val torusMask = (BigInt(1) << config.coefficient.torusWidth) - 1
+        val initial = Seq.tabulate(config.coefficient.components) { component =>
+          Seq.tabulate(config.coefficient.polynomialSize) { index =>
+            (BigInt("9e3779b9", 16) * (index + 1) +
+              BigInt("7f4a7c15", 16) * component) & torusMask
           }
         }
         for (component <- 0 until config.externalProduct.outputComponents) {
@@ -103,8 +98,14 @@ final class PaperCmuxScheduleSpec
         dut.clock.step()
         dut.io.loadStart.poke(false.B)
         dut.io.loadValid.poke(true.B)
-        for (_ <- 0 until config.coefficient.polynomialBeats) {
+        for (beat <- 0 until config.coefficient.polynomialBeats) {
           dut.io.loadReady.expect(true.B)
+          for (component <- 0 until config.coefficient.components) {
+            for (lane <- 0 until config.coefficient.inverseLanes) {
+              val index = beat * config.coefficient.inverseLanes + lane
+              dut.io.load(component)(lane).poke(initial(component)(index).U)
+            }
+          }
           dut.clock.step()
         }
         dut.io.loadValid.poke(false.B)
@@ -128,6 +129,24 @@ final class PaperCmuxScheduleSpec
             s"(${cycles + 1} launch-inclusive cycles)"
         )
         cycles should be(if (bitwise) 219 else 202)
+
+        dut.io.drainStart.poke(true.B)
+        dut.clock.step()
+        dut.io.drainStart.poke(false.B)
+        dut.io.drainReady.poke(true.B)
+        for (beat <- 0 until config.coefficient.polynomialBeats) {
+          dut.io.drainValid.expect(true.B)
+          for (component <- 0 until config.coefficient.components) {
+            for (lane <- 0 until config.coefficient.inverseLanes) {
+              val index = beat * config.coefficient.inverseLanes + lane
+              withClue(s"component=$component index=$index") {
+                dut.io.drain(component)(lane).expect(initial(component)(index).U)
+              }
+            }
+          }
+          dut.clock.step()
+        }
+        dut.io.drainDone.expect(true.B)
       }
   }
 }

@@ -2,7 +2,7 @@ package fpt
 
 import chisel3._
 import chiseltest._
-import chiseltest.simulator.{VerilatorBackendAnnotation, VerilatorFlags}
+import chiseltest.simulator.VerilatorBackendAnnotation
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -10,8 +10,9 @@ import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
 
 /** Opt-in Set-II throughput regression for the synthesis-oriented accumulator
-  * banks. Fourteen contexts cover the 212-cycle prefetched pipeline and the
-  * test wraps to context zero to prove sustained 16-cycle reuse.
+  * banks. Fourteen barrel contexts cover its 212-cycle pipeline; fifteen
+  * bitwise contexts cover its 229-cycle pipeline. Both wrap to context zero
+  * to prove sustained 16-cycle reuse.
   */
 final class PaperBankedBatchScheduleSpec
     extends AnyFlatSpec
@@ -19,10 +20,14 @@ final class PaperBankedBatchScheduleSpec
     with Matchers {
   behavior of "the paper-shaped memory-backed CMUX pipeline"
 
-  it should "reuse fourteen Set-II contexts every 16 cycles" in {
-    if (!sys.env.get("FPT_PAPER_BANKED_BATCH").contains("1")) {
+  it should "reuse throughput-matched Set-II contexts every 16 cycles" in {
+    val bitwise = sys.env
+      .get("FPT_PAPER_BITWISE_BANKED_BATCH")
+      .contains("1")
+    if (!sys.env.get("FPT_PAPER_BANKED_BATCH").contains("1") && !bitwise) {
       cancel(
-        "set FPT_PAPER_BANKED_BATCH=1 to run the paper-size banked batch RTL"
+        "set FPT_PAPER_BANKED_BATCH=1 or " +
+          "FPT_PAPER_BITWISE_BANKED_BATCH=1 to run the paper-size banked RTL"
       )
     }
 
@@ -40,12 +45,16 @@ final class PaperBankedBatchScheduleSpec
     val engine = PaperSetII.cmuxEngine(
       forwardPath.toString,
       inversePath.toString,
-      includeVerilogSource = true
+      includeVerilogSource = true,
+      bitwiseBitsPerCycle = if (bitwise) Some(2) else None
     )
+    val expectedLatency = if (bitwise) 229 else 212
     val config = BatchedCmuxEngineConfig(
       engine,
-      batchContexts = 14,
-      coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks
+      batchContexts = if (bitwise) 15 else 14,
+      coefficientStorage =
+        if (bitwise) BatchedCoefficientStorage.BitwiseReplicatedBanks
+        else BatchedCoefficientStorage.ReplicatedBanks
     )
     val issuedContexts = (0 until config.batchContexts) :+ 0
 
@@ -53,14 +62,7 @@ final class PaperBankedBatchScheduleSpec
       .withAnnotations(
         Seq(
           VerilatorBackendAnnotation,
-          VerilatorFlags(
-            Seq(
-              "--output-split",
-              "99999999",
-              "--output-split-cfuncs",
-              "99999999"
-            )
-          )
+          PaperVerilator.flags
         )
       ) { dut =>
         dut.io.loadStart.poke(false.B)
@@ -69,11 +71,13 @@ final class PaperBankedBatchScheduleSpec
         dut.io.commandContext.poke(0.U)
         dut.io.exponent.poke(1.U)
         dut.io.drainStart.poke(false.B)
+        dut.io.drainContext.poke(0.U)
         dut.io.drainReady.poke(false.B)
-        for (component <- 0 until engine.coefficient.components) {
-          for (lane <- 0 until engine.coefficient.inverseLanes) {
-            dut.io.load(component)(lane).poke(0.U)
-          }
+        val torusMask = (BigInt(1) << engine.coefficient.torusWidth) - 1
+        def initial(context: Int, component: Int, index: Int): BigInt = {
+          (BigInt("9e3779b9", 16) * (index + 1) +
+            BigInt("7f4a7c15", 16) * component +
+            BigInt("6a09e667", 16) * context) & torusMask
         }
         for (component <- 0 until engine.externalProduct.outputComponents) {
           for (lane <- 0 until engine.externalProduct.inputLanes) {
@@ -102,8 +106,16 @@ final class PaperBankedBatchScheduleSpec
           dut.clock.step()
           dut.io.loadStart.poke(false.B)
           dut.io.loadValid.poke(true.B)
-          for (_ <- 0 until engine.coefficient.polynomialBeats) {
+          for (beat <- 0 until engine.coefficient.polynomialBeats) {
             dut.io.loadReady.expect(true.B)
+            for (component <- 0 until engine.coefficient.components) {
+              for (lane <- 0 until engine.coefficient.inverseLanes) {
+                val index = beat * engine.coefficient.inverseLanes + lane
+                dut.io.load(component)(lane).poke(
+                  initial(context, component, index).U
+                )
+              }
+            }
             dut.clock.step()
           }
           dut.io.loadValid.poke(false.B)
@@ -148,16 +160,55 @@ final class PaperBankedBatchScheduleSpec
           step()
           cycle should be < 640
         }
+        info(s"accept cycles: ${acceptCycles.mkString(", ")}")
+        info(s"done cycles: ${doneCycles.mkString(", ")}")
         doneContexts.toSeq should be(issuedContexts)
-        doneCycles.sliding(2).foreach { pair =>
-          pair(1) - pair(0) should be(config.commandInterval)
+        doneCycles.sliding(2).zipWithIndex.foreach { case (pair, index) =>
+          withClue(s"completion interval after command $index: ") {
+            pair(1) - pair(0) should be(config.commandInterval)
+          }
         }
-        doneCycles.head - acceptCycles.head should be(212)
+        doneCycles.head - acceptCycles.head should be(expectedLatency)
         info(
-          s"banked Set-II interval ${config.commandInterval}, " +
+          s"${if (bitwise) "bitwise " else ""}banked Set-II " +
+            s"interval ${config.commandInterval}, " +
             s"latency ${doneCycles.head - acceptCycles.head}, " +
             s"contexts ${config.batchContexts}"
         )
+
+        dut.io.drainReady.poke(true.B)
+        for (context <- 0 until config.batchContexts) {
+          dut.io.drainContext.poke(context.U)
+          while (!dut.io.drainStartReady.peek().litToBoolean) {
+            step()
+            cycle should be < 2048
+          }
+          dut.io.drainStart.poke(true.B)
+          step()
+          dut.io.drainStart.poke(false.B)
+          while (!dut.io.drainValid.peek().litToBoolean) {
+            step()
+            cycle should be < 2048
+          }
+          for (beat <- 0 until engine.coefficient.polynomialBeats) {
+            dut.io.drainValid.expect(true.B)
+            for (component <- 0 until engine.coefficient.components) {
+              for (lane <- 0 until engine.coefficient.inverseLanes) {
+                val index = beat * engine.coefficient.inverseLanes + lane
+                withClue(
+                  s"context=$context component=$component index=$index"
+                ) {
+                  dut.io.drain(component)(lane).expect(
+                    initial(context, component, index).U
+                  )
+                }
+              }
+            }
+            step()
+          }
+          dut.io.drainDone.expect(true.B)
+          dut.io.drainDoneContext.expect(context.U)
+        }
       }
   }
 }

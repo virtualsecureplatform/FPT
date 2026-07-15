@@ -2,7 +2,7 @@ package fpt
 
 import chisel3._
 import chiseltest._
-import chiseltest.simulator.{VerilatorBackendAnnotation, VerilatorFlags}
+import chiseltest.simulator.VerilatorBackendAnnotation
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -47,14 +47,7 @@ final class PaperBatchedScheduleSpec
       .withAnnotations(
         Seq(
           VerilatorBackendAnnotation,
-          VerilatorFlags(
-            Seq(
-              "--output-split",
-              "99999999",
-              "--output-split-cfuncs",
-              "99999999"
-            )
-          )
+          PaperVerilator.flags
         )
       ) { dut =>
         dut.io.loadStart.poke(false.B)
