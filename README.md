@@ -173,6 +173,10 @@ checkpoint reports.  Vivado is not installed in this workspace, so the
 checked regression stops at Chisel tests plus complete-design Verilator lint;
 hardware benefit claims must wait for those U280 reports.
 
+See `docs/hardware-comparison.md` for the reproduced 192-cycle Set-II CMUX
+schedule, generated multiplier-expression comparison, and the remaining
+U280 measurement checklist.
+
 The integration currently supports native 32-bit Torus parameters.  Its
 bootstrapping key is normalized to real Torus units before being quantized to
 the paper's BK format; this is why it is a distinct key type rather than a

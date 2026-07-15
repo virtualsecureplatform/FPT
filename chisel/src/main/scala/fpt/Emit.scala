@@ -4,15 +4,7 @@ import circt.stage.ChiselStage
 
 import java.nio.file.Path
 
-object EmitPaperCmux extends App {
-  require(
-    args.length == 3,
-    "usage: EmitPaperCmux OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V"
-  )
-
-  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
-  val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
-  val inversePath = Path.of(args(2)).toAbsolutePath.normalize
+object PaperSetII {
   val coefficient = CmuxCoefficientConfig(
     polynomialSize = 1024,
     forwardLanes = 128,
@@ -48,26 +40,47 @@ object EmitPaperCmux extends App {
     bootstrappingKey = FixedFormat(8, 19),
     accumulator = FixedFormat(27, 3)
   )
-  val config = CmuxEngineConfig(
-    coefficient,
-    forward,
-    inverse,
-    external,
-    inverseNormalizeShift = 0,
-    forwardSGen = Some(
-      SGenBackendConfig(
-        "FptSGenForward",
-        forwardPath.toString,
-        includeVerilogSource = false
-      )
-    ),
-    inverseSGen = Some(
-      SGenBackendConfig(
-        "FptSGenInverse",
-        inversePath.toString,
-        includeVerilogSource = false
+  def cmuxEngine(
+      forwardPath: String,
+      inversePath: String,
+      includeVerilogSource: Boolean
+  ): CmuxEngineConfig =
+    CmuxEngineConfig(
+      coefficient,
+      forward,
+      inverse,
+      external,
+      inverseNormalizeShift = 0,
+      forwardSGen = Some(
+        SGenBackendConfig(
+          "FptSGenForward",
+          forwardPath,
+          includeVerilogSource = includeVerilogSource
+        )
+      ),
+      inverseSGen = Some(
+        SGenBackendConfig(
+          "FptSGenInverse",
+          inversePath,
+          includeVerilogSource = includeVerilogSource
+        )
       )
     )
+}
+
+object EmitPaperCmux extends App {
+  require(
+    args.length == 3,
+    "usage: EmitPaperCmux OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V"
+  )
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
+  val inversePath = Path.of(args(2)).toAbsolutePath.normalize
+  val config = PaperSetII.cmuxEngine(
+    forwardPath.toString,
+    inversePath.toString,
+    includeVerilogSource = false
   )
 
   ChiselStage.emitSystemVerilogFile(
