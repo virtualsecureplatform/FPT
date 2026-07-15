@@ -53,5 +53,5 @@ This is a streaming architecture baseline, not a claim of exact paper RTL.
 The fork now specializes tangent constants inside SGen, so the Chisel paper
 top no longer implements runtime twist multipliers around a cyclic core. It
 still lacks FPT's unpublished per-stage width/scaling schedule and specialized
-radix-2^k structures. The handwritten SystemVerilog under `rtl/` is retained
-only as an earlier scheduling oracle.
+radix-2^k structures. All handwritten FPT RTL around the generated SGen
+BlackBoxes is Chisel.

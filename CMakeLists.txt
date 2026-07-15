@@ -8,9 +8,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(FPT_BUILD_TESTS "Build the standalone fixed-point FFT tests" ON)
 option(FPT_BUILD_TFHEPP_TESTS "Build the TFHEpp Blind Rotate integration test" OFF)
-option(FPT_BUILD_RTL_TESTS "Build C++ vectors and test the RTL arithmetic" ON)
+option(FPT_BUILD_RTL_TESTS "Build C++ vectors for the Chisel RTL tests" ON)
 set(FPT_TFHEPP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../TFHEpp" CACHE PATH
     "Path to a TFHEpp source checkout")
+
+include(CTest)
 
 add_library(fpt_reference
     src/fft.cpp
@@ -26,7 +28,6 @@ target_compile_features(fpt_reference PUBLIC cxx_std_20)
 target_compile_options(fpt_reference PRIVATE -Wall -Wextra)
 
 if(FPT_BUILD_TESTS)
-    include(CTest)
     add_executable(fpt_fft_test tests/fft_test.cpp)
     target_link_libraries(fpt_fft_test PRIVATE FPT::reference)
     target_compile_options(fpt_fft_test PRIVATE -Wall -Wextra)
@@ -34,8 +35,6 @@ if(FPT_BUILD_TESTS)
 endif()
 
 if(FPT_BUILD_RTL_TESTS)
-    find_program(FPT_IVERILOG_EXECUTABLE iverilog)
-    if(FPT_IVERILOG_EXECUTABLE)
         add_executable(fpt_rtl_vector_gen tests/rtl_vector_gen.cpp)
         target_link_libraries(fpt_rtl_vector_gen PRIVATE FPT::reference)
         target_compile_options(fpt_rtl_vector_gen PRIVATE -Wall -Wextra)
@@ -90,14 +89,9 @@ if(FPT_BUILD_RTL_TESTS)
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_vectors.txt"
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_cmux_engine_twiddles.txt"
                     "${CMAKE_CURRENT_BINARY_DIR}/rtl_blind_rotate_vectors.txt")
-        add_test(NAME fpt_rtl_arithmetic
-            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_rtl_test.sh"
-                    "${FPT_IVERILOG_EXECUTABLE}"
-                    "${CMAKE_CURRENT_SOURCE_DIR}"
-                    "${CMAKE_CURRENT_BINARY_DIR}")
-    else()
-        message(WARNING "iverilog not found; skipping RTL simulation test")
-    endif()
+        add_test(NAME fpt_rtl_source_policy
+            COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_rtl_source_policy.sh")
 endif()
 
 if(FPT_BUILD_TFHEPP_TESTS)

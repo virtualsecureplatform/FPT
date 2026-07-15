@@ -100,52 +100,20 @@ while the next transaction accumulates at the
 128-lane forward width. `CmuxEngine` remains the simpler single-command
 correctness top.
 
-## Legacy scheduling prototype
+## RTL source policy
 
-The default build also generates deterministic vectors from the C++ model and
-checks an earlier SystemVerilog scheduling prototype with Icarus Verilog:
+All handwritten synthesizable FPT RTL is Chisel under `chisel/src/main`.
+Verilog is used only for generated SGen transform BlackBoxes, including the
+three checked-in small regression fixtures. Chisel-emitted SystemVerilog and
+paper-sized SGen output remain generated build artifacts rather than a second
+handwritten implementation. `tools/check_rtl_source_policy.sh` enforces this
+boundary over tracked HDL files and runs with the CTest reference suite.
 
-```sh
-cmake -S . -B build -DFPT_BUILD_RTL_TESTS=ON
-cmake --build build -j
-ctest --test-dir build -R fpt_rtl --output-on-failure
-```
+The deterministic C++ vectors named `rtl_*.txt` are retained because the
+Chisel arithmetic, transform, CMUX, and Blind Rotate regressions consume them;
+they no longer feed a separate Verilog testbench.
 
-This prototype regression covers scalar and four-lane cyclic FFTs, forward and inverse
-tangent wrappers, the Gauss butterfly, and scalar and four-lane mixed-format
-External Product MACs.  The twiddle multiply uses the paper's three-real-
-multiplier Gauss form.  The External Product MAC uses four real multipliers
-and performs a single full-precision requantization before the wrapped
-accumulator addition.
-
-It remains as a temporary cross-check while equivalent Chisel modules are
-added; it is not the implementation intended for hardware evaluation.
-`rtl/fpt_fft_core.sv` is a one-butterfly iterative reference core, not yet the
-paper's fully overlapped radix-2^4 streaming architecture.  It accepts natural-order
-complex frames, stores them in bit-reversed order, and produces natural-order
-FFT frames.  `rtl/fpt_fft_wide_core.sv` evaluates a configurable number of
-butterflies per cycle and loads/emits the same number of samples per cycle.
-For `M = N/2` complex points and `L` lanes, its non-overlapped frame cost is
-`M/L + log2(M)*M/(2L) + M/L` cycles.  Its register-array memory is deliberately
-transparent for verification; a high-throughput implementation still needs
-banked RAM or an SGen permutation network and overlap between frames.
-
-Twist and FFT coefficients use external ROM interfaces.  The U280 synthesis
-script in `rtl/scripts/synth_u280.tcl` targets HOGE's
-`xcu280-fsvh2892-2L-e` part and 292 MHz clock and accepts parameter overrides
-after its output-directory argument.  For example:
-
-```sh
-vivado -mode batch -source rtl/scripts/synth_u280.tcl \
-  -tclargs fpt_tangent_fft_wide_core build/vivado-fft-l8 \
-  POINTS=512 LANES=8 DATA_WIDTH=38 TWIDDLE_WIDTH=34 TWIDDLE_FRAC=32
-```
-
-Vivado 2023.2 (or a compatible installation) is required and is not present
-in this workspace. Yosys provides a local UltraScale+ mapping comparison for
-the coefficient frontends, which contain no transform multipliers. Its DSP
-mapping is not representative of Vivado's signed asymmetric DSP48E2 mapping,
-so complete-CMUX results still require Vivado.
+## SGen streaming transforms
 
 For the continuous-flow comparison path, the `fpt` branch of
 `virtualsecureplatform/SGen` carries the Gauss complex multiplier, narrower
