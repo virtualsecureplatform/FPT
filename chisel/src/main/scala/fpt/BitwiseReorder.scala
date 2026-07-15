@@ -42,6 +42,9 @@ final class BitwiseNegacyclicReorder(
     val bitValid = Output(Bool())
     val bitReady = Input(Bool())
     val bitIndex = Output(UInt(chunkWidth.W))
+    val originalChunk = Output(
+      Vec(polynomialSize, UInt(bitsPerCycle.W))
+    )
     val bitChunk = Output(Vec(polynomialSize, UInt(bitsPerCycle.W)))
     val rotateDone = Output(Bool())
 
@@ -151,6 +154,7 @@ final class BitwiseNegacyclicReorder(
   val nextNegateCarry = Wire(Vec(polynomialSize, Bool()))
   for (position <- 0 until polynomialSize) {
     val source = rotatedChunks(position)
+    io.originalChunk(position) := selectedChunks(position)
     val wraps = position.U < shift
     val negate = wraps ^ highNegate
     val selected = Mux(negate, ~source, source)

@@ -176,3 +176,17 @@ object EmitPaperBitwiseReorder extends App {
     firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
   )
 }
+
+object EmitPaperBitwiseDecomposition extends App {
+  require(args.length == 1, "usage: EmitPaperBitwiseDecomposition OUTPUT_DIR")
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  ChiselStage.emitSystemVerilogFile(
+    new BitwiseCmuxDecompositionFrontend(
+      config = PaperSetII.coefficient,
+      bitsPerCycle = 2
+    ),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+  )
+}

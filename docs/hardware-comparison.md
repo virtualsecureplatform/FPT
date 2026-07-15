@@ -71,10 +71,13 @@ negacyclic barrel rotator. A standalone `BitwiseNegacyclicReorder` now
 reproduces the paper's coefficient-to-bitwise idea: 64 coefficient lanes load
 a transposed bank structure, a 2-bit-wide logarithmic barrel emits all 1024
 positions over 16 cycles, and serial carries implement exact wrapped
-two's-complement negation. Its paper-scale Chisel output is 3.02 MB and passes
-complete lint. Integrating its bit stream with centered gadget decomposition
-is the next step; until then, the memory-backed top remains the conservative
-full-width rotation baseline.
+two's-complement negation. `BitwiseCmuxDecompositionFrontend` continues the
+same stream through exact biased subtraction and both centered gadget levels.
+The reorder alone emits as 3.02 MB; the combined Set-II frontend emits as
+5.01 MB and passes complete lint across 4.79 MB of sources. Repacking its
+polynomial-wide digit results into the forward FFT's 128-lane folded stream is
+the next integration step. Until then, the memory-backed top remains the
+conservative full-width rotation baseline.
 
 Regenerate the cyclic comparison and table from local SGen outputs with:
 

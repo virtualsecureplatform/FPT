@@ -176,12 +176,16 @@ full-width barrel rotator. At the Set II shape it loads 64 32-bit coefficients
 per cycle, transposes them into 2-bit banks, and emits all 1024 rotated
 positions over 16 bitwise cycles. Wrapped coefficients use serial
 two's-complement carry, so every exponent in `[0, 2N)` remains exact. The
-paper-scale module emits as 3.02 MB and passes Verilator lint; it is not yet
-wired into gadget decomposition, so the physical CMUX above still uses the
-ten-stage 32-bit barrel network. Reproduce the standalone block with:
+paper-scale reorder emits as 3.02 MB. `BitwiseCmuxDecompositionFrontend` adds
+bit-serial subtraction, the fixed decomposition bias, and both centered
+base-10 digit levels; it emits as 5.01 MB and passes complete Verilator lint.
+The combined frontend is not yet wired to the forward FFT's coefficient-wise
+digit stream, so the physical CMUX above still uses the ten-stage 32-bit
+barrel network. Reproduce both standalone blocks with:
 
 ```sh
 tools/emit_paper_bitwise_reorder.sh build/chisel-paper-bitwise
+tools/emit_paper_bitwise_frontend.sh build/chisel-paper-bitwise-frontend
 ```
 
 Vivado scripts run the transform alone or the complete CMUX out of context on
