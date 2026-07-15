@@ -100,6 +100,12 @@ while the next transaction accumulates at the
 128-lane forward width. `CmuxEngine` remains the simpler single-command
 correctness top.
 
+`SampleExtractIndexZero` converts the natural-order TRLWE drain to TFHEpp's
+index-zero TLWE order using synchronous mask memory. It sustains one Torus
+coefficient per cycle, including the reversed/negated mask, and preserves the
+output across arbitrary backpressure. It provides the output stage needed to
+align the FPT Blind Rotate comparison boundary with HOGE.
+
 ## RTL source policy
 
 All handwritten synthesizable FPT RTL is Chisel under `chisel/src/main`.
