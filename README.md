@@ -82,12 +82,13 @@ and differs by at most one Q27.14-to-Torus quantum (`2^18`) from the radix-2
 C++ result.  The small case is dominated by pipeline fill; the paper-sized
 throughput/resource comparison is generated separately.
 
-`DoubleBufferedExternalProductAccumulator` implements the paper's PISO
-overlap boundary: one tagged transaction can drain at the inverse width while
-the next transaction accumulates at the forward width.  This is the first
-stage of the batched engine; `CmuxEngine` itself remains a sequential
-single-command correctness engine until the twelve in-flight accumulator
-contexts are integrated.
+`BatchedCmuxEngine` adds twelve tagged coefficient-accumulator contexts around
+the continuous transform pipeline.  Its double-buffered External Product
+PISO drains one transaction at the 64-lane inverse width while the next
+transaction accumulates at the 128-lane forward width.  The opt-in paper-size
+regression accepts and completes contexts every 16 cycles in order, with a
+192-cycle launch-inclusive latency.  `CmuxEngine` remains the simpler
+single-command correctness top.
 
 ## Legacy scheduling prototype
 
@@ -151,6 +152,8 @@ SGen sources and emit/lint the composed design with:
 tools/generate_sgen_fpt.sh ../SGen build/sgen-fpt
 tools/emit_paper_cmux.sh build/sgen-fpt/forward.v \
   build/sgen-fpt/inverse.v build/chisel-paper
+tools/emit_paper_batched_cmux.sh build/sgen-fpt/forward.v \
+  build/sgen-fpt/inverse.v build/chisel-paper-batched
 ```
 
 SGen remains a separate Verilog BlackBox in synthesis; CIRCT does not append
@@ -172,7 +175,11 @@ vivado -mode batch -source chisel/scripts/synth_sgen_u280.tcl \
 vivado -mode batch -source chisel/scripts/synth_paper_cmux_u280.tcl \
   -tclargs build/chisel-paper/CmuxEngine.sv \
   build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
-  build/vivado-paper-cmux 3.425
+  build/vivado-paper-cmux 3.425 CmuxEngine
+vivado -mode batch -source chisel/scripts/synth_paper_cmux_u280.tcl \
+  -tclargs build/chisel-paper-batched/BatchedCmuxEngine.sv \
+  build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
+  build/vivado-paper-batched-cmux 5.0 BatchedCmuxEngine
 ```
 
 These scripts produce hierarchical utilization, timing, power, and routed

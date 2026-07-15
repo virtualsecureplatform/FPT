@@ -1,13 +1,13 @@
 # Fixed-point FTT hardware comparison status
 
-The paper-shaped single-command implementation reproduces FPT's latency in
-real generated RTL. Its Chisel CMUX uses `N=1024`, four decomposition rows, a
-512-point/128-lane forward transform, and two parallel 512-point/64-lane
-inverse transforms. The opt-in Verilator regression observes `done` 191 cycles
-after command acceptance, or 192 cycles when the launch cycle is included.
-That matches the 192-cycle CMUX latency reported for FPT Set II. The batched
-top that accepts a different ciphertext every 16 cycles is still being
-integrated; latency alone must not be interpreted as that initiation interval.
+The paper-shaped implementation now reproduces both FPT Set II schedule
+numbers in real generated RTL. Its Chisel CMUX uses `N=1024`, four
+decomposition rows, a 512-point/128-lane forward transform, and two parallel
+512-point/64-lane inverse transforms. The single-command regression observes
+`done` 191 cycles after command acceptance, or 192 cycles when the launch
+cycle is included. The twelve-context batched regression accepts and completes
+a different context every 16 cycles, in order, with the same 192-cycle
+launch-inclusive latency.
 
 Run the schedule check after generating the paper-size SGen sources:
 
@@ -17,6 +17,11 @@ FPT_PAPER_SCHEDULE=1 \
 FPT_SGEN_FORWARD=../build/sgen-fpt/forward.v \
 FPT_SGEN_INVERSE=../build/sgen-fpt/inverse.v \
 sbt 'testOnly fpt.PaperCmuxScheduleSpec'
+
+FPT_PAPER_BATCH=1 \
+FPT_SGEN_FORWARD=../build/sgen-fpt/forward.v \
+FPT_SGEN_INVERSE=../build/sgen-fpt/inverse.v \
+sbt 'testOnly fpt.PaperBatchedScheduleSpec'
 ```
 
 ## Locally measurable transform tradeoff
@@ -39,11 +44,13 @@ the four-cycle launch interval, and both inverse components run concurrently.
 The result is the launch-inclusive 192-cycle schedule even though the forward
 and inverse pipelines themselves are 64 and 102 cycles deep.
 
-The first batch-specific primitive is implemented separately: a tagged,
-double-buffered External Product accumulator accepts the next 128-lane
-transaction while the previous result drains through its 64-lane PISO output.
-The remaining integration must keep twelve coefficient-accumulator contexts
-in flight and route each delayed inverse result back to its context.
+The batch top combines a tagged, double-buffered External Product accumulator
+with twelve coefficient contexts. It accepts the next 128-lane transaction
+while the previous result drains through its 64-lane PISO output, then routes
+each delayed inverse result back to its originating context. Its current
+coefficient store is a direct, correctness-oriented register/multiplexer
+implementation; reproducing the paper's bitwise stream reorder and compact
+memory organization is still required before expecting comparable area.
 
 Regenerate the table from local SGen outputs with:
 
@@ -55,9 +62,21 @@ tools/report_sgen_structure.sh \
 
 ## What remains before claiming a real U280 benefit
 
+The paper's Table 3 gives these Set II implementation targets. They are
+reference numbers, not measurements from this repository:
+
+| Block | LUT | FF | DSP | BRAM |
+| --- | ---: | ---: | ---: | ---: |
+| Full FPT | 595k | 1,024k | 5,980 | 412 |
+| CMUX | 458k | 827k | 5,980 | 215 |
+| 256-lane MAC | 66k | 79k | 1,536 | 215 |
+| FFT 512/128 | 222k | 449k | 2,958 | 0 |
+| IFFT 512/64 | 130k | 255k | 1,486 | 0 |
+
 The exact U280 result must come from Vivado because generic synthesis does not
 model DSP48E2 packing for the signed asymmetric fixed-point products.  Run
-both generated transforms and the complete CMUX through the scripts in
+both generated transforms, the single-command CMUX, and `BatchedCmuxEngine`
+through the scripts in
 `chisel/scripts/`, at 5.0 ns for the paper point and 3.425 ns for a direct
 HOGE-frequency comparison.  Record DSP, LUT, FF, BRAM/URAM, achieved timing,
 and power from the routed reports.
