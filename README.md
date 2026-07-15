@@ -48,16 +48,23 @@ owns the fixed-point arithmetic, tangent boundaries, External Product, CMUX
 control, and top-level interfaces.  Generated SGen Verilog may be instantiated
 as a black box for its continuous-flow cyclic FFT permutation network.
 
-Build the Chisel arithmetic and compare it with all C++ fixed-point vectors:
+Generate the deterministic C++ vectors, then build the Chisel design and run
+its regressions:
 
 ```sh
+cmake -S . -B build -DFPT_BUILD_RTL_TESTS=ON
+cmake --build build -j
 (cd chisel && sbt test)
 ```
 
 The current Chisel regression covers the Gauss butterfly in scaled and
 unscaled modes, the mixed-format complex External Product MAC, a configurable
-multi-lane cyclic FFT, and forward/inverse tangent wrappers.  The arithmetic
-and all complete transform frames are bit-exact with the C++ model.
+multi-lane cyclic FFT, forward/inverse tangent wrappers, and the typed boundary
+to a generated SGen continuous-flow FFT.  The native Chisel transforms are
+bit-exact with the C++ model.  The 16-point SGen fixture processes 16 frames
+back-to-back and stays within 6 raw Q18.12 units of the C++ radix-2 oracle;
+its inputs are bounded to exclude intermediate overflow because different
+radix factorizations need not agree after fixed-width overflow.
 
 ## Legacy scheduling prototype
 
@@ -108,9 +115,10 @@ DSP48E2 mapping.
 For the continuous-flow comparison path, `sgen/fpt-sgen.patch` adapts the
 current upstream SGen complex multiplier and twiddle widths, and
 `tools/generate_sgen_fpt.sh` generates configurable full-throughput cyclic
-FFT/IFFT Verilog.  The defaults reproduce the paper's 512-point, 128-lane
-forward and 64-lane inverse transform shapes.  See `sgen/README.md` for the
-remaining differences from the unpublished FPT generator extensions.
+FFT/IFFT Verilog with stable `FptSGenForward` and `FptSGenInverse` module
+names.  The defaults reproduce the paper's 512-point, 128-lane forward and
+64-lane inverse transform shapes.  See `sgen/README.md` for the remaining
+differences from the unpublished FPT generator extensions.
 
 The integration currently supports native 32-bit Torus parameters.  Its
 bootstrapping key is normalized to real Torus units before being quantized to

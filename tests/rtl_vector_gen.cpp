@@ -95,7 +95,7 @@ void cyclic_fft(std::vector<fpt::FixedComplex> &values, bool inverse = false)
 
 int main(int argc, char **argv)
 {
-    if (argc != 10)
+    if (argc != 11)
         throw std::invalid_argument(
             "expected all RTL vector and twiddle output paths");
     std::ofstream output(argv[1]);
@@ -212,6 +212,30 @@ int main(int argc, char **argv)
             fft_output << input[index].real << ' ' << input[index].imag << ' '
                        << expected[index].real << ' '
                        << expected[index].imag << '\n';
+    }
+
+    // A streaming radix-2^k FFT and the radix-2 oracle can legitimately
+    // diverge after an intermediate fixed-width overflow: later fractional
+    // multiplies make modular addition order observable. Keep this separate
+    // set within the no-overflow range so it checks SGen's arithmetic and
+    // stream ordering rather than associativity after overflow.
+    std::ofstream sgen_fft_output(argv[10]);
+    if (!sgen_fft_output)
+        throw std::runtime_error("could not open SGen FFT RTL vectors");
+    const std::int64_t sgen_data_limit = std::int64_t{1} << 23;
+    std::uniform_int_distribution<std::int64_t> sgen_data_distribution(
+        -sgen_data_limit, sgen_data_limit - 1);
+    for (int frame = 0; frame < 16; ++frame) {
+        std::vector<fpt::FixedComplex> input(fft_points);
+        for (auto &value : input)
+            value = {sgen_data_distribution(generator),
+                     sgen_data_distribution(generator)};
+        auto expected = input;
+        cyclic_fft(expected);
+        for (std::size_t index = 0; index < fft_points; ++index)
+            sgen_fft_output << input[index].real << ' ' << input[index].imag
+                            << ' ' << expected[index].real << ' '
+                            << expected[index].imag << '\n';
     }
 
     std::ofstream tangent_output(argv[5]);
