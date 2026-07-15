@@ -55,8 +55,9 @@ Build the Chisel arithmetic and compare it with all C++ fixed-point vectors:
 ```
 
 The current Chisel regression covers the Gauss butterfly in scaled and
-unscaled modes and the mixed-format complex External Product MAC.  Both are
-bit-exact with the C++ model.
+unscaled modes, the mixed-format complex External Product MAC, a configurable
+multi-lane cyclic FFT, and forward/inverse tangent wrappers.  The arithmetic
+and all complete transform frames are bit-exact with the C++ model.
 
 ## Legacy scheduling prototype
 
