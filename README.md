@@ -141,6 +141,12 @@ frames per direction, and a dense nonzero Set-II CMUX vector:
 tools/test_paper_sgen_numerics.sh ../SGen build/paper-sgen-numerics
 ```
 
+Set `FPT_PAPER_BITWISE_CMUX_NUMERICS=1` on the same command to validate the
+full-size 2-bit folded coefficient frontend instead of the barrel frontend.
+It completes in 224 cycles and produces the identical error histogram and
+1,780 changed-output count, so the 17-cycle frontend tradeoff introduces no
+measurable distribution change on this vector.
+
 It currently bounds the forward core to 518 raw Q18.12 units and the inverse
 core to 8 raw Q27.3 units versus a quantized double-precision oracle. The
 complete 207-cycle CMUX changes 1,780 of 2,048 Torus coefficients. Against the
@@ -221,7 +227,9 @@ monolithic C++ output. It has the same 224-cycle latency and exactly
 preserves all 2,048 nonzero Torus words with a zero external product. The
 barrel engine's separate full-size numerical executable drives a dense
 nonzero four-row external product through the real generated transforms and
-checks its complete Q27.3 error distribution against the C++ model. The
+checks its complete Q27.3 error distribution against the C++ model. Selecting
+the folded frontend gives the identical distribution at its expected
+224-cycle latency. The
 bitwise batched top alternates two transposed working sets over the replicated
 accumulator banks. Its paper shape uses 15 contexts, emits as 11.09 MB, lints
 across 35.97 MB in 25 modules, preserves the `120 x 128` memory arrays, and

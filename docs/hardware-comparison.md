@@ -66,7 +66,7 @@ Measured executable schedules on this host are:
 | Top | Accept cycles | Done cycles | Latency / II | Functional coverage |
 | --- | --- | --- | --- | --- |
 | Barrel single CMUX | `0` | `207` | `207 / -` | Dense nonzero key; 1,495/2,048 outputs within one Q27.3 raw unit of C++ |
-| Bitwise single CMUX | `0` | `224` | `224 / -` | 2,048 nonzero Torus words |
+| Bitwise single CMUX | `0` | `224` | `224 / -` | Dense nonzero key; same Q27.3 histogram as barrel |
 | 14-context barrel batch | `0,16,...,224` | `217,233,...,441` | `217 / 16` | 28,672 nonzero Torus words |
 | 15-context bitwise batch | `0,16,...,240` | `234,250,...,474` | `234 / 16` | 30,720 nonzero Torus words |
 
@@ -80,6 +80,11 @@ fixed radix-2 C++ model. Its 1,780 changed outputs prove that the result does
 not come from the zero-key identity case. One inverse raw unit maps to `2^29`
 Torus units, so the distribution is the meaningful precision result at this
 deliberately coarse Set-II format.
+
+The nonzero bitwise run produces the identical histogram and changed-output
+count at its expected 224-cycle latency. Thus its 17-cycle penalty is isolated
+to the folded coefficient frontend in this vector; the frontend introduces no
+measurable distribution change.
 
 ## Locally measurable transform tradeoff
 
@@ -155,7 +160,9 @@ nonzero accumulator when the bootstrapping key is zero.
 The companion full-size arithmetic regression exercises the barrel engine
 with a dense nonzero key. It completes in the same 207 cycles after command
 acceptance, changes 1,780 of 2,048 outputs, and checks the complete Q27.3
-phase-bin error distribution against the independent C++ CMUX model.
+phase-bin error distribution against the independent C++ CMUX model. Selecting
+the 2-bit folded engine reproduces the measured distribution at its 224-cycle
+latency.
 
 The batched bitwise frontend keeps the replicated accumulator memories and
 alternates two transposed working sets: one streams buffered digits while the

@@ -35,6 +35,11 @@ Run the full-size nonzero numerical regression with:
 tools/test_paper_sgen_numerics.sh ../SGen build/paper-sgen-numerics
 ```
 
+Prefix the command with `FPT_PAPER_BITWISE_CMUX_NUMERICS=1` to run the same
+nonzero oracle through the full-size 2-bit folded coefficient frontend. That
+path takes 224 cycles and produces the same histogram as the 207-cycle barrel
+frontend.
+
 It compares four 512-point frames against both the fixed radix-2 C++ model and
 a quantized double-precision tangent-transform oracle, then drives one dense
 nonzero Set-II CMUX through coefficient decomposition, all four forward

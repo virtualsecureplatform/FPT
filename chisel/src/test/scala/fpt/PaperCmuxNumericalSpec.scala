@@ -52,8 +52,14 @@ final class PaperCmuxNumericalSpec
   behavior of "the complete generated Set-II CMUX"
 
   it should "bound a dense nonzero external product against the C++ model" in {
-    if (!sys.env.get("FPT_PAPER_CMUX_NUMERICS").contains("1")) {
-      cancel("set FPT_PAPER_CMUX_NUMERICS=1 to run the nonzero Set-II CMUX")
+    val bitwise = sys.env
+      .get("FPT_PAPER_BITWISE_CMUX_NUMERICS")
+      .contains("1")
+    if (!sys.env.get("FPT_PAPER_CMUX_NUMERICS").contains("1") && !bitwise) {
+      cancel(
+        "set FPT_PAPER_CMUX_NUMERICS=1 or " +
+          "FPT_PAPER_BITWISE_CMUX_NUMERICS=1 to run the nonzero Set-II CMUX"
+      )
     }
     val forwardPath = requiredPath(
       "FPT_SGEN_FORWARD",
@@ -72,7 +78,8 @@ final class PaperCmuxNumericalSpec
     val config = PaperSetII.cmuxEngine(
       forwardPath.toString,
       inversePath.toString,
-      includeVerilogSource = true
+      includeVerilogSource = true,
+      bitwiseBitsPerCycle = if (bitwise) Some(2) else None
     )
     val coefficient = config.coefficient
     val external = config.externalProduct
@@ -169,7 +176,7 @@ final class PaperCmuxNumericalSpec
           cycles += 1
           cycles should be < 256
         }
-        cycles should be(207)
+        cycles should be(if (bitwise) 224 else 207)
 
         dut.io.drainStart.poke(true.B)
         dut.clock.step()
@@ -201,7 +208,8 @@ final class PaperCmuxNumericalSpec
         val total = coefficient.polynomialSize * coefficient.components
         val withinOne = errorHistogram(0) + errorHistogram(1)
         info(
-          s"Set-II nonzero CMUX: latency=$cycles, " +
+          s"Set-II nonzero ${if (bitwise) "bitwise " else ""}CMUX: " +
+            s"latency=$cycles, " +
             s"maximum Torus error=$maximumError " +
             s"(${maximumError >> coefficient.torusShift} inverse raw units), " +
             s"exact=$exact/$total, within one inverse raw unit=$withinOne/$total, " +
