@@ -53,6 +53,11 @@ if ! rg -q 'Seq\.fill\(rightShift\)\(sign\)' \
     echo "SGen is missing signed fractional power-of-two stage scaling" >&2
     exit 1
 fi
+if ! rg -q 'val adjustedHigh = ir\.rtl\.Plus' \
+    "$sgen_dir/src/main/scala/ir/rtl/hardwaretype/FixedPoint.scala"; then
+    echo "SGen is missing the DSP48E2-sized wide-product split" >&2
+    exit 1
+fi
 
 mkdir -p "$output_dir"
 "$sgen_dir/sgen.bat" -nologo \

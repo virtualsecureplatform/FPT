@@ -10,9 +10,17 @@ carries the reproducible FPT transform changes:
 - Q2 twiddles whose total width is four bits shorter than the data path;
 - fixed forward-twist and inverse-untwist operators for the tangent FFT.
 
-The workspace also requires SGen commit `5c0680a`, which sign-extends
-fractional power-of-two stage scaling. That commit is local until the FPT SGen
-fork is published; `tools/generate_sgen_fpt.sh` rejects a checkout without it.
+The workspace also requires two local SGen commits:
+
+- `5c0680a` sign-extends fractional power-of-two stage scaling;
+- `4d930ae` splits FPT's 30-by-26-bit fixed-point product into two exact signed
+  products that each fit one DSP48E2 multiplier.
+
+These commits are local until the FPT SGen fork is published;
+`tools/generate_sgen_fpt.sh` rejects a checkout without either change. The
+wide-product split changes only RTL structure: an exhaustive boundary test and
+10,000 deterministic random products show it is bit-for-bit equivalent to the
+original full signed product, and the complete 3,485-test SGen suite passes.
 
 Clone or switch to that branch and build it:
 
