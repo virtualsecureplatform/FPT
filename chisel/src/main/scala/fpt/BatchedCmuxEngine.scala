@@ -8,6 +8,7 @@ sealed trait BatchedCoefficientStorage
 object BatchedCoefficientStorage {
   case object RegisterArray extends BatchedCoefficientStorage
   case object ReplicatedBanks extends BatchedCoefficientStorage
+  case object BitwiseReplicatedBanks extends BatchedCoefficientStorage
 }
 
 final case class BatchedCmuxEngineConfig(
@@ -143,6 +144,18 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
           new PrefetchedBatchedCmuxCoefficientStore(
             coefficientConfig,
             config.batchContexts
+          )
+        )
+      case BatchedCoefficientStorage.BitwiseReplicatedBanks =>
+        Module(
+          new BitwisePrefetchedBatchedCmuxCoefficientStore(
+            coefficientConfig,
+            config.batchContexts,
+            base.bitwiseBitsPerCycle.getOrElse(
+              throw new IllegalArgumentException(
+                "bitwise batched storage requires bitwiseBitsPerCycle"
+              )
+            )
           )
         )
     }

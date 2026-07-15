@@ -85,15 +85,19 @@ the full-width barrel network and produces the same bounded result in 166
 cycles. The small case is dominated by pipeline fill; the paper-sized
 throughput/resource comparison is generated separately.
 
-`BatchedCmuxEngine` supports two coefficient-storage implementations.  With
-the integrated transforms, the register schedule is 203 cycles and needs 13
+`BatchedCmuxEngine` supports register, barrel-prefetched, and bitwise-prefetched
+coefficient storage. With the integrated transforms, the register schedule is
+203 cycles and needs 13
 contexts for sustained 16-cycle reuse.  The emitted physical top instead uses
 replicated synchronous memory banks and two polynomial prefetch buffers.  Its
 eight-cycle prefetch overlaps the prior 16-cycle decomposition stream,
 retaining the 16-cycle interval with a 212-cycle latency and 14 contexts.  In
-both cases, the double-buffered External Product PISO drains at the 64-lane
-inverse width while the next transaction accumulates at the 128-lane forward
-width. `CmuxEngine` remains the simpler single-command correctness top.
+the bitwise variant, two transposed working sets replace those buffers and the
+barrel; 15 contexts cover the predicted 229-cycle pipeline at the same
+interval. In all cases, the double-buffered External Product PISO drains at
+the 64-lane inverse width while the next transaction accumulates at the
+128-lane forward width. `CmuxEngine` remains the simpler single-command
+correctness top.
 
 ## Legacy scheduling prototype
 
@@ -161,6 +165,8 @@ tools/emit_paper_cmux.sh build/sgen-fpt/forward.v \
   build/sgen-fpt/inverse.v build/chisel-paper
 tools/emit_paper_bitwise_cmux.sh build/sgen-fpt/forward.v \
   build/sgen-fpt/inverse.v build/chisel-paper-bitwise-cmux
+tools/emit_paper_bitwise_batched_cmux.sh build/sgen-fpt/forward.v \
+  build/sgen-fpt/inverse.v build/chisel-paper-bitwise-batched
 tools/emit_paper_batched_cmux.sh build/sgen-fpt/forward.v \
   build/sgen-fpt/inverse.v build/chisel-paper-batched
 ```
@@ -199,8 +205,13 @@ command acceptance (220 launch-inclusive), 17 more than the barrel path; the
 end-to-end small model verifies the same 17-cycle offset. The optional
 paper-size executable simulation is not part of the checked regression: its
 monolithic C++ compile reached 46.5 GB RSS on this host and was stopped, while
-complete-design lint passed. The batched multi-context top remains on the
-full-width barrel path. Reproduce the standalone blocks with:
+complete-design lint passed. The bitwise batched top alternates two transposed
+working sets over the replicated accumulator banks. Its paper shape uses 15
+contexts, emits as 11.09 MB, lints across 35.97 MB in 25 modules, preserves
+the `120 x 128` memory arrays, and contains no full-width barrel module. Its
+229-cycle latency is the 212-cycle memory-backed baseline plus the verified
+17-cycle bitwise fill, so 15 contexts cover sustained 16-cycle reuse.
+Reproduce the standalone blocks with:
 
 ```sh
 tools/emit_paper_bitwise_reorder.sh build/chisel-paper-bitwise
@@ -225,6 +236,14 @@ vivado -mode batch -source chisel/scripts/synth_paper_cmux_u280.tcl \
   -tclargs build/chisel-paper-batched/BatchedCmuxEngine.sv \
   build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
   build/vivado-paper-batched-cmux 5.0 BatchedCmuxEngine
+vivado -mode batch -source chisel/scripts/synth_paper_cmux_u280.tcl \
+  -tclargs build/chisel-paper-bitwise-cmux/CmuxEngine.sv \
+  build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
+  build/vivado-paper-bitwise-cmux 5.0 CmuxEngine
+vivado -mode batch -source chisel/scripts/synth_paper_cmux_u280.tcl \
+  -tclargs build/chisel-paper-bitwise-batched/BatchedCmuxEngine.sv \
+  build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
+  build/vivado-paper-bitwise-batched-cmux 5.0 BatchedCmuxEngine
 ```
 
 These scripts produce hierarchical utilization, timing, power, and routed

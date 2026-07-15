@@ -129,6 +129,24 @@ final class BitwiseCmuxForwardFrontend(
     )
     val loadDone = Output(Bool())
 
+    val prefetchStart = Input(Bool())
+    val prefetchStartReady = Output(Bool())
+    val prefetchValid = Input(Bool())
+    val prefetchReady = Output(Bool())
+    val prefetchLow = Input(
+      Vec(
+        config.components,
+        Vec(config.inverseLanes, UInt(config.torusWidth.W))
+      )
+    )
+    val prefetchHigh = Input(
+      Vec(
+        config.components,
+        Vec(config.inverseLanes, UInt(config.torusWidth.W))
+      )
+    )
+    val prefetchDone = Output(Bool())
+
     val updateStart = Input(Bool())
     val updateValid = Input(Bool())
     val updateReady = Output(Bool())
@@ -162,6 +180,7 @@ final class BitwiseCmuxForwardFrontend(
     val exponent = Input(UInt(config.exponentWidth.W))
     val pairValid = Output(Bool())
     val pairReady = Input(Bool())
+    val streamEnable = Input(Bool())
     val coefficientLow = Output(
       Vec(config.forwardLanes, SInt(config.forwardFormat.width.W))
     )
@@ -207,6 +226,10 @@ final class BitwiseCmuxForwardFrontend(
 
   val allLoadReady = components.map(_.io.loadReady).reduce(_ && _)
   val allLoadDone = components.map(_.io.loadDone).reduce(_ && _)
+  val allPrefetchStartReady =
+    components.map(_.io.prefetchStartReady).reduce(_ && _)
+  val allPrefetchReady = components.map(_.io.prefetchReady).reduce(_ && _)
+  val allPrefetchDone = components.map(_.io.prefetchDone).reduce(_ && _)
   val allUpdateReady = components.map(_.io.updateReady).reduce(_ && _)
   val allUpdateDone = components.map(_.io.updateDone).reduce(_ && _)
   val allDrainValid = components.map(_.io.drainValid).reduce(_ && _)
@@ -218,11 +241,15 @@ final class BitwiseCmuxForwardFrontend(
   val frontendBusy = anyComponentBusy || streamer.io.busy ||
     bufferOccupied.asUInt.orR
 
-  when(PopCount(Cat(io.loadStart, io.updateStart, io.drainStart)) > 1.U) {
+  when(
+    PopCount(
+      Cat(io.loadStart, io.prefetchStart, io.updateStart, io.drainStart)
+    ) > 1.U
+  ) {
     assert(false.B, "bitwise accumulator operations must not start together")
   }
-  when(io.loadStart || io.updateStart || io.drainStart) {
-    assert(!frontendBusy, "bitwise accumulator operation started while busy")
+  when(io.loadStart || io.prefetchStart || io.updateStart || io.drainStart) {
+    assert(!anyComponentBusy, "bitwise storage operation started while busy")
   }
 
   val finalOutputRow = streamer.io.rowIndex === (rows - 1).U
@@ -236,6 +263,8 @@ final class BitwiseCmuxForwardFrontend(
   io.rotateReady := allRotateReady && bufferAvailable &&
     pendingBuffers.io.enq.ready
   val rotateFire = io.rotateStart && io.rotateReady
+  io.prefetchStartReady := allPrefetchStartReady && bufferAvailable &&
+    pendingBuffers.io.enq.ready
 
   pendingBuffers.io.enq.valid := rotateFire
   pendingBuffers.io.enq.bits := selectedFillBuffer
@@ -246,6 +275,8 @@ final class BitwiseCmuxForwardFrontend(
 
   io.loadReady := allLoadReady
   io.loadDone := allLoadDone
+  io.prefetchReady := allPrefetchReady
+  io.prefetchDone := allPrefetchDone
   io.updateReady := allUpdateReady
   io.updateDone := allUpdateDone
   io.drainValid := allDrainValid
@@ -257,6 +288,10 @@ final class BitwiseCmuxForwardFrontend(
     frontend.io.load := io.load(component)
     frontend.io.rotateStart := rotateFire
     frontend.io.exponent := io.exponent
+    frontend.io.prefetchStart := io.prefetchStart
+    frontend.io.prefetchValid := io.prefetchValid && allPrefetchReady
+    frontend.io.prefetchLow := io.prefetchLow(component)
+    frontend.io.prefetchHigh := io.prefetchHigh(component)
     frontend.io.updateStart := io.updateStart
     frontend.io.updateValid := io.updateValid && allUpdateReady
     for (lane <- 0 until config.inverseLanes) {
@@ -278,6 +313,9 @@ final class BitwiseCmuxForwardFrontend(
   when(io.updateValid) {
     assert(io.updateReady, "bitwise frontend update data presented while idle")
   }
+  when(io.prefetchValid) {
+    assert(io.prefetchReady, "bitwise prefetch data presented while idle")
+  }
 
   when(allDecompositionDone) {
     for (buffer <- 0 until bufferCount) {
@@ -295,7 +333,7 @@ final class BitwiseCmuxForwardFrontend(
     assert(readyBuffers.io.enq.ready, "bitwise digit buffer queue overflow")
   }
 
-  val streamerCanStart = !streamer.io.busy
+  val streamerCanStart = io.streamEnable && !streamer.io.busy
   val streamerStart = streamerCanStart && readyBuffers.io.deq.valid
   readyBuffers.io.deq.ready := streamerCanStart
   streamer.io.start := streamerStart

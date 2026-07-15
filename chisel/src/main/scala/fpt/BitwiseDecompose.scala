@@ -152,6 +152,14 @@ final class BitwiseCmuxDecompositionFrontend(
     )
     val loadDone = Output(Bool())
 
+    val prefetchStart = Input(Bool())
+    val prefetchStartReady = Output(Bool())
+    val prefetchValid = Input(Bool())
+    val prefetchReady = Output(Bool())
+    val prefetchLow = Input(Vec(config.inverseLanes, UInt(config.torusWidth.W)))
+    val prefetchHigh = Input(Vec(config.inverseLanes, UInt(config.torusWidth.W)))
+    val prefetchDone = Output(Bool())
+
     val rotateStart = Input(Bool())
     val rotateReady = Output(Bool())
     val exponent = Input(UInt(config.exponentWidth.W))
@@ -203,6 +211,13 @@ final class BitwiseCmuxDecompositionFrontend(
   reorder.io.load := io.load
   io.loadReady := reorder.io.loadReady
   io.loadDone := reorder.io.loadDone
+  reorder.io.prefetchStart := io.prefetchStart
+  reorder.io.prefetchValid := io.prefetchValid
+  reorder.io.prefetchLow := io.prefetchLow
+  reorder.io.prefetchHigh := io.prefetchHigh
+  io.prefetchStartReady := reorder.io.prefetchStartReady
+  io.prefetchReady := reorder.io.prefetchReady
+  io.prefetchDone := reorder.io.prefetchDone
   val rotateReady = reorder.io.rotateReady && decomposer.io.startReady
   val rotateFire = io.rotateStart && rotateReady
   io.rotateReady := rotateReady

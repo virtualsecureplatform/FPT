@@ -64,17 +64,22 @@ final class BitwiseFoldSpec
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.rotateStart.poke(false.B)
+      dut.io.prefetchStart.poke(false.B)
+      dut.io.prefetchValid.poke(false.B)
       dut.io.updateStart.poke(false.B)
       dut.io.updateValid.poke(false.B)
       dut.io.drainStart.poke(false.B)
       dut.io.drainReady.poke(false.B)
       dut.io.exponent.poke(0.U)
       dut.io.pairReady.poke(false.B)
+      dut.io.streamEnable.poke(true.B)
       for (component <- 0 until config.components) {
         for (lane <- 0 until config.inverseLanes) {
           dut.io.load(component)(lane).poke(0.U)
           dut.io.updateLow(component)(lane).poke(0.S)
           dut.io.updateHigh(component)(lane).poke(0.S)
+          dut.io.prefetchLow(component)(lane).poke(0.U)
+          dut.io.prefetchHigh(component)(lane).poke(0.U)
         }
       }
       dut.reset.poke(true.B)
@@ -237,17 +242,22 @@ final class BitwiseFoldSpec
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.rotateStart.poke(false.B)
+      dut.io.prefetchStart.poke(false.B)
+      dut.io.prefetchValid.poke(false.B)
       dut.io.updateStart.poke(false.B)
       dut.io.updateValid.poke(false.B)
       dut.io.drainStart.poke(false.B)
       dut.io.drainReady.poke(false.B)
       dut.io.exponent.poke(0.U)
       dut.io.pairReady.poke(true.B)
+      dut.io.streamEnable.poke(true.B)
       for (component <- 0 until config.components) {
         for (lane <- 0 until config.inverseLanes) {
           dut.io.load(component)(lane).poke(0.U)
           dut.io.updateLow(component)(lane).poke(0.S)
           dut.io.updateHigh(component)(lane).poke(0.S)
+          dut.io.prefetchLow(component)(lane).poke(0.U)
+          dut.io.prefetchHigh(component)(lane).poke(0.U)
         }
       }
       dut.reset.poke(true.B)

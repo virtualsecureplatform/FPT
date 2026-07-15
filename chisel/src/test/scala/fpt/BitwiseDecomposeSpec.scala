@@ -58,6 +58,8 @@ final class BitwiseDecomposeSpec
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.rotateStart.poke(false.B)
+      dut.io.prefetchStart.poke(false.B)
+      dut.io.prefetchValid.poke(false.B)
       dut.io.updateStart.poke(false.B)
       dut.io.updateValid.poke(false.B)
       dut.io.drainStart.poke(false.B)
@@ -67,6 +69,8 @@ final class BitwiseDecomposeSpec
         dut.io.load(lane).poke(0.U)
         dut.io.updateLow(lane).poke(0.U)
         dut.io.updateHigh(lane).poke(0.U)
+        dut.io.prefetchLow(lane).poke(0.U)
+        dut.io.prefetchHigh(lane).poke(0.U)
       }
       dut.reset.poke(true.B)
       dut.clock.step(2)

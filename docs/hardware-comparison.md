@@ -93,8 +93,19 @@ results. The bitwise schedule is 219 cycles after acceptance (220
 launch-inclusive), exactly 17 cycles beyond the barrel schedule as in the
 end-to-end small regression. Complete RTL lint passes; the optional paper-size
 Verilator executable was not completed because its monolithic C++ compilation
-reached 46.5 GB RSS. The memory-backed batched top remains the full-width
-rotation baseline until it adopts the transposed per-context storage.
+reached 46.5 GB RSS.
+
+The batched bitwise frontend keeps the replicated accumulator memories and
+alternates two transposed working sets: one streams buffered digits while the
+other rotates the next command, and the first can prefetch its following
+context after decomposition releases the coefficient banks. A complete small
+model checks exact digits, updates, drains, and a no-bubble row interval. The
+Set-II top uses fifteen contexts (predicted latency 229 cycles at II=16), emits
+as 11.09 MB, and lints with the generated transforms across 35.97 MB in 25
+modules. CIRCT emits 128 instances of a `120 x 128` synchronous array, and the
+module list contains no `NegacyclicBarrelRotator`. Placement is still required
+to determine whether the extra transposed working set costs less LUT/route
+pressure than the removed 1024-way 32-bit barrel.
 
 Regenerate the cyclic comparison and table from local SGen outputs with:
 

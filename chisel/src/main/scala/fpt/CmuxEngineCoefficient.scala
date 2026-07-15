@@ -148,6 +148,10 @@ final class BitwiseCmuxEngineCoefficientFrontend(
   store.io.loadStart := io.loadStart
   store.io.loadValid := io.loadValid
   store.io.load := io.load
+  store.io.prefetchStart := false.B
+  store.io.prefetchValid := false.B
+  store.io.prefetchLow := 0.U.asTypeOf(store.io.prefetchLow)
+  store.io.prefetchHigh := 0.U.asTypeOf(store.io.prefetchHigh)
   io.loadReady := store.io.loadReady
   io.loadDone := store.io.loadDone
 
@@ -155,6 +159,7 @@ final class BitwiseCmuxEngineCoefficientFrontend(
   store.io.rotateStart := commandFire
   store.io.exponent := io.exponent
   store.io.pairReady := io.pairReady
+  store.io.streamEnable := true.B
   io.transformStart := store.io.transformStart
   io.pairValid := store.io.pairValid
   io.coefficientLow := store.io.coefficientLow

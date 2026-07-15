@@ -41,6 +41,14 @@ final class BitwiseNegacyclicReorder(
     val load = Input(Vec(loadLanes, UInt(coefficientWidth.W)))
     val loadDone = Output(Bool())
 
+    val prefetchStart = Input(Bool())
+    val prefetchStartReady = Output(Bool())
+    val prefetchValid = Input(Bool())
+    val prefetchReady = Output(Bool())
+    val prefetchLow = Input(Vec(loadLanes, UInt(coefficientWidth.W)))
+    val prefetchHigh = Input(Vec(loadLanes, UInt(coefficientWidth.W)))
+    val prefetchDone = Output(Bool())
+
     val rotateStart = Input(Bool())
     val rotateReady = Output(Bool())
     val exponent = Input(UInt((indexWidth + 1).W))
@@ -70,7 +78,8 @@ final class BitwiseNegacyclicReorder(
     val busy = Output(Bool())
   })
 
-  val idle :: loading :: rotating :: updating :: draining :: Nil = Enum(5)
+  val idle :: loading :: prefetching :: rotating :: updating :: draining :: Nil =
+    Enum(6)
   val state = RegInit(idle)
   val loadedReg = RegInit(false.B)
   val loadBeat = RegInit(0.U(loadBeatWidth.W))
@@ -79,6 +88,7 @@ final class BitwiseNegacyclicReorder(
   val exponentReg = RegInit(0.U((indexWidth + 1).W))
   val negateCarry = RegInit(VecInit(Seq.fill(polynomialSize)(false.B)))
   val loadDoneReg = RegInit(false.B)
+  val prefetchDoneReg = RegInit(false.B)
   val rotateDoneReg = RegInit(false.B)
   val updateDoneReg = RegInit(false.B)
   val drainDoneReg = RegInit(false.B)
@@ -98,6 +108,9 @@ final class BitwiseNegacyclicReorder(
 
   io.loadReady := state === loading
   io.loadDone := loadDoneReg
+  io.prefetchStartReady := state === idle
+  io.prefetchReady := state === prefetching
+  io.prefetchDone := prefetchDoneReg
   io.bitValid := state === rotating
   io.bitIndex := chunkIndex
   io.rotateDone := rotateDoneReg
@@ -108,13 +121,20 @@ final class BitwiseNegacyclicReorder(
   io.loaded := loadedReg
   io.busy := state =/= idle
   loadDoneReg := false.B
+  prefetchDoneReg := false.B
   rotateDoneReg := false.B
   updateDoneReg := false.B
   drainDoneReg := false.B
 
   when(
     PopCount(
-      Cat(io.loadStart, io.rotateStart, io.updateStart, io.drainStart)
+      Cat(
+        io.loadStart,
+        io.prefetchStart,
+        io.rotateStart,
+        io.updateStart,
+        io.drainStart
+      )
     ) > 1.U
   ) {
     assert(false.B, "bitwise reorder operations must not start together")
@@ -153,6 +173,41 @@ final class BitwiseNegacyclicReorder(
       loadDoneReg := true.B
     }.otherwise {
       loadBeat := loadBeat + 1.U
+    }
+  }
+
+  when(io.prefetchStart) {
+    assert(io.prefetchStartReady, "bitwise prefetch started while unavailable")
+    state := prefetching
+    updateBeat := 0.U
+    loadedReg := false.B
+  }
+  when(io.prefetchValid) {
+    assert(io.prefetchReady, "bitwise prefetch data presented while idle")
+  }
+  val prefetchFire = io.prefetchValid && io.prefetchReady
+  when(prefetchFire) {
+    val lowAddress = updateBeat.pad(loadBeatWidth)
+    val highAddress = lowAddress + updateBeats.U
+    for (lane <- 0 until loadLanes) {
+      for (chunk <- 0 until chunks) {
+        chunkBanks(chunk)(lane)(lowAddress) := io.prefetchLow(lane)(
+          (chunk + 1) * bitsPerCycle - 1,
+          chunk * bitsPerCycle
+        )
+        chunkBanks(chunk)(lane)(highAddress) := io.prefetchHigh(lane)(
+          (chunk + 1) * bitsPerCycle - 1,
+          chunk * bitsPerCycle
+        )
+      }
+    }
+    when(updateBeat === (updateBeats - 1).U) {
+      updateBeat := 0.U
+      state := idle
+      loadedReg := true.B
+      prefetchDoneReg := true.B
+    }.otherwise {
+      updateBeat := updateBeat + 1.U
     }
   }
 
