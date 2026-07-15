@@ -344,8 +344,8 @@ and report regeneration reject missing constraints, incomplete/error routes,
 and Fatal, Error, Critical Warning, or unclassified post-route DRC violations.
 Vivado is not installed in this workspace, so the checked regression stops at
 Chisel tests, complete-design Verilator lint, mocked acceptance-flow tests,
-and source-only handoff generation; hardware benefit claims must wait for
-those U280 reports.
+source-only handoff generation, and open-source UltraScale+ mapping;
+placed-and-routed hardware benefit claims must wait for those U280 reports.
 
 See `docs/hardware-comparison.md` for the reproduced 208/217-cycle Set-II CMUX
 schedule, generated multiplier-expression comparison, and the remaining
@@ -353,11 +353,12 @@ U280 measurement checklist.
 
 For a pre-route comparison against HOGE, run
 `tools/synthesize_fpt_hoge_transforms.sh` after preparing the common-U280
-handoff. The current Yosys map finds 3.271x/2.092x forward/inverse throughput
-per estimated logic cell, but only 0.832x/0.689x throughput per mapped DSP.
-That result isolates the paper's private per-stage width and multiplier
-mapping as a material remaining implementation gap; raw counts and caveats
-are in `docs/fpt-hoge-comparison.md`.
+handoff. The current Yosys map finds 3.973x/2.458x forward/inverse throughput
+per estimated logic cell and 1.664x/1.378x throughput per mapped DSP. The
+DSP48E2-sized SGen lowering maps each split fixed-point product to exactly one
+DSP, reproducing the intended pre-route multiplier-efficiency advantage. Raw
+counts, bit-exact validation, and the remaining placement/timing caveats are
+in `docs/fpt-hoge-comparison.md`.
 
 The integration currently supports native 32-bit Torus parameters.  Its
 bootstrapping key is normalized to real Torus units before being quantized to

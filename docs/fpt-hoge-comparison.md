@@ -44,7 +44,7 @@ tools/synthesize_fpt_hoge_transforms.sh
 ```
 
 This is an opt-in, signature-cached flow. The 128-lane FPT forward map used
-19.0 GiB peak RSS on the development host. Select individual designs by name
+19.3 GiB peak RSS on the development host. Select individual designs by name
 when memory or time is limited, for example:
 
 ```sh
@@ -56,30 +56,39 @@ technology-mapped estimates without placement, routing, or clock timing:
 
 | Kernel | Frame II | Estimated logic cells | LUT1--6 | FF | DSP48E2 | Distributed RAM | SRL |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| FPT forward FTT | 4 | 155,817 | 311,603 | 303,060 | 4,768 | 1,536 | 59,596 |
+| FPT forward FTT | 4 | 128,279 | 256,527 | 303,060 | 2,384 | 1,536 | 59,624 |
 | HOGE forward INTT | 32 | 63,702 | 115,931 | 75,407 | 496 | 0 | 27,026 |
-| FPT inverse FTT | 8 | 115,155 | 230,277 | 268,839 | 2,972 | 1,216 | 44,806 |
+| FPT inverse FTT | 8 | 97,976 | 195,919 | 268,839 | 1,486 | 1,216 | 44,820 |
 | HOGE inverse NTT | 32 | 60,215 | 115,143 | 72,973 | 512 | 0 | 26,507 |
 
 At an equal clock, throughput per resource relative to HOGE is:
 
 | Role | Frame-rate ratio | Logic-cell efficiency | LUT efficiency | FF efficiency | DSP efficiency |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Forward | 8.0x | 3.271x | 2.976x | 1.991x | 0.832x |
-| Inverse | 4.0x | 2.092x | 2.000x | 1.086x | 0.689x |
+| Forward | 8.0x | 3.973x | 3.615x | 1.991x | 1.664x |
+| Inverse | 4.0x | 2.458x | 2.351x | 1.086x | 1.378x |
 
-Thus the fixed-point streaming shape already gives a clear pre-route
-throughput-per-logic benefit, but the current public implementation does not
-yet reproduce the paper's DSP advantage. Yosys maps each generated FPT real
-multiply to four DSP48E2s: `1,192 * 4 = 4,768` forward and
-`743 * 4 = 2,972` inverse. HOGE's modular datapaths map to exactly sixteen
-DSPs per top-level 64-bit multiplier: `31 * 16 = 496` forward and
-`32 * 16 = 512` inverse. The paper reported 2,958 and 1,486 DSPs for its
-forward and inverse blocks; its private per-stage width schedule and
-specialized multiplier mapping are therefore material missing pieces, not
-cosmetic parameter differences. Vivado routing remains necessary to learn
-whether it packs the present sources differently and whether the wider FPT
-design sustains its target clock.
+This reproduces the fixed-point transform's intended pre-route resource
+advantage against the HOGE baseline: both throughput per logic and throughput
+per mapped DSP are greater than one in each direction. The local SGen change
+splits every exact 30-by-26-bit signed product into two signed products that
+fit DSP48E2's 27-by-18-bit multiplier. Yosys therefore maps one DSP per
+generated expression: `1,192 * 2 = 2,384` forward and
+`743 * 2 = 1,486` inverse. The synthesis script rejects a result unless this
+one-to-one contract holds. HOGE's modular datapaths still map to exactly
+sixteen DSPs per top-level 64-bit multiplier: `31 * 16 = 496` forward and
+`32 * 16 = 512` inverse.
+
+The split is bit-exact rather than a precision shortcut. Its SGen test covers
+all signed boundary combinations plus 10,000 deterministic random products;
+all 3,485 SGen tests and the paper-size FPT transform/CMUX numerical
+regressions pass without changing their results. The paper reported 2,958 and
+1,486 DSPs for its forward and inverse blocks. Matching the inverse count is
+encouraging, but it is not evidence of an identical microarchitecture: this
+implementation uses a different public streaming schedule and still lacks
+the paper's private per-stage width/scaling details. Vivado routing remains
+necessary to determine achieved frequency, congestion, routed resources, and
+whether the wider FPT design sustains its throughput advantage on the U280.
 
 The script retains `stat.json`, the full Yosys log, console warnings, host
 timing, and source/tool/flow signatures under

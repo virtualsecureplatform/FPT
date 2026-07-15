@@ -13,7 +13,7 @@ else
     designs=(fpt-forward hoge-forward fpt-inverse hoge-inverse)
 fi
 
-for tool in jq yosys sha256sum; do
+for tool in jq rg yosys sha256sum; do
     if ! command -v "$tool" >/dev/null; then
         echo "Required tool not found: $tool" >&2
         exit 1
@@ -52,6 +52,34 @@ parameters_for() {
     esac
 }
 
+validate_fpt_dsp_contract() {
+    local design=$1
+    local source_file=$2
+    local stat_file=$3
+    local multiply_expressions
+    local mapped_dsps
+
+    case "$design" in
+        fpt-forward|fpt-inverse) ;;
+        *) return ;;
+    esac
+
+    multiply_expressions=$(rg -c \
+        '\$signed\([^)]*\) \* \$signed\(' "$source_file" || true)
+    mapped_dsps=$(jq -r '
+        [(.design.num_cells_by_type // {} | to_entries[])
+          | select(.key | test("^DSP"))
+          | .value]
+        | add // 0
+    ' "$stat_file")
+    if [[ ! $multiply_expressions =~ ^[1-9][0-9]*$ || \
+          $mapped_dsps != "$multiply_expressions" ]]; then
+        echo "$design violates the one-DSP-per-split-product contract: expressions=$multiply_expressions DSPs=$mapped_dsps" >&2
+        exit 1
+    fi
+    echo "Validated $design DSP mapping: $multiply_expressions expressions -> $mapped_dsps DSPs"
+}
+
 yosys_version=$(yosys -V)
 flow='synth_xilinx -family xcup -flatten -noiopad -noclkbuf -widemux 5; check; stat -tech xilinx -json'
 mkdir -p "$build_root"
@@ -74,6 +102,7 @@ for design in "${designs[@]}"; do
     if [[ -s $stat_file && -s $signature_file && \
           $(<"$signature_file") == "$signature" ]]; then
         echo "Reusing signature-matched $design map"
+        validate_fpt_dsp_contract "$design" "$source_file" "$stat_file"
         continue
     fi
 
@@ -98,6 +127,7 @@ for design in "${designs[@]}"; do
     jq -e --arg top "\\$top" \
         '.modules[$top].num_cells > 0 and .design.num_cells > 0' \
         "$stat_file" >/dev/null
+    validate_fpt_dsp_contract "$design" "$source_file" "$stat_file"
     printf '%s\n' "$signature" > "$signature_file"
 done
 
