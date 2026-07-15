@@ -257,3 +257,79 @@ object EmitPaperBitwiseForwardFrontend extends App {
     firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
   )
 }
+
+private object YosysCoefficientEmitter {
+  val firtoolOptions: Array[String] = Array(
+    "-disable-all-randomization",
+    "-strip-debug-info",
+    "--lowering-options=disallowLocalVariables"
+  )
+
+  def outputDirectory(argument: String): String =
+    Path.of(argument).toAbsolutePath.normalize.toString
+}
+
+object EmitPaperYosysBarrelCoefficient extends App {
+  require(args.length == 1, "usage: EmitPaperYosysBarrelCoefficient OUTPUT_DIR")
+
+  ChiselStage.emitSystemVerilogFile(
+    new CmuxCoefficientStore(PaperSetII.coefficient),
+    args = Array(
+      "--target-dir",
+      YosysCoefficientEmitter.outputDirectory(args(0))
+    ),
+    firtoolOpts = YosysCoefficientEmitter.firtoolOptions
+  )
+}
+
+object EmitPaperYosysBitwiseCoefficient extends App {
+  require(args.length == 1, "usage: EmitPaperYosysBitwiseCoefficient OUTPUT_DIR")
+
+  ChiselStage.emitSystemVerilogFile(
+    new BitwiseCmuxForwardFrontend(PaperSetII.coefficient, bitsPerCycle = 2),
+    args = Array(
+      "--target-dir",
+      YosysCoefficientEmitter.outputDirectory(args(0))
+    ),
+    firtoolOpts = YosysCoefficientEmitter.firtoolOptions
+  )
+}
+
+object EmitPaperYosysBarrelBatchedCoefficient extends App {
+  require(
+    args.length == 1,
+    "usage: EmitPaperYosysBarrelBatchedCoefficient OUTPUT_DIR"
+  )
+
+  ChiselStage.emitSystemVerilogFile(
+    new PrefetchedBatchedCmuxCoefficientStore(
+      PaperSetII.coefficient,
+      batchContexts = 14
+    ),
+    args = Array(
+      "--target-dir",
+      YosysCoefficientEmitter.outputDirectory(args(0))
+    ),
+    firtoolOpts = YosysCoefficientEmitter.firtoolOptions
+  )
+}
+
+object EmitPaperYosysBitwiseBatchedCoefficient extends App {
+  require(
+    args.length == 1,
+    "usage: EmitPaperYosysBitwiseBatchedCoefficient OUTPUT_DIR"
+  )
+
+  ChiselStage.emitSystemVerilogFile(
+    new BitwisePrefetchedBatchedCmuxCoefficientStore(
+      PaperSetII.coefficient,
+      batchContexts = 15,
+      bitsPerCycle = 2
+    ),
+    args = Array(
+      "--target-dir",
+      YosysCoefficientEmitter.outputDirectory(args(0))
+    ),
+    firtoolOpts = YosysCoefficientEmitter.firtoolOptions
+  )
+}

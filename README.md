@@ -141,9 +141,10 @@ vivado -mode batch -source rtl/scripts/synth_u280.tcl \
 ```
 
 Vivado 2023.2 (or a compatible installation) is required and is not present
-in this workspace.  Yosys is used only for structural checks because its
-UltraScale+ DSP mapping is not representative of Vivado's signed asymmetric
-DSP48E2 mapping.
+in this workspace. Yosys provides a local UltraScale+ mapping comparison for
+the coefficient frontends, which contain no transform multipliers. Its DSP
+mapping is not representative of Vivado's signed asymmetric DSP48E2 mapping,
+so complete-CMUX results still require Vivado.
 
 For the continuous-flow comparison path, the `fpt` branch of
 `virtualsecureplatform/SGen` carries the Gauss complex multiplier, narrower
@@ -219,6 +220,18 @@ tools/emit_paper_bitwise_frontend.sh build/chisel-paper-bitwise-frontend
 tools/emit_paper_bitwise_forward_frontend.sh \
   build/chisel-paper-bitwise-forward
 ```
+
+Map the paper-scale barrel and bitwise coefficient frontends to the local
+Yosys UltraScale+ library and print comparable LUT/FF/mux counts with:
+
+```sh
+tools/synthesize_coefficient_frontends.sh
+```
+
+Pass `barrel-batched bitwise-batched` to run the larger replicated-memory
+frontends as well. Results and full logs are written below
+`build/yosys-coeff/`; see `docs/hardware-comparison.md` for the measured
+single-frontend comparison and its limitations.
 
 Vivado scripts run the transform alone or the complete CMUX out of context on
 the U280.  The default 3.425 ns constraint matches HOGE's reported 292 MHz;

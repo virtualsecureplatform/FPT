@@ -78,11 +78,13 @@ The reorder alone emits as 3.02 MB; the combined Set-II frontend emits as
 `BitwiseCmuxForwardFrontend` also runs both components and streams all four
 rows in the FFT's 128-lane folded order. Two digit buffers overlap its 16
 bitwise cycles with 16 coefficient-wise output cycles, giving a tested
-initiation interval of 16 cycles when the downstream remains ready. It emits
-as 7.51 MB before writeback logic. Adding lane-local inverse updates and the
-accumulator drain path makes the stateful frontend 10.22 MB; it passes lint
-across 9.75 MB of sources in eight modules. `CmuxEngine` now selects this path
-with `bitwiseBitsPerCycle = Some(2)`: the small generated-SGen CMUX remains
+initiation interval of 16 cycles when the downstream remains ready. Each
+output lane uses an explicit balanced selector over its sixteen legal
+row/beat coefficients; it does not infer a variable 1024-entry array index.
+It emits as 7.51 MB before writeback logic. Adding lane-local inverse updates
+and the accumulator drain path makes the stateful frontend 10.22 MB; it passes
+lint across 9.75 MB of sources in eight modules. `CmuxEngine` now selects this
+path with `bitwiseBitsPerCycle = Some(2)`: the small generated-SGen CMUX remains
 within `2^18` Torus units of the C++ result and takes 166 cycles versus 149 for
 the immediate barrel frontend. At Set II, the integrated bitwise CMUX emits as
 11.57 MB and complete-design lint processes 37.34 MB across 19 modules; its
@@ -119,6 +121,54 @@ to measure. Reproduce the emitted hierarchy and counts with:
 tools/report_bitwise_structure.sh
 ```
 
+## Local UltraScale+ coefficient-frontend mapping
+
+Stock Yosys cannot parse CIRCT's block-local variables, so the synthesis-only
+emitters use `firtool --lowering-options=disallowLocalVariables`. The normal
+Vivado/Verilator emitters do not use that lowering option. With Yosys
+0.45+139, both isolated Set-II coefficient frontends were flattened and
+mapped with:
+
+```text
+synth_xilinx -family xcup -flatten -noiopad -noclkbuf -widemux 5
+```
+
+This boundary includes coefficient storage, negacyclic rotation, centered
+gadget decomposition, and the four folded forward-transform rows. It excludes
+SGen, External Product, and inverse transforms. The result is a technology-
+mapped estimate, not placement or routing:
+
+| Metric | Shared 32-bit barrel | Two-component 2-bit path | Change |
+| --- | ---: | ---: | ---: |
+| Estimated logic cells | 532,572 | 282,811 | -46.9% |
+| LUT1--LUT6 primitives | 685,356 | 287,620 | -58.0% |
+| Flip-flops | 65,566 | 194,653 | +196.9% |
+| CARRY4 | 18,682 | 4,362 | -76.7% |
+| MUXF7/8/9 | 364,305 | 84,013 | -76.9% |
+| Total mapped cells | 1,133,912 | 574,766 | -49.3% |
+
+The local result reproduces the expected benefit: replacing the full-word
+barrel roughly halves the mapped logic estimate and removes most dedicated
+wide-mux cells. The cost is about three times as many flip-flops for the
+transposed bitwise state and ping-pong digit buffers, plus the already tested
+17-cycle pipeline fill. Yosys needed 9:06 and 12.5 GiB peak RSS for the barrel
+map, versus 15:19 and 21.3 GiB for the bitwise map; those host costs do not
+represent FPGA area.
+
+Re-run either single frontend, or request the larger batched coefficient
+stores explicitly, with:
+
+```sh
+tools/synthesize_coefficient_frontends.sh
+tools/synthesize_coefficient_frontends.sh barrel-batched bitwise-batched
+```
+
+The script emits Yosys-compatible SystemVerilog, retains `synth.log`,
+`stat.json`, and timing data under `build/yosys-coeff/`, and prints a compact
+TSV report. Vivado post-route remains the measurement boundary for achieved
+frequency, routing pressure, and the complete CMUX including SGen/DSP48E2
+packing.
+
 Regenerate the cyclic comparison and table from local SGen outputs with:
 
 ```sh
@@ -140,7 +190,7 @@ reference numbers, not measurements from this repository:
 | IFFT 512/64 | 130k | 255k | 1,486 | 0 |
 
 The exact U280 result must come from Vivado because generic synthesis does not
-model DSP48E2 packing for the signed asymmetric fixed-point products.  Run
+model DSP48E2 packing for the signed asymmetric fixed-point products. Run
 both generated transforms, the single-command CMUX, and `BatchedCmuxEngine`
 through the scripts in
 `chisel/scripts/`, at 5.0 ns for the paper point and 3.425 ns for a direct
