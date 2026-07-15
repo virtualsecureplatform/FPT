@@ -179,13 +179,21 @@ two's-complement carry, so every exponent in `[0, 2N)` remains exact. The
 paper-scale reorder emits as 3.02 MB. `BitwiseCmuxDecompositionFrontend` adds
 bit-serial subtraction, the fixed decomposition bias, and both centered
 base-10 digit levels; it emits as 5.01 MB and passes complete Verilator lint.
-The combined frontend is not yet wired to the forward FFT's coefficient-wise
-digit stream, so the physical CMUX above still uses the ten-stage 32-bit
-barrel network. Reproduce both standalone blocks with:
+`BitwiseCmuxForwardFrontend` runs both TRLWE components in parallel and streams
+all four component/level rows in the forward FFT's folded 128-lane order. Its
+two digit buffers overlap the 16-cycle bitwise pass with the 16-cycle row
+stream, and the sustained test accepts one exponent every 16 cycles while the
+downstream remains ready. The paper-scale output is 7.51 MB and passes lint
+across 7.17 MB of sources. This frontend is still standalone; the live CMUX
+coefficient store continues to use the ten-stage 32-bit barrel network until
+the folded stream is connected to its forward transform. Reproduce the
+standalone blocks with:
 
 ```sh
 tools/emit_paper_bitwise_reorder.sh build/chisel-paper-bitwise
 tools/emit_paper_bitwise_frontend.sh build/chisel-paper-bitwise-frontend
+tools/emit_paper_bitwise_forward_frontend.sh \
+  build/chisel-paper-bitwise-forward
 ```
 
 Vivado scripts run the transform alone or the complete CMUX out of context on

@@ -36,6 +36,7 @@ final class BitwiseGadgetDecomposer(
 
   val io = IO(new Bundle {
     val start = Input(Bool())
+    val startReady = Output(Bool())
     val inputValid = Input(Bool())
     val inputReady = Output(Bool())
     val rotated = Input(Vec(polynomialSize, UInt(bitsPerCycle.W)))
@@ -64,18 +65,6 @@ final class BitwiseGadgetDecomposer(
   io.done := doneReg
   doneReg := false.B
 
-  when(io.start) {
-    assert(!active, "bitwise decomposition started while busy")
-    active := true.B
-    chunkIndex := 0.U
-    for (position <- 0 until polynomialSize) {
-      carry(position) := 1.U
-    }
-  }
-  when(io.inputValid) {
-    assert(io.inputReady, "bitwise decomposition input presented while idle")
-  }
-
   val biasChunks = VecInit((0 until chunks).map { chunk =>
     ((bias >> (chunk * bitsPerCycle)) & chunkMask).U(bitsPerCycle.W)
   })
@@ -89,6 +78,16 @@ final class BitwiseGadgetDecomposer(
   }
 
   val inputFire = io.inputValid && io.inputReady
+  val finalChunk = chunkIndex === (chunks - 1).U
+  val finishing = inputFire && finalChunk
+  io.startReady := !active || finishing
+  val startFire = io.start && io.startReady
+  when(io.start) {
+    assert(io.startReady, "bitwise decomposition started while unavailable")
+  }
+  when(io.inputValid) {
+    assert(io.inputReady, "bitwise decomposition input presented while idle")
+  }
   when(inputFire) {
     carry := nextCarry
     for (streamChunk <- 0 until chunks) {
@@ -112,12 +111,21 @@ final class BitwiseGadgetDecomposer(
         }
       }
     }
-    when(chunkIndex === (chunks - 1).U) {
+    when(finalChunk) {
       active := false.B
       chunkIndex := 0.U
       doneReg := true.B
     }.otherwise {
       chunkIndex := chunkIndex + 1.U
+    }
+  }
+  // A marker coincident with the previous final chunk starts the next
+  // subtraction without a bubble. It must win over the completion updates.
+  when(startFire) {
+    active := true.B
+    chunkIndex := 0.U
+    for (position <- 0 until polynomialSize) {
+      carry(position) := 1.U
     }
   }
 
@@ -145,6 +153,7 @@ final class BitwiseCmuxDecompositionFrontend(
     val loadDone = Output(Bool())
 
     val rotateStart = Input(Bool())
+    val rotateReady = Output(Bool())
     val exponent = Input(UInt(config.exponentWidth.W))
     val centeredDigit = Output(
       Vec(
@@ -180,14 +189,20 @@ final class BitwiseCmuxDecompositionFrontend(
   reorder.io.load := io.load
   io.loadReady := reorder.io.loadReady
   io.loadDone := reorder.io.loadDone
-  reorder.io.rotateStart := io.rotateStart
+  val rotateReady = reorder.io.rotateReady && decomposer.io.startReady
+  val rotateFire = io.rotateStart && rotateReady
+  io.rotateReady := rotateReady
+  reorder.io.rotateStart := rotateFire
   reorder.io.exponent := io.exponent
 
-  decomposer.io.start := io.rotateStart
+  decomposer.io.start := rotateFire
   decomposer.io.inputValid := reorder.io.bitValid
   decomposer.io.rotated := reorder.io.bitChunk
   decomposer.io.original := reorder.io.originalChunk
   reorder.io.bitReady := decomposer.io.inputReady
+  when(io.rotateStart) {
+    assert(io.rotateReady, "bitwise decomposition frontend is unavailable")
+  }
 
   io.centeredDigit := decomposer.io.centeredDigit
   io.busy := reorder.io.busy || decomposer.io.busy

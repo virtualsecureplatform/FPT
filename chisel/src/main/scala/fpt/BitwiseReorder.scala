@@ -38,6 +38,7 @@ final class BitwiseNegacyclicReorder(
     val loadDone = Output(Bool())
 
     val rotateStart = Input(Bool())
+    val rotateReady = Output(Bool())
     val exponent = Input(UInt((indexWidth + 1).W))
     val bitValid = Output(Bool())
     val bitReady = Input(Bool())
@@ -118,18 +119,6 @@ final class BitwiseNegacyclicReorder(
     }
   }
 
-  when(io.rotateStart) {
-    assert(state === idle, "bitwise rotation started while busy")
-    assert(loadedReg, "bitwise rotation started before load")
-    state := rotating
-    chunkIndex := 0.U
-    exponentReg := io.exponent
-    for (position <- 0 until polynomialSize) {
-      val wraps = position.U < io.exponent(indexWidth - 1, 0)
-      negateCarry(position) := wraps ^ io.exponent(indexWidth)
-    }
-  }
-
   val shift = exponentReg(indexWidth - 1, 0)
   val highNegate = exponentReg(indexWidth)
   val selectedChunks: Seq[UInt] = (0 until polynomialSize).map { position =>
@@ -164,14 +153,32 @@ final class BitwiseNegacyclicReorder(
   }
 
   val bitFire = io.bitValid && io.bitReady
+  val finalChunk = chunkIndex === (chunks - 1).U
+  val finishingRotation = bitFire && finalChunk
+  io.rotateReady := loadedReg && (state === idle || finishingRotation)
+  val rotateFire = io.rotateStart && io.rotateReady
+  when(io.rotateStart) {
+    assert(io.rotateReady, "bitwise rotation started while unavailable")
+  }
   when(bitFire) {
     negateCarry := nextNegateCarry
-    when(chunkIndex === (chunks - 1).U) {
+    when(finalChunk) {
       state := idle
       chunkIndex := 0.U
       rotateDoneReg := true.B
     }.otherwise {
       chunkIndex := chunkIndex + 1.U
+    }
+  }
+  // This block follows completion so a new marker on the final chunk keeps
+  // the bit stream continuous and initializes the next negation carry.
+  when(rotateFire) {
+    state := rotating
+    chunkIndex := 0.U
+    exponentReg := io.exponent
+    for (position <- 0 until polynomialSize) {
+      val wraps = position.U < io.exponent(indexWidth - 1, 0)
+      negateCarry(position) := wraps ^ io.exponent(indexWidth)
     }
   }
 }
