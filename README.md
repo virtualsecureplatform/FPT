@@ -262,6 +262,9 @@ With Verilator available, preparation also validates and measures both full
 Blind Rotate wrappers. The current FPT batch completes 15 raw-TLWE inputs and
 sample-extracted outputs in 180,736 cycles, or 12,049.1 cycles/result. The
 compiled FPT model is signature-cached because its generated C++ is large.
+When Yosys is installed, the same preparation independently checks the full
+Chisel/SGen synthesis hierarchy and the expected accumulator, exponent, and
+sample-extraction memory shapes.
 
 See [the FPT/HOGE comparison guide](docs/fpt-hoge-comparison.md) for the
 precise boundaries, throughput normalization, source-only preparation, and

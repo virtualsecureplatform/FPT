@@ -237,7 +237,13 @@ final class BitwisePrefetchedBatchedCmuxCoefficientStore(
     }
   }
   when(io.updateFirst && io.updateValid) {
-    assert(busy(io.updateContext), "inverse update targets an idle context")
+    // Avoid an unguarded immediate assertion from a dynamic Vec read.
+    val selectedBusy = busy.zipWithIndex
+      .map { case (flag, context) =>
+        (io.updateContext === context.U) && flag
+      }
+      .reduce(_ || _)
+    assert(selectedBusy, "inverse update targets an idle context")
   }
   when(io.loadStart) {
     assert(!busy(io.loadContext), "cannot load an in-flight context")

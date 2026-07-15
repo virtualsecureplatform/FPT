@@ -37,6 +37,8 @@ The route machine needs:
 - Vivado with support for `xcu280-fsvh2892-2L-e`;
 - `verilator` for complete-source lint; emitters skip lint when it is
   unavailable or explicitly disabled;
+- `yosys` optionally provides an independent full-hierarchy synthesis-
+  frontend check in the direct FPT/HOGE flow;
 - standard `bash`, `git`, `awk`, `realpath`, and `sha256sum` utilities.
 
 ## Run the comparison
@@ -75,6 +77,11 @@ Useful controls are:
 | `FPT_CHISEL_HEAP` | `12G` | Heap used by the bitwise Chisel emitter |
 | `FPT_VIVADO_SCOPE` | `cmux` | Select `cmux` or `blind-rotate`; the wrapper script sets the latter |
 | `FPT_BLIND_ROTATE_DIMENSION` | `630` | Raw TLWE mask dimension for the Blind Rotate scope |
+
+The direct FPT/HOGE runner additionally accepts
+`FPT_SKIP_YOSYS_BOUNDARY=1` and `FPT_YOSYS_BOUNDARY_DIR=...` to control its
+cached independent synthesis-boundary check. Yosys generic-cell totals are
+not substitutes for routed U280 utilization.
 
 The preparation path can be checked on a machine without Vivado:
 

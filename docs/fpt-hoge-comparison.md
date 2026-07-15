@@ -64,6 +64,17 @@ that cache outside the handoff directory. Set `FPT_SKIP_FPT_SCHEDULE=1` or
 `FPT_SKIP_HOGE_SCHEDULE=1` to omit the corresponding measurement; its
 throughput fields are then recorded as `unmeasured`.
 
+When Yosys is installed, preparation also independently elaborates the exact
+paper-sized Chisel top together with both generated SGen transforms. This
+check rejects missing hierarchy, unexpected synthesis warnings, CIRCT
+block-local declarations, or changes to the 128 replicated `120 x 128`
+accumulator memories, the `9450 x 11` exponent memory, and the `16 x 2048`
+sample-extraction memory. The first elaboration takes roughly a minute and is
+signature-cached. Set `FPT_YOSYS_BOUNDARY_DIR` to place its cache elsewhere,
+or `FPT_SKIP_YOSYS_BOUNDARY=1` to skip it explicitly. These generic-cell
+statistics validate the synthesis boundary; only the Vivado runs provide
+U280 resource and timing results.
+
 ## Route on the Vivado machine
 
 ```sh

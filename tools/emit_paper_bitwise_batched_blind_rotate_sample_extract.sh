@@ -40,6 +40,14 @@ if ! rg -q '^module BatchedBlindRotateSampleExtractEngine\(' "$output_file" ||
     echo "Emitted source is missing the sample-extracted Blind Rotate top" >&2
     exit 1
 fi
+if rg -q '\bautomatic\b' "$output_file"; then
+    echo "Emitted source contains non-portable block-local declarations" >&2
+    exit 1
+fi
+if rg -q ':[[:space:]]+assert\(' "$output_file"; then
+    echo "Emitted source contains unguarded immediate assertions" >&2
+    exit 1
+fi
 
 if command -v verilator >/dev/null && [[ ${FPT_SKIP_LINT:-0} != 1 ]]; then
     verilator --lint-only -Wno-fatal \

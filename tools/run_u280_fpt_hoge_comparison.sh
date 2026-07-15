@@ -11,11 +11,13 @@ jobs=${FPT_VIVADO_JOBS:-8}
 reuse=${FPT_VIVADO_REUSE:-0}
 prepare_only=${FPT_VIVADO_PREPARE_ONLY:-0}
 design_list=${FPT_HOGE_DESIGNS:-fpt-forward hoge-forward fpt-inverse hoge-inverse fpt-blind-rotate hoge-blind-rotate}
+skip_yosys_boundary=${FPT_SKIP_YOSYS_BOUNDARY:-0}
 skip_fpt_schedule=${FPT_SKIP_FPT_SCHEDULE:-0}
 skip_hoge_schedule=${FPT_SKIP_HOGE_SCHEDULE:-0}
 
 case "$reuse" in 0|1) ;; *) echo "FPT_VIVADO_REUSE must be 0 or 1" >&2; exit 1 ;; esac
 case "$prepare_only" in 0|1) ;; *) echo "FPT_VIVADO_PREPARE_ONLY must be 0 or 1" >&2; exit 1 ;; esac
+case "$skip_yosys_boundary" in 0|1) ;; *) echo "FPT_SKIP_YOSYS_BOUNDARY must be 0 or 1" >&2; exit 1 ;; esac
 case "$skip_fpt_schedule" in 0|1) ;; *) echo "FPT_SKIP_FPT_SCHEDULE must be 0 or 1" >&2; exit 1 ;; esac
 case "$skip_hoge_schedule" in 0|1) ;; *) echo "FPT_SKIP_HOGE_SCHEDULE must be 0 or 1" >&2; exit 1 ;; esac
 if [[ ! $jobs =~ ^[1-9][0-9]*$ ]]; then
@@ -60,6 +62,8 @@ sgen_dir=$(realpath "$sgen_dir")
 output_root=$(realpath -m "$output_root")
 fpt_schedule_dir=$(realpath -m \
     "${FPT_SCHEDULE_BUILD_DIR:-$output_root/fpt-schedule}")
+fpt_yosys_boundary_dir=$(realpath -m \
+    "${FPT_YOSYS_BOUNDARY_DIR:-$output_root/fpt-yosys-boundary}")
 sources_dir=$output_root/sources
 sgen_sources=$sources_dir/sgen
 hoge_sources=$sources_dir/hoge
@@ -120,6 +124,41 @@ if [[ $hoge_forward_multipliers != 31 || \
       $hoge_br_multipliers != 127 ]]; then
     echo "Unexpected HOGE multiplier structure: forward=$hoge_forward_multipliers inverse=$hoge_inverse_multipliers br=$hoge_br_multipliers" >&2
     exit 1
+fi
+
+fpt_yosys_boundary_status=unavailable
+fpt_yosys_version=unavailable
+fpt_yosys_accumulator_memories=unmeasured
+fpt_yosys_total_port_bits=unmeasured
+fpt_yosys_total_memory_bits=unmeasured
+fpt_yosys_total_cells=unmeasured
+if [[ $skip_yosys_boundary == 1 ]]; then
+    fpt_yosys_boundary_status=skipped
+elif command -v yosys >/dev/null; then
+    "$repo_root/tools/check_fpt_synthesis_boundary.sh" \
+        "$fpt_br_sources" "$sgen_sources" "$fpt_yosys_boundary_dir"
+    fpt_yosys_metrics=$fpt_yosys_boundary_dir/metrics.tsv
+    fpt_yosys_boundary_status=$(awk -F '\t' \
+        '$1 == "status" { print $2 }' "$fpt_yosys_metrics")
+    fpt_yosys_version=$(awk -F '\t' \
+        '$1 == "yosys_version" { print $2 }' "$fpt_yosys_metrics")
+    fpt_yosys_accumulator_memories=$(awk -F '\t' \
+        '$1 == "accumulator_memories_120x128" { print $2 }' \
+        "$fpt_yosys_metrics")
+    fpt_yosys_total_port_bits=$(awk -F '\t' \
+        '$1 == "total_port_bits" { print $2 }' "$fpt_yosys_metrics")
+    fpt_yosys_total_memory_bits=$(awk -F '\t' \
+        '$1 == "total_memory_bits" { print $2 }' "$fpt_yosys_metrics")
+    fpt_yosys_total_cells=$(awk -F '\t' \
+        '$1 == "total_cells" { print $2 }' "$fpt_yosys_metrics")
+    if [[ $fpt_yosys_boundary_status != passed || \
+          $fpt_yosys_accumulator_memories != 128 || \
+          ! $fpt_yosys_total_port_bits =~ ^[0-9]+$ || \
+          ! $fpt_yosys_total_memory_bits =~ ^[0-9]+$ || \
+          ! $fpt_yosys_total_cells =~ ^[0-9]+$ ]]; then
+        echo "Could not validate the FPT Yosys synthesis boundary" >&2
+        exit 1
+    fi
 fi
 
 fpt_br_batch_cycles=unmeasured
@@ -249,6 +288,8 @@ fpt_schedule_flow_sha=$(sha256 \
     "$repo_root/tools/measure_fpt_blind_rotate_schedule.sh")
 hoge_schedule_flow_sha=$(sha256 \
     "$repo_root/tools/measure_hoge_blind_rotate_schedule.sh")
+fpt_yosys_boundary_flow_sha=$(sha256 \
+    "$repo_root/tools/check_fpt_synthesis_boundary.sh")
 single_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_sgen_u280.tcl")
 composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl")
 
@@ -263,6 +304,16 @@ composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl"
     printf 'sgen_tracked_state\t%s\n' "$(tracked_state "$sgen_dir")"
     printf 'vivado_version\t%s\n' "$vivado_version"
     printf 'verilator_version\t%s\n' "$verilator_version"
+    printf 'fpt_yosys_boundary_status\t%s\n' \
+        "$fpt_yosys_boundary_status"
+    printf 'fpt_yosys_version\t%s\n' "$fpt_yosys_version"
+    printf 'fpt_yosys_accumulator_memories_120x128\t%s\n' \
+        "$fpt_yosys_accumulator_memories"
+    printf 'fpt_yosys_total_port_bits\t%s\n' \
+        "$fpt_yosys_total_port_bits"
+    printf 'fpt_yosys_total_memory_bits\t%s\n' \
+        "$fpt_yosys_total_memory_bits"
+    printf 'fpt_yosys_total_cells\t%s\n' "$fpt_yosys_total_cells"
     printf 'part\t%s\n' "$part"
     printf 'clock_periods_ns\t%s\n' "$period_list"
     printf 'vivado_jobs\t%s\n' "$jobs"
@@ -323,6 +374,8 @@ composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl"
         "$fpt_schedule_flow_sha"
     printf 'hoge_blind_rotate_schedule_flow_sha256\t%s\n' \
         "$hoge_schedule_flow_sha"
+    printf 'fpt_yosys_boundary_flow_sha256\t%s\n' \
+        "$fpt_yosys_boundary_flow_sha"
     printf 'single_source_flow_sha256\t%s\n' "$single_flow_sha"
     printf 'composed_flow_sha256\t%s\n' "$composed_flow_sha"
 } > "$manifest"

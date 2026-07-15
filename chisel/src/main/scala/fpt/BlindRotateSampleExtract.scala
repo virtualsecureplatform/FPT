@@ -182,8 +182,14 @@ final class BatchedBlindRotateSampleExtractEngine(
   io.active := blindRotate.io.active || extracting
 
   when(sampleExtract.io.done) {
+    // Avoid an unguarded immediate assertion from a dynamic Vec read.
+    val selectedComplete = blindRotate.io.contextComplete.zipWithIndex
+      .map { case (flag, context) =>
+        (extractionContext === context.U) && flag
+      }
+      .reduce(_ || _)
     assert(
-      blindRotate.io.contextComplete(extractionContext),
+      selectedComplete,
       "sample extraction completed for an incomplete context"
     )
     when(finalContext) {

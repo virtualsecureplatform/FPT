@@ -4,6 +4,17 @@ import circt.stage.ChiselStage
 
 import java.nio.file.Path
 
+private object SynthesisEmitter {
+  val firtoolOptions: Array[String] = Array(
+    "-disable-all-randomization",
+    "-strip-debug-info",
+    "--lowering-options=disallowLocalVariables"
+  )
+
+  def outputDirectory(argument: String): String =
+    Path.of(argument).toAbsolutePath.normalize.toString
+}
+
 object PaperSetII {
   val blindRotateDomainDimension = 630
   val barrelBatchContexts = 14
@@ -94,7 +105,7 @@ object EmitPaperCmux extends App {
   ChiselStage.emitSystemVerilogFile(
     new CmuxEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -117,7 +128,7 @@ object EmitPaperBitwiseCmux extends App {
   ChiselStage.emitSystemVerilogFile(
     new CmuxEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -140,7 +151,7 @@ object EmitPaperBatchedCmux extends App {
   ChiselStage.emitSystemVerilogFile(
     new BatchedCmuxEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -167,7 +178,7 @@ object EmitPaperBankedBatchedCmux extends App {
   ChiselStage.emitSystemVerilogFile(
     new BatchedCmuxEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -195,7 +206,7 @@ object EmitPaperBitwiseBatchedCmux extends App {
   ChiselStage.emitSystemVerilogFile(
     new BatchedCmuxEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -230,7 +241,7 @@ object EmitPaperBatchedBlindRotate extends App {
   ChiselStage.emitSystemVerilogFile(
     new BatchedBlindRotateEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -266,7 +277,7 @@ object EmitPaperBitwiseBatchedBlindRotate extends App {
   ChiselStage.emitSystemVerilogFile(
     new BatchedBlindRotateEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -302,7 +313,7 @@ object EmitPaperBitwiseBatchedBlindRotateSampleExtract extends App {
   ChiselStage.emitSystemVerilogFile(
     new BatchedBlindRotateSampleExtractEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -321,7 +332,7 @@ object EmitPaperAccumulatorBanks extends App {
   ChiselStage.emitSystemVerilogFile(
     new ReplicatedAccumulatorBanks(config),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -337,7 +348,7 @@ object EmitPaperBitwiseReorder extends App {
       bitsPerCycle = 2
     ),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -351,7 +362,7 @@ object EmitPaperBitwiseDecomposition extends App {
       bitsPerCycle = 2
     ),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -365,19 +376,8 @@ object EmitPaperBitwiseForwardFrontend extends App {
       bitsPerCycle = 2
     ),
     args = Array("--target-dir", outputDirectory.toString),
-    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
-}
-
-private object YosysCoefficientEmitter {
-  val firtoolOptions: Array[String] = Array(
-    "-disable-all-randomization",
-    "-strip-debug-info",
-    "--lowering-options=disallowLocalVariables"
-  )
-
-  def outputDirectory(argument: String): String =
-    Path.of(argument).toAbsolutePath.normalize.toString
 }
 
 object EmitPaperYosysBarrelCoefficient extends App {
@@ -387,9 +387,9 @@ object EmitPaperYosysBarrelCoefficient extends App {
     new CmuxCoefficientStore(PaperSetII.coefficient),
     args = Array(
       "--target-dir",
-      YosysCoefficientEmitter.outputDirectory(args(0))
+      SynthesisEmitter.outputDirectory(args(0))
     ),
-    firtoolOpts = YosysCoefficientEmitter.firtoolOptions
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -400,9 +400,9 @@ object EmitPaperYosysBitwiseCoefficient extends App {
     new BitwiseCmuxForwardFrontend(PaperSetII.coefficient, bitsPerCycle = 2),
     args = Array(
       "--target-dir",
-      YosysCoefficientEmitter.outputDirectory(args(0))
+      SynthesisEmitter.outputDirectory(args(0))
     ),
-    firtoolOpts = YosysCoefficientEmitter.firtoolOptions
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -419,9 +419,9 @@ object EmitPaperYosysBarrelBatchedCoefficient extends App {
     ),
     args = Array(
       "--target-dir",
-      YosysCoefficientEmitter.outputDirectory(args(0))
+      SynthesisEmitter.outputDirectory(args(0))
     ),
-    firtoolOpts = YosysCoefficientEmitter.firtoolOptions
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }
 
@@ -439,8 +439,8 @@ object EmitPaperYosysBitwiseBatchedCoefficient extends App {
     ),
     args = Array(
       "--target-dir",
-      YosysCoefficientEmitter.outputDirectory(args(0))
+      SynthesisEmitter.outputDirectory(args(0))
     ),
-    firtoolOpts = YosysCoefficientEmitter.firtoolOptions
+    firtoolOpts = SynthesisEmitter.firtoolOptions
   )
 }

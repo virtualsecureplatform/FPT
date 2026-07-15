@@ -231,11 +231,17 @@ final class ReplicatedAccumulatorBanks(
   }
 
   when(prefetchFire) {
+    // Avoid an unguarded immediate assertion from a dynamic Vec read.
+    val selectedLoaded = loaded.zipWithIndex
+      .map { case (flag, context) =>
+        (io.prefetchContext === context.U) && flag
+      }
+      .reduce(_ || _)
     assert(
       io.prefetchContext < config.batchContexts.U,
       "invalid prefetch context"
     )
-    assert(loaded(io.prefetchContext), "prefetch targets an unloaded context")
+    assert(selectedLoaded, "prefetch targets an unloaded context")
     prefetchContextReg := io.prefetchContext
     prefetchActive := true.B
     prefetchIssueBeat := 1.U
@@ -293,9 +299,15 @@ final class ReplicatedAccumulatorBanks(
     )
   }
   when(io.updateFirst && io.updateValid) {
+    // Avoid an unguarded immediate assertion from a dynamic Vec read.
+    val selectedLoaded = loaded.zipWithIndex
+      .map { case (flag, context) =>
+        (io.updateContext === context.U) && flag
+      }
+      .reduce(_ || _)
     assert(!updateActive, "updateFirst asserted inside an update transaction")
     assert(io.updateContext < config.batchContexts.U, "invalid update context")
-    assert(loaded(io.updateContext), "update targets an unloaded context")
+    assert(selectedLoaded, "update targets an unloaded context")
   }
   when(updateFire) {
     when(io.updateFirst) {
