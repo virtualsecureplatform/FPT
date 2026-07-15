@@ -6,6 +6,7 @@ output_root=${1:-$repo_root/build/vivado-u280-comparison}
 runs_dir=$output_root/runs
 summary_file=$output_root/summary.tsv
 comparison_file=$output_root/comparison.tsv
+route_metrics_checker=$repo_root/tools/check_u280_route_metrics.sh
 
 metric_value() {
     local metrics_file=$1
@@ -68,7 +69,7 @@ fi
 
 mkdir -p "$output_root"
 printf '%s\n' \
-    $'design\tperiod_ns\twns_ns\tachieved_mhz\tlogic_luts\tflip_flops\tdsp48e2\tramb18e2\tramb36e2\turam288\tdistributed_ram\tsrl\tcarry8\tpower_w' \
+    $'design\tperiod_ns\twns_ns\tachieved_mhz\troute_fully_routed\troute_errors\tdrc_violations\tdrc_fatal\tdrc_error\tdrc_critical_warning\tdrc_warning\tdrc_advisory\tdrc_unclassified\tlogic_luts\tflip_flops\tdsp48e2\tramb18e2\tramb36e2\turam288\tdistributed_ram\tsrl\tcarry8\tpower_w' \
     > "$summary_file"
 printf '%s\n' \
     $'period_ns\tmetric\tbarrel\tbitwise\tbitwise_minus_barrel\tchange' \
@@ -78,13 +79,23 @@ found=0
 while IFS= read -r -d '' metrics_file; do
     run_dir=$(dirname "$metrics_file")
     design=$(basename "$run_dir")
+    "$route_metrics_checker" "$metrics_file"
     period=$(metric_value "$metrics_file" clock_period_ns)
     power=$(power_value "$run_dir/power.rpt")
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$design" \
         "$period" \
         "$(metric_value "$metrics_file" wns_ns)" \
         "$(metric_value "$metrics_file" achieved_mhz)" \
+        "$(metric_value "$metrics_file" route_fully_routed)" \
+        "$(metric_value "$metrics_file" route_errors)" \
+        "$(metric_value "$metrics_file" drc_violations)" \
+        "$(metric_value "$metrics_file" drc_fatal)" \
+        "$(metric_value "$metrics_file" drc_error)" \
+        "$(metric_value "$metrics_file" drc_critical_warning)" \
+        "$(metric_value "$metrics_file" drc_warning)" \
+        "$(metric_value "$metrics_file" drc_advisory)" \
+        "$(metric_value "$metrics_file" drc_unclassified)" \
         "$(metric_value "$metrics_file" logic_luts)" \
         "$(metric_value "$metrics_file" flip_flops)" \
         "$(metric_value "$metrics_file" dsp48e2)" \

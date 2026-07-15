@@ -72,6 +72,7 @@ hoge_sources=$sources_dir/hoge
 fpt_br_sources=$sources_dir/fpt-blind-rotate
 runs_dir=$output_root/runs
 manifest=$output_root/manifest.tsv
+route_metrics_checker=$repo_root/tools/check_u280_route_metrics.sh
 mkdir -p "$sources_dir" "$runs_dir"
 
 remove_sgen_binary=0
@@ -297,6 +298,10 @@ sha256() {
     sha256sum "$1" | awk '{ print $1 }'
 }
 
+hash_lines() {
+    printf '%s\n' "$@" | sha256sum | awk '{ print $1 }'
+}
+
 fpt_forward_sha=$(sha256 "$fpt_forward")
 fpt_inverse_sha=$(sha256 "$fpt_inverse")
 hoge_forward_sha=$(sha256 "$hoge_forward")
@@ -313,8 +318,16 @@ hoge_schedule_flow_sha=$(sha256 \
     "$repo_root/tools/measure_hoge_blind_rotate_schedule.sh")
 fpt_yosys_boundary_flow_sha=$(sha256 \
     "$repo_root/tools/check_fpt_synthesis_boundary.sh")
-single_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_sgen_u280.tcl")
-composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl")
+post_route_metrics_flow_sha=$(sha256 \
+    "$repo_root/chisel/scripts/u280_post_route_metrics.tcl")
+single_top_flow_sha=$(sha256 \
+    "$repo_root/chisel/scripts/synth_sgen_u280.tcl")
+composed_top_flow_sha=$(sha256 \
+    "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl")
+single_flow_sha=$(hash_lines \
+    "$single_top_flow_sha" "$post_route_metrics_flow_sha")
+composed_flow_sha=$(hash_lines \
+    "$composed_top_flow_sha" "$post_route_metrics_flow_sha")
 
 {
     printf '%s\n' $'key\tvalue'
@@ -408,6 +421,10 @@ composed_flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl"
         "$hoge_schedule_flow_sha"
     printf 'fpt_yosys_boundary_flow_sha256\t%s\n' \
         "$fpt_yosys_boundary_flow_sha"
+    printf 'post_route_metrics_flow_sha256\t%s\n' \
+        "$post_route_metrics_flow_sha"
+    printf 'single_source_top_flow_sha256\t%s\n' "$single_top_flow_sha"
+    printf 'composed_top_flow_sha256\t%s\n' "$composed_top_flow_sha"
     printf 'single_source_flow_sha256\t%s\n' "$single_flow_sha"
     printf 'composed_flow_sha256\t%s\n' "$composed_flow_sha"
 } > "$manifest"
@@ -432,8 +449,11 @@ run_single() {
         "$single_flow_sha" "$part" "$period" "$jobs" "$vivado_version" \
         "$top" "$clock_port" | sha256sum | awk '{ print $1 }')
     mkdir -p "$run_dir"
-    if [[ $reuse == 1 && -s $run_dir/metrics.tsv && -s $run_dir/input.sha256 && \
-          $(<"$run_dir/input.sha256") == "$signature" ]]; then
+    if [[ $reuse == 1 && -s $run_dir/metrics.tsv && \
+          -s $run_dir/input.sha256 && \
+          $(<"$run_dir/input.sha256") == "$signature" ]] && \
+          "$route_metrics_checker" "$run_dir/metrics.tsv" \
+              >/dev/null 2>&1; then
         echo "Reusing completed $design run at ${period} ns"
         return
     fi
@@ -458,8 +478,11 @@ run_fpt_blind_rotate() {
         "$fpt_inverse_sha" "$composed_flow_sha" "$part" "$period" "$jobs" \
         "$vivado_version" | sha256sum | awk '{ print $1 }')
     mkdir -p "$run_dir"
-    if [[ $reuse == 1 && -s $run_dir/metrics.tsv && -s $run_dir/input.sha256 && \
-          $(<"$run_dir/input.sha256") == "$signature" ]]; then
+    if [[ $reuse == 1 && -s $run_dir/metrics.tsv && \
+          -s $run_dir/input.sha256 && \
+          $(<"$run_dir/input.sha256") == "$signature" ]] && \
+          "$route_metrics_checker" "$run_dir/metrics.tsv" \
+              >/dev/null 2>&1; then
         echo "Reusing completed $design run at ${period} ns"
         return
     fi

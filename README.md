@@ -311,10 +311,13 @@ vivado -mode batch -source chisel/scripts/synth_paper_cmux_u280.tcl \
 
 These scripts produce pre- and post-route utilization and timing, route
 status, DRC, vectorless power, routed checkpoints, and compact TSV metrics.
-The clock constraint is loaded before synthesis. Vivado is not installed in
-this workspace, so the checked regression stops at Chisel tests, complete-
-design Verilator lint, and source-only handoff generation; hardware benefit
-claims must wait for those U280 reports.
+The clock constraint is loaded before synthesis and verified afterward. Runs
+and report regeneration reject missing constraints, incomplete/error routes,
+and Fatal, Error, Critical Warning, or unclassified post-route DRC violations.
+Vivado is not installed in this workspace, so the checked regression stops at
+Chisel tests, complete-design Verilator lint, mocked acceptance-flow tests,
+and source-only handoff generation; hardware benefit claims must wait for
+those U280 reports.
 
 See `docs/hardware-comparison.md` for the reproduced 203/212-cycle Set-II CMUX
 schedule, generated multiplier-expression comparison, and the remaining

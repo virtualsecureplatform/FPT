@@ -96,22 +96,32 @@ The preparation path can be checked on a machine without Vivado:
 ```sh
 FPT_VIVADO_PREPARE_ONLY=1 FPT_SKIP_LINT=1 \
 tools/run_u280_comparison.sh ../SGen build/vivado-u280-prepared
+
+# Exercise the clock, route, DRC, reuse, and report acceptance contract.
+tests/u280_route_contract_test.sh
 ```
 
 ## Outputs
 
 `manifest.tsv` records both Git commits and tracked-worktree states, the
 Vivado version, the part and clocks, and SHA-256 hashes of every synthesis
-input and the Vivado flow Tcl. Each run directory contains pre- and
-post-route utilization/timing reports, route status, DRC, vectorless power,
-checkpoints, the exact clock XDC, the Vivado log/journal, and `metrics.tsv`.
+input and both the top-level and shared acceptance-flow Tcl. Each run
+directory contains pre- and post-route utilization/timing reports, route
+status, DRC, vectorless power, checkpoints, the exact clock XDC, the Vivado
+log/journal, and `metrics.tsv`.
 
 The flow reads the clock XDC before `synth_design`; synthesis, placement, and
-routing therefore see the same target. A negative routed WNS is retained in
-the results and printed as a warning instead of silently treating the target
-clock as achieved.
+routing therefore see the same target. It verifies the named clock and period
+immediately after synthesis. After routing, it records the route-status
+Boolean checks, problematic-net categories, and DRC severity counts. A run is
+rejected unless it is fully routed, has no route errors or problematic nets,
+and has no Fatal, Error, Critical Warning, or unclassified DRC violations.
+Ordinary Warning and Advisory DRCs remain visible in the reports and compact
+metrics. A negative routed WNS is retained and printed as a warning instead of
+silently treating the target clock as achieved.
 
-After all runs, `summary.tsv` contains one row per design and period.
+After all runs, `summary.tsv` contains one validated row per design and
+period, including the route and DRC acceptance fields.
 `comparison.tsv` contains the bitwise-minus-barrel difference and percentage
 for frequency, primitive counts, and estimated power. Recreate both tables
 from existing run directories with:
@@ -119,6 +129,10 @@ from existing run directories with:
 ```sh
 tools/report_vivado_u280_comparison.sh build/vivado-u280-comparison
 ```
+
+The report command independently enforces the same acceptance contract. It
+therefore refuses incomplete, invalid, or pre-contract `metrics.tsv` files
+even if they were retained after a failed Vivado invocation.
 
 The compact LUT field counts placed leaf primitives whose reference name
 starts with `LUT`, including dual-output LUT primitives. FF, DSP48E2,

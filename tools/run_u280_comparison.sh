@@ -52,6 +52,7 @@ barrel_sources=$sources_dir/barrel-batched
 bitwise_sources=$sources_dir/bitwise-batched
 runs_dir=$output_root/runs
 manifest=$output_root/manifest.tsv
+route_metrics_checker=$repo_root/tools/check_u280_route_metrics.sh
 mkdir -p "$sources_dir" "$runs_dir"
 
 remove_sgen_binary=0
@@ -130,11 +131,19 @@ sha256() {
     sha256sum "$1" | awk '{ print $1 }'
 }
 
+hash_lines() {
+    printf '%s\n' "$@" | sha256sum | awk '{ print $1 }'
+}
+
 forward_sha=$(sha256 "$forward_v")
 inverse_sha=$(sha256 "$inverse_v")
 barrel_sha=$(sha256 "$barrel_sv")
 bitwise_sha=$(sha256 "$bitwise_sv")
-flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl")
+top_flow_sha=$(sha256 \
+    "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl")
+post_route_metrics_flow_sha=$(sha256 \
+    "$repo_root/chisel/scripts/u280_post_route_metrics.tcl")
+flow_sha=$(hash_lines "$top_flow_sha" "$post_route_metrics_flow_sha")
 
 {
     printf '%s\n' $'key\tvalue'
@@ -172,6 +181,9 @@ flow_sha=$(sha256 "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl")
     printf 'inverse_sha256\t%s\n' "$inverse_sha"
     printf 'barrel_batched_sha256\t%s\n' "$barrel_sha"
     printf 'bitwise_batched_sha256\t%s\n' "$bitwise_sha"
+    printf 'vivado_top_flow_sha256\t%s\n' "$top_flow_sha"
+    printf 'post_route_metrics_flow_sha256\t%s\n' \
+        "$post_route_metrics_flow_sha"
     printf 'vivado_flow_sha256\t%s\n' "$flow_sha"
 } > "$manifest"
 
@@ -201,7 +213,9 @@ run_design() {
     if [[ $reuse == 1 && -s $run_dir/metrics.tsv && \
           -s $run_dir/input.sha256 ]]; then
         previous_signature=$(<"$run_dir/input.sha256")
-        if [[ $previous_signature == "$signature" ]]; then
+        if [[ $previous_signature == "$signature" ]] && \
+            "$route_metrics_checker" "$run_dir/metrics.tsv" \
+                >/dev/null 2>&1; then
             echo "Reusing completed $design run at ${period} ns"
             return
         fi

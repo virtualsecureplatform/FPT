@@ -109,14 +109,17 @@ tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
 
 Runs are sequential. `FPT_VIVADO_REUSE=1` reuses a completed result only when
 its source, flow, top, part, clock, tool version, and job-count signature still
-matches.
+matches and its metrics satisfy the current route/DRC acceptance contract.
 
 ## Result interpretation
 
-`summary.tsv` reports routed timing, primitive counts, power, frame II,
-frames/s, frames/s/LUT, and frames/s/DSP. `comparison.tsv` reports FPT minus
-HOGE for each matched role and period. The normalized transform metrics are
-the primary benefit indicators:
+`summary.tsv` reports validated route/DRC status, routed timing, primitive
+counts, power, frame II, frames/s, frames/s/LUT, and frames/s/DSP. A result is
+accepted only when the requested clock is present, routing is complete, route
+status has no error categories, and DRC has no Fatal, Error, Critical Warning,
+or unclassified violation. `comparison.tsv` reports FPT minus HOGE for each
+matched role and period. The normalized transform metrics are the primary
+benefit indicators:
 
 - frame rate shows the benefit of FPT's wider streaming transforms;
 - frame rate per LUT measures logic efficiency;

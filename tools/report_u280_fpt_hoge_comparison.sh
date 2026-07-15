@@ -7,6 +7,7 @@ runs_dir=$output_root/runs
 summary_file=$output_root/summary.tsv
 comparison_file=$output_root/comparison.tsv
 manifest_file=$output_root/manifest.tsv
+route_metrics_checker=$repo_root/tools/check_u280_route_metrics.sh
 
 metric_value() {
     local metrics_file=$1
@@ -140,7 +141,7 @@ if [[ ! -d $runs_dir ]]; then
 fi
 
 printf '%s\n' \
-    $'design\tperiod_ns\twns_ns\tachieved_mhz\tframe_ii_cycles\tframe_rate_mfps\tframe_rate_kfps_per_lut\tframe_rate_mfps_per_dsp\tlogic_luts\tflip_flops\tdsp48e2\tramb18e2\tramb36e2\turam288\tdistributed_ram\tsrl\tcarry8\tpower_w' \
+    $'design\tperiod_ns\twns_ns\tachieved_mhz\troute_fully_routed\troute_errors\tdrc_violations\tdrc_fatal\tdrc_error\tdrc_critical_warning\tdrc_warning\tdrc_advisory\tdrc_unclassified\tframe_ii_cycles\tframe_rate_mfps\tframe_rate_kfps_per_lut\tframe_rate_mfps_per_dsp\tlogic_luts\tflip_flops\tdsp48e2\tramb18e2\tramb36e2\turam288\tdistributed_ram\tsrl\tcarry8\tpower_w' \
     > "$summary_file"
 printf '%s\n' \
     $'role\tperiod_ns\tmetric\thoge_ntt\tfpt_ftt\tfpt_minus_hoge\tchange' \
@@ -150,11 +151,21 @@ found=0
 while IFS= read -r -d '' metrics_file; do
     run_dir=$(dirname "$metrics_file")
     design=$(basename "$run_dir")
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$route_metrics_checker" "$metrics_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$design" \
         "$(metric_value "$metrics_file" clock_period_ns)" \
         "$(metric_value "$metrics_file" wns_ns)" \
         "$(metric_value "$metrics_file" achieved_mhz)" \
+        "$(metric_value "$metrics_file" route_fully_routed)" \
+        "$(metric_value "$metrics_file" route_errors)" \
+        "$(metric_value "$metrics_file" drc_violations)" \
+        "$(metric_value "$metrics_file" drc_fatal)" \
+        "$(metric_value "$metrics_file" drc_error)" \
+        "$(metric_value "$metrics_file" drc_critical_warning)" \
+        "$(metric_value "$metrics_file" drc_warning)" \
+        "$(metric_value "$metrics_file" drc_advisory)" \
+        "$(metric_value "$metrics_file" drc_unclassified)" \
         "$(design_ii "$design")" \
         "$(derived_metric "$metrics_file" "$design" frame_rate_mfps)" \
         "$(derived_metric "$metrics_file" "$design" frame_rate_kfps_per_lut)" \

@@ -5,6 +5,9 @@
 #            build/vivado-sgen-forward 3.425 \
 #            xcu280-fsvh2892-2L-e 8 clk
 
+set script_dir [file dirname [file normalize [info script]]]
+source [file join $script_dir u280_post_route_metrics.tcl]
+
 set source_file [lindex $argv 0]
 set top [lindex $argv 1]
 set output_dir [lindex $argv 2]
@@ -42,6 +45,7 @@ read_verilog $source_file
 read_xdc $clock_xdc
 synth_design -top $top -part $part \
     -mode out_of_context -flatten_hierarchy rebuilt
+fpt_require_u280_clock $clock_period $clock_port
 report_utilization -hierarchical \
     -file [file join $output_dir post_synth_utilization.rpt]
 report_timing_summary -file [file join $output_dir post_synth_timing.rpt]
@@ -56,60 +60,21 @@ report_utilization -hierarchical \
     -file [file join $output_dir utilization.rpt]
 report_timing_summary -file [file join $output_dir timing_summary.rpt]
 report_route_status -file [file join $output_dir route_status.rpt]
-report_drc -file [file join $output_dir drc.rpt]
+set drc_name fpt_post_route_drc
+report_drc -name $drc_name -file [file join $output_dir drc.rpt]
 report_power -file [file join $output_dir power.rpt]
 write_checkpoint -force [file join $output_dir $top.dcp]
 
-proc count_refs {pattern} {
-    return [llength [get_cells -hierarchical -quiet \
-        -filter "REF_NAME =~ $pattern"]]
-}
-
-set logic_luts [count_refs LUT*]
-set flip_flops [count_refs FD*]
-set dsp48e2 [count_refs DSP48E2]
-set ramb18e2 [count_refs RAMB18E2]
-set ramb36e2 [count_refs RAMB36E2]
-set uram288 [count_refs URAM288]
-set all_ram [count_refs RAM*]
-set distributed_ram [expr {$all_ram - $ramb18e2 - $ramb36e2}]
-set srl [count_refs SRL*]
-set carry8 [count_refs CARRY8]
-
-set timing_paths [get_timing_paths -delay_type max -max_paths 1 -nworst 1]
-set wns NA
-set achieved_mhz NA
-if {[llength $timing_paths] > 0} {
-    set wns [format %.3f [get_property SLACK [lindex $timing_paths 0]]]
-    set critical_delay [expr {$clock_period - $wns}]
-    if {$critical_delay > 0} {
-        set achieved_mhz [format %.3f [expr {1000.0 / $critical_delay}]]
-    }
-}
-
-set metrics_file [open [file join $output_dir metrics.tsv] w]
-puts $metrics_file "metric\tvalue"
-foreach {metric value} [list \
+set metrics [fpt_collect_u280_metrics $clock_period $clock_port $drc_name]
+fpt_write_u280_metrics [file join $output_dir metrics.tsv] [list \
     top $top \
     clock_port $clock_port \
     part $part \
-    clock_period_ns $clock_period \
-    wns_ns $wns \
-    achieved_mhz $achieved_mhz \
-    logic_luts $logic_luts \
-    flip_flops $flip_flops \
-    dsp48e2 $dsp48e2 \
-    ramb18e2 $ramb18e2 \
-    ramb36e2 $ramb36e2 \
-    uram288 $uram288 \
-    distributed_ram $distributed_ram \
-    srl $srl \
-    carry8 $carry8] {
-    puts $metrics_file "$metric\t$value"
-}
-close $metrics_file
+    clock_period_ns $clock_period] $metrics
 
-puts "FPT_METRICS top=$top period_ns=$clock_period wns_ns=$wns achieved_mhz=$achieved_mhz LUT=$logic_luts FF=$flip_flops DSP=$dsp48e2 RAMB18=$ramb18e2 RAMB36=$ramb36e2 URAM=$uram288"
+set wns [dict get $metrics wns_ns]
+puts "FPT_METRICS top=$top period_ns=$clock_period wns_ns=$wns achieved_mhz=[dict get $metrics achieved_mhz] LUT=[dict get $metrics logic_luts] FF=[dict get $metrics flip_flops] DSP=[dict get $metrics dsp48e2] RAMB18=[dict get $metrics ramb18e2] RAMB36=[dict get $metrics ramb36e2] URAM=[dict get $metrics uram288] routed=[dict get $metrics route_fully_routed] drc_errors=[dict get $metrics drc_error]"
 if {$wns ne "NA" && $wns < 0} {
     puts "WARNING: routed design misses the requested clock by [expr {-$wns}] ns"
 }
+fpt_require_clean_u280_route $metrics
