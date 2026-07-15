@@ -106,7 +106,7 @@ object EmitPaperBatchedCmux extends App {
     inversePath.toString,
     includeVerilogSource = false
   )
-  val config = BatchedCmuxEngineConfig(engine, batchContexts = 12)
+  val config = BatchedCmuxEngineConfig(engine, batchContexts = 13)
 
   ChiselStage.emitSystemVerilogFile(
     new BatchedCmuxEngine(config),
@@ -156,6 +156,22 @@ object EmitPaperAccumulatorBanks extends App {
 
   ChiselStage.emitSystemVerilogFile(
     new ReplicatedAccumulatorBanks(config),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+  )
+}
+
+object EmitPaperBitwiseReorder extends App {
+  require(args.length == 1, "usage: EmitPaperBitwiseReorder OUTPUT_DIR")
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  ChiselStage.emitSystemVerilogFile(
+    new BitwiseNegacyclicReorder(
+      polynomialSize = 1024,
+      loadLanes = 64,
+      coefficientWidth = 32,
+      bitsPerCycle = 2
+    ),
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
   )

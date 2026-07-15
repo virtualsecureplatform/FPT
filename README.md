@@ -171,6 +171,19 @@ one shared ten-stage negacyclic barrel rotator.  The External Product
 accumulator is also lane-banked as 128 banks by four spectral points and
 repacks directly to the 64-lane inverse stream.
 
+`BitwiseNegacyclicReorder` is the standalone replacement path for the current
+full-width barrel rotator. At the Set II shape it loads 64 32-bit coefficients
+per cycle, transposes them into 2-bit banks, and emits all 1024 rotated
+positions over 16 bitwise cycles. Wrapped coefficients use serial
+two's-complement carry, so every exponent in `[0, 2N)` remains exact. The
+paper-scale module emits as 3.02 MB and passes Verilator lint; it is not yet
+wired into gadget decomposition, so the physical CMUX above still uses the
+ten-stage 32-bit barrel network. Reproduce the standalone block with:
+
+```sh
+tools/emit_paper_bitwise_reorder.sh build/chisel-paper-bitwise
+```
+
 Vivado scripts run the transform alone or the complete CMUX out of context on
 the U280.  The default 3.425 ns constraint matches HOGE's reported 292 MHz;
 pass `5.0` as the final argument to reproduce FPT's 200 MHz operating point:

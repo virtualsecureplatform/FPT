@@ -66,10 +66,15 @@ read port each while writes are mirrored. For Set II, CIRCT preserves this as
 lint processes 15.92 MB across 19 modules. These are structural source counts,
 not placed resource counts.
 
-The two prefetch buffers still feed a combinational ten-stage negacyclic
-barrel rotator. Reproducing the paper's bitwise stream reorder remains the
-next timing/area optimization; the memory-backed top establishes a much more
-credible synthesis baseline without claiming that unpublished organization.
+The two prefetch buffers still feed a combinational ten-stage, 32-bit
+negacyclic barrel rotator. A standalone `BitwiseNegacyclicReorder` now
+reproduces the paper's coefficient-to-bitwise idea: 64 coefficient lanes load
+a transposed bank structure, a 2-bit-wide logarithmic barrel emits all 1024
+positions over 16 cycles, and serial carries implement exact wrapped
+two's-complement negation. Its paper-scale Chisel output is 3.02 MB and passes
+complete lint. Integrating its bit stream with centered gadget decomposition
+is the next step; until then, the memory-backed top remains the conservative
+full-width rotation baseline.
 
 Regenerate the cyclic comparison and table from local SGen outputs with:
 
