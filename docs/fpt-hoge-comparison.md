@@ -11,7 +11,7 @@ efficiency over HOGE's 64-bit modular NTT.
 | --- | --- | --- |
 | Forward transform | 512 complex tangent points, 128 lanes, frame II 4 | 1024 modular coefficients, 32 lanes, frame II 32 |
 | Inverse transform | 512 complex tangent points, 64 lanes, frame II 8 | 1024 modular coefficients, 32 lanes, frame II 32 |
-| Blind Rotate | `n=630`, 15 contexts, base-10 level 2, index-zero sample extraction, 12,049.1 measured wrapper cycles/result | `n=636`, 2 contexts, base-6 level 3, index-zero sample extraction, 158,318.5 measured wrapper cycles/result |
+| Blind Rotate | `n=630`, 15 contexts, base-10 level 2, index-zero sample extraction, 12,217.1 measured wrapper cycles/result | `n=636`, 2 contexts, base-6 level 3, index-zero sample extraction, 158,318.5 measured wrapper cycles/result |
 
 Both transform frames represent one 1024-coefficient negacyclic polynomial.
 The FPT transforms come from the tracked SGen `fpt` branch. The HOGE wrappers
@@ -49,13 +49,13 @@ both complete Blind Rotate schedules with zero data and continuously
 available bootstrapping keys.
 
 FPT loads 9,465 raw TLWE coefficients, issues 9,450 key transactions, and
-returns 15,375 sample-extracted TLWE beats. The full batch takes 180,736
-cycles (12,049.1 cycles/result): 9,750 input cycles, 155,190 cycles from run
+returns 15,375 sample-extracted TLWE beats. The full batch takes 183,257
+cycles (12,217.1 cycles/result): 9,750 input cycles, 157,711 cycles from run
 launch through the end of CMUX computation, and a 15,796-cycle drain tail.
 Sample extraction of earlier contexts overlaps the computation. HOGE's final
 `TLAST` occurs after 316,637 cycles (158,318.5 cycles/result). Each of its
 eight BK streams consumes 122,512 beats, with a maximum inter-port skew of
-eight beats. At an equal clock, these wrapper schedules imply 13.139 times
+eight beats. At an equal clock, these wrapper schedules imply 12.96 times
 the result rate for FPT, before accounting for routed frequency or resources.
 
 The first FPT Verilator build is large. Both schedule models use

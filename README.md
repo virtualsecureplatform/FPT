@@ -271,7 +271,7 @@ tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
 
 With Verilator available, preparation also validates and measures both full
 Blind Rotate wrappers. The current FPT batch completes 15 raw-TLWE inputs and
-sample-extracted outputs in 180,736 cycles, or 12,049.1 cycles/result. The
+sample-extracted outputs in 183,257 cycles, or 12,217.1 cycles/result. The
 compiled schedule models use content signatures, so
 `FPT_SCHEDULE_BUILD_DIR` and `HOGE_SCHEDULE_BUILD_DIR` caches remain reusable
 when the same RTL is regenerated in a different handoff directory.
