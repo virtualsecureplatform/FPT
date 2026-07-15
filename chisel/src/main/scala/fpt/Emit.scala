@@ -112,3 +112,22 @@ object EmitPaperBatchedCmux extends App {
     firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
   )
 }
+
+object EmitPaperAccumulatorBanks extends App {
+  require(
+    args.length == 1,
+    "usage: EmitPaperAccumulatorBanks OUTPUT_DIR"
+  )
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  val config = ReplicatedAccumulatorBanksConfig(
+    PaperSetII.coefficient,
+    batchContexts = 12
+  )
+
+  ChiselStage.emitSystemVerilogFile(
+    new ReplicatedAccumulatorBanks(config),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+  )
+}
