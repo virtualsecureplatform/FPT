@@ -363,8 +363,8 @@ regenerated in a different handoff directory.
 The HOGE reference is already physically buffered: eight 512-bit key streams
 feed two internal double-bank TRGSW caches. Its schedule accepts exactly
 122,112 beats per stream, not the former ready-cycle count of 122,512. The
-boundary checker locks its 4,663 top-level port bits and 1,572,864 logical
-cache bits before a handoff manifest is written.
+two boundary checkers lock FPT's 1,012 port/442,368 cache bits and HOGE's 4,663
+port/1,572,864 cache bits before a handoff manifest is written.
 
 When Yosys is installed, the same preparation independently checks the full
 Chisel/SGen synthesis hierarchy and the expected coefficient-accumulator,

@@ -191,10 +191,11 @@ cache instances each contain two 192-deep banks with 2,048-bit words, for
 These bandwidth and capacity differences are part of the current
 architecture and parameter choices, not evidence about FTT arithmetic by
 themselves. The transform-only routes remain the controlled representation
-comparison. `tools/check_hoge_blind_rotate_boundary.sh` rejects any change to
-the HOGE port or cache contract, and the schedule test now deasserts each AXI
-key stream after exactly 122,112 accepted beats instead of counting idle
-`TREADY` cycles after the transfer.
+comparison. `tools/check_fpt_buffered_blind_rotate_boundary.sh` and
+`tools/check_hoge_blind_rotate_boundary.sh` reject any change to either port or
+cache contract. The HOGE schedule test also deasserts each AXI key stream after
+exactly 122,112 accepted beats instead of counting idle `TREADY` cycles after
+the transfer.
 
 The synchronous cache costs two startup cycles per 16-result batch, or
 0.001%, and introduces no transaction gap beyond the current SGen core's
