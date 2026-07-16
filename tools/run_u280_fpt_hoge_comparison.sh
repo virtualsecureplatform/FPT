@@ -75,6 +75,7 @@ fpt_br_sources=$sources_dir/fpt-blind-rotate
 fpt_buffered_br_sources=$sources_dir/fpt-buffered-blind-rotate
 runs_dir=$output_root/runs
 manifest=$output_root/manifest.tsv
+fpt_buffered_boundary_metrics=$output_root/fpt-buffered-blind-rotate-boundary.tsv
 hoge_boundary_metrics=$output_root/hoge-blind-rotate-boundary.tsv
 route_metrics_checker=$repo_root/tools/check_u280_route_metrics.sh
 mkdir -p "$sources_dir" "$runs_dir"
@@ -154,6 +155,39 @@ if [[ $fpt_buffered_gauss_modules != 1 || \
     exit 1
 fi
 
+boundary_value() {
+    local metrics_file=$1
+    local metric=$2
+    awk -F '\t' -v metric="$metric" '
+        $1 == metric { print $2; found = 1; exit }
+        END { if (!found) exit 1 }
+    ' "$metrics_file"
+}
+"$repo_root/tools/check_fpt_buffered_blind_rotate_boundary.sh" \
+    "$fpt_buffered_br" "$fpt_buffered_boundary_metrics"
+fpt_buffered_br_top_ports=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" top_ports)
+fpt_buffered_br_top_port_bits=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" top_port_bits)
+fpt_buffered_br_key_data_ports=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" key_data_ports)
+fpt_buffered_br_key_data_bits=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" key_data_bits)
+fpt_buffered_br_key_interface_bits=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" key_interface_bits)
+fpt_buffered_br_input_interface_bits=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" input_interface_bits)
+fpt_buffered_br_cache_instances=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" cache_instances)
+fpt_buffered_br_cache_banks=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" cache_banks)
+fpt_buffered_br_cache_depth=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" cache_depth_per_bank)
+fpt_buffered_br_cache_word_bits=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" cache_word_bits)
+fpt_buffered_br_cache_logical_bits=$(boundary_value \
+    "$fpt_buffered_boundary_metrics" cache_logical_bits)
+
 instance_count() {
     local source_file=$1
     rg -c '^  INTorusMUL ' "$source_file"
@@ -170,27 +204,30 @@ fi
 
 "$repo_root/tools/check_hoge_blind_rotate_boundary.sh" \
     "$hoge_br" "$hoge_boundary_metrics"
-hoge_boundary_value() {
-    local metric=$1
-    awk -F '\t' -v metric="$metric" '
-        $1 == metric { print $2; found = 1; exit }
-        END { if (!found) exit 1 }
-    ' "$hoge_boundary_metrics"
-}
-hoge_br_top_ports=$(hoge_boundary_value top_ports)
-hoge_br_top_port_bits=$(hoge_boundary_value top_port_bits)
-hoge_br_key_streams=$(hoge_boundary_value key_streams)
-hoge_br_key_data_bits=$(hoge_boundary_value key_data_bits)
-hoge_br_key_interface_bits=$(hoge_boundary_value key_interface_bits)
-hoge_br_tlwe_interface_bits=$(hoge_boundary_value tlwe_interface_bits)
-hoge_br_result_interface_bits=$(hoge_boundary_value result_interface_bits)
-hoge_br_cache_instances=$(hoge_boundary_value trgsw_cache_instances)
-hoge_br_cache_banks=$(hoge_boundary_value cache_banks_per_instance)
-hoge_br_cache_depth=$(hoge_boundary_value cache_depth_per_bank)
-hoge_br_cache_word_bits=$(hoge_boundary_value cache_word_bits)
-hoge_br_cache_logical_bits=$(hoge_boundary_value cache_logical_bits)
-hoge_br_expected_key_beats=$(hoge_boundary_value key_beats_per_bus)
-hoge_br_key_transfer_bits=$(hoge_boundary_value key_transfer_bits)
+hoge_br_top_ports=$(boundary_value "$hoge_boundary_metrics" top_ports)
+hoge_br_top_port_bits=$(boundary_value "$hoge_boundary_metrics" top_port_bits)
+hoge_br_key_streams=$(boundary_value "$hoge_boundary_metrics" key_streams)
+hoge_br_key_data_bits=$(boundary_value "$hoge_boundary_metrics" key_data_bits)
+hoge_br_key_interface_bits=$(boundary_value \
+    "$hoge_boundary_metrics" key_interface_bits)
+hoge_br_tlwe_interface_bits=$(boundary_value \
+    "$hoge_boundary_metrics" tlwe_interface_bits)
+hoge_br_result_interface_bits=$(boundary_value \
+    "$hoge_boundary_metrics" result_interface_bits)
+hoge_br_cache_instances=$(boundary_value \
+    "$hoge_boundary_metrics" trgsw_cache_instances)
+hoge_br_cache_banks=$(boundary_value \
+    "$hoge_boundary_metrics" cache_banks_per_instance)
+hoge_br_cache_depth=$(boundary_value \
+    "$hoge_boundary_metrics" cache_depth_per_bank)
+hoge_br_cache_word_bits=$(boundary_value \
+    "$hoge_boundary_metrics" cache_word_bits)
+hoge_br_cache_logical_bits=$(boundary_value \
+    "$hoge_boundary_metrics" cache_logical_bits)
+hoge_br_expected_key_beats=$(boundary_value \
+    "$hoge_boundary_metrics" key_beats_per_bus)
+hoge_br_key_transfer_bits=$(boundary_value \
+    "$hoge_boundary_metrics" key_transfer_bits)
 
 fpt_yosys_boundary_status=unavailable
 fpt_yosys_version=unavailable
@@ -313,6 +350,7 @@ fpt_buffered_br_drain_tail_cycles=unmeasured
 fpt_buffered_br_input_coefficients=unmeasured
 fpt_buffered_br_key_load_coefficients=unmeasured
 fpt_buffered_br_key_load_beats=unmeasured
+fpt_buffered_br_key_transfer_bits=unmeasured
 fpt_buffered_br_schedule_output_beats=unmeasured
 if [[ $skip_fpt_schedule == 0 ]] && command -v verilator >/dev/null; then
     "$repo_root/tools/measure_fpt_buffered_blind_rotate_accelerator_schedule.sh" \
@@ -343,6 +381,9 @@ if [[ $skip_fpt_schedule == 0 ]] && command -v verilator >/dev/null; then
     fpt_buffered_br_key_load_beats=$(awk -F= \
         '$1 == "fpt_key_load_beats" { print $2 }' \
         "$fpt_buffered_schedule_file")
+    fpt_buffered_br_key_transfer_bits=$((
+        fpt_buffered_br_key_load_beats * fpt_buffered_br_key_data_bits
+    ))
     fpt_buffered_br_schedule_output_beats=$(awk -F= \
         '$1 == "fpt_output_beats" { print $2 }' \
         "$fpt_buffered_schedule_file")
@@ -447,6 +488,8 @@ fpt_schedule_flow_sha=$(sha256 \
 fpt_buffered_schedule_flow_sha=$(hash_lines \
     "$(sha256 "$repo_root/tools/measure_fpt_buffered_blind_rotate_schedule.sh")" \
     "$(sha256 "$repo_root/tools/measure_fpt_buffered_blind_rotate_accelerator_schedule.sh")")
+fpt_buffered_boundary_flow_sha=$(sha256 \
+    "$repo_root/tools/check_fpt_buffered_blind_rotate_boundary.sh")
 hoge_schedule_flow_sha=$(sha256 \
     "$repo_root/tools/measure_hoge_blind_rotate_schedule.sh")
 hoge_boundary_flow_sha=$(sha256 \
@@ -534,9 +577,28 @@ composed_flow_sha=$(hash_lines \
     printf 'fpt_buffered_blind_rotate_dimension\t630\n'
     printf 'fpt_buffered_blind_rotate_contexts\t16\n'
     printf 'fpt_buffered_blind_rotate_top\tBufferedBlindRotateAccelerator\n'
-    printf 'fpt_buffered_blind_rotate_key_load_bits\t864\n'
-    printf 'fpt_buffered_blind_rotate_cache_coefficients\t2\n'
-    printf 'fpt_buffered_blind_rotate_cache_logical_bits\t442368\n'
+    printf 'fpt_buffered_blind_rotate_top_ports\t%s\n' \
+        "$fpt_buffered_br_top_ports"
+    printf 'fpt_buffered_blind_rotate_top_port_bits\t%s\n' \
+        "$fpt_buffered_br_top_port_bits"
+    printf 'fpt_buffered_blind_rotate_key_load_ports\t%s\n' \
+        "$fpt_buffered_br_key_data_ports"
+    printf 'fpt_buffered_blind_rotate_key_load_bits\t%s\n' \
+        "$fpt_buffered_br_key_data_bits"
+    printf 'fpt_buffered_blind_rotate_key_interface_bits\t%s\n' \
+        "$fpt_buffered_br_key_interface_bits"
+    printf 'fpt_buffered_blind_rotate_input_interface_bits\t%s\n' \
+        "$fpt_buffered_br_input_interface_bits"
+    printf 'fpt_buffered_blind_rotate_cache_instances\t%s\n' \
+        "$fpt_buffered_br_cache_instances"
+    printf 'fpt_buffered_blind_rotate_cache_coefficients\t%s\n' \
+        "$fpt_buffered_br_cache_banks"
+    printf 'fpt_buffered_blind_rotate_cache_depth_per_coefficient\t%s\n' \
+        "$fpt_buffered_br_cache_depth"
+    printf 'fpt_buffered_blind_rotate_cache_word_bits\t%s\n' \
+        "$fpt_buffered_br_cache_word_bits"
+    printf 'fpt_buffered_blind_rotate_cache_logical_bits\t%s\n' \
+        "$fpt_buffered_br_cache_logical_bits"
     printf 'fpt_buffered_blind_rotate_batch_cycles\t%s\n' \
         "$fpt_buffered_br_batch_cycles"
     printf 'fpt_buffered_blind_rotate_cycles_per_result\t%s\n' \
@@ -553,6 +615,8 @@ composed_flow_sha=$(hash_lines \
         "$fpt_buffered_br_key_load_coefficients"
     printf 'fpt_buffered_blind_rotate_key_load_beats\t%s\n' \
         "$fpt_buffered_br_key_load_beats"
+    printf 'fpt_buffered_blind_rotate_key_transfer_bits\t%s\n' \
+        "$fpt_buffered_br_key_transfer_bits"
     printf 'fpt_buffered_blind_rotate_schedule_output_beats\t%s\n' \
         "$fpt_buffered_br_schedule_output_beats"
     printf 'fpt_buffered_blind_rotate_output\tsample-extracted-tlwe\n'
@@ -615,6 +679,8 @@ composed_flow_sha=$(hash_lines \
         "$fpt_schedule_flow_sha"
     printf 'fpt_buffered_blind_rotate_schedule_flow_sha256\t%s\n' \
         "$fpt_buffered_schedule_flow_sha"
+    printf 'fpt_buffered_blind_rotate_boundary_flow_sha256\t%s\n' \
+        "$fpt_buffered_boundary_flow_sha"
     printf 'hoge_blind_rotate_schedule_flow_sha256\t%s\n' \
         "$hoge_schedule_flow_sha"
     printf 'hoge_blind_rotate_boundary_flow_sha256\t%s\n' \
