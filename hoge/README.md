@@ -5,7 +5,7 @@
 and lint the baselines with:
 
 ```sh
-tools/generate_hoge_baselines.sh ../HOGE build/hoge-baselines
+tools/generate_hoge_baselines.sh third_party/HOGE build/hoge-baselines
 ```
 
 The generated tops are:
@@ -36,7 +36,7 @@ resource totals alone.
 Measure the current two-context wrapper schedule with:
 
 ```sh
-tools/measure_hoge_blind_rotate_schedule.sh ../HOGE \
+tools/measure_hoge_blind_rotate_schedule.sh third_party/HOGE \
   build/hoge-baselines build/hoge-blind-rotate-sim
 ```
 

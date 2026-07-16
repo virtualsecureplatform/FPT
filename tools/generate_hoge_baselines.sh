@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-hoge_dir=${1:-$repo_root/../HOGE}
+hoge_dir=${1:-$repo_root/third_party/HOGE}
 output_dir=${2:-$repo_root/build/hoge-baselines}
 
 if ! git -C "$hoge_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

@@ -102,7 +102,7 @@ timing, and source/tool/flow signatures under
 
 ```sh
 FPT_VIVADO_PREPARE_ONLY=1 \
-tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
+tools/run_u280_fpt_hoge_comparison.sh third_party/HOGE ../SGen \
   build/vivado-u280-fpt-hoge-prepared
 ```
 
@@ -452,7 +452,7 @@ and generator dependencies are intentionally present:
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
 FPT_VIVADO_JOBS=8 \
-tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
+tools/run_u280_fpt_hoge_comparison.sh third_party/HOGE ../SGen \
   build/vivado-u280-fpt-hoge-comparison
 ```
 
@@ -468,7 +468,7 @@ example, route only the arithmetic kernels first:
 
 ```sh
 FPT_HOGE_DESIGNS='fpt-forward hoge-forward fpt-inverse hoge-inverse' \
-tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
+tools/run_u280_fpt_hoge_comparison.sh third_party/HOGE ../SGen \
   build/vivado-u280-fpt-hoge-transforms
 ```
 

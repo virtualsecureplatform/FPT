@@ -355,7 +355,7 @@ load port:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
-tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
+tools/run_u280_fpt_hoge_comparison.sh third_party/HOGE ../SGen \
   build/vivado-u280-fpt-hoge-comparison
 ```
 

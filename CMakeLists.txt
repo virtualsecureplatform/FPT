@@ -18,7 +18,8 @@ if(NOT FPT_RTL_ARITHMETIC_PROFILE STREQUAL "paper-set-ii" AND
     message(FATAL_ERROR
         "FPT_RTL_ARITHMETIC_PROFILE must be paper-set-ii or tfhepp-hardware")
 endif()
-set(FPT_TFHEPP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../TFHEpp" CACHE PATH
+set(FPT_TFHEPP_SOURCE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/TFHEpp" CACHE PATH
     "Path to a TFHEpp source checkout")
 
 include(CTest)

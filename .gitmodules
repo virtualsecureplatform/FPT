@@ -1,0 +1,6 @@
+[submodule "third_party/TFHEpp"]
+	path = third_party/TFHEpp
+	url = https://github.com/virtualsecureplatform/TFHEpp.git
+[submodule "third_party/HOGE"]
+	path = third_party/HOGE
+	url = https://github.com/virtualsecureplatform/HOGE.git

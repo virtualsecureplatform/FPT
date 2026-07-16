@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_path=$(realpath "${BASH_SOURCE[0]}")
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
-hoge_dir=${1:-$repo_root/../HOGE}
+hoge_dir=${1:-$repo_root/third_party/HOGE}
 source_dir=${2:-$repo_root/build/hoge-baselines}
 build_dir=${3:-$repo_root/build/hoge-blind-rotate-sim}
 source_file=$source_dir/HOGEBlindRotateBaseline.v
