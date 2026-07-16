@@ -504,14 +504,15 @@ below that format's Torus quantum, so a future floating-point shortcut cannot
 silently restore precision that the RTL does not have.
 
 Because TFHEpp's decomposition parameters differ from the paper's, the adapter
-currently uses a guarded profile (BK Q8.24, FFT Q18.20, IFFT Q27.14).  The
-paper's narrower formats remain available through `ArithmeticProfile` and are
-covered by standalone arithmetic tests. In the deterministic 16-input sweep,
-the high-precision control, guarded profile, and guarded profile with only the
-BK narrowed to Q8.19 each decrypted 16/16. Narrowing only the FFT to Q18.12
-gave 10/16, narrowing only the IFFT to Q27.3 gave 8/16, and exact Set II gave
-9/16; every overflow counter remained zero. This small diagnostic is not a
-failure-probability or security study, but it establishes that directly
-applying Set II to TFHEpp's default parameters is not a valid cryptographic
-configuration. Format or TFHE parameters must be retuned before making that
-claim.
+defaults to a high-precision reference profile (BK Q8.24, FFT Q18.28, IFFT
+Q27.24). The narrower guarded profile (Q8.24, Q18.20, Q27.14) and paper formats
+remain selectable compile-time profiles. In the deterministic 16-input sweep,
+the high-precision reference, guarded profile, and guarded profile with only
+the BK narrowed to Q8.19 each decrypted 16/16. Narrowing only the FFT to
+Q18.12 gave 10/16, narrowing only the IFFT to Q27.3 gave 8/16, and exact Set II
+gave 9/16; every overflow counter remained zero. A separate randomized test
+also exposed a guarded-profile failure, which is why it is not the default.
+This small diagnostic is not a failure-probability or security study, but it
+establishes that directly applying Set II to TFHEpp's default parameters is
+not a valid cryptographic configuration. Format or TFHE parameters must be
+retuned before making that claim.

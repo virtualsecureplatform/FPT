@@ -35,7 +35,7 @@ inputs for every profile:
 
 | Profile | BK | FFT | IFFT | Correct decryptions | Maximum phase error |
 | --- | --- | --- | --- | ---: | ---: |
-| High-precision control | Q8.24 | Q18.28 | Q27.24 | 16/16 | 0.00449449 |
+| High-precision reference | Q8.24 | Q18.28 | Q27.24 | 16/16 | 0.00449449 |
 | Guarded TFHEpp | Q8.24 | Q18.20 | Q27.14 | 16/16 | 0.0665894 |
 | Paper BK only | Q8.19 | Q18.20 | Q27.14 | 16/16 | 0.0634155 |
 | Paper FFT only | Q8.24 | Q18.12 | Q27.14 | 10/16 | 0.491394 |
@@ -45,7 +45,9 @@ inputs for every profile:
 
 All transform, pointwise, and inverse overflow counters were zero. The result
 isolates fractional precision, especially the FFT and IFFT widths, rather than
-range overflow. Reproduce it with:
+range overflow. A separate randomized integration-test run also reproduced a
+guarded-profile decryption failure, so the adapter now defaults to the
+high-precision reference profile. Reproduce the deterministic sweep with:
 
 ```sh
 cmake -S . -B build-tfhepp -DFPT_BUILD_TFHEPP_TESTS=ON
