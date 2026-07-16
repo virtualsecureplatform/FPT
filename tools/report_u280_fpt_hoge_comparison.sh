@@ -67,6 +67,8 @@ design_ii() {
             else
                 printf '%s\n' "$ii"
             fi ;;
+        fpt-buffered-blind-rotate)
+            manifest_value fpt_buffered_blind_rotate_cycles_per_result ;;
         hoge-blind-rotate)
             manifest_value hoge_blind_rotate_cycles_per_result ;;
         *) printf '%s\n' - ;;
@@ -193,6 +195,7 @@ pairs=(
     'forward-transform:hoge-forward:fpt-forward'
     'inverse-transform:hoge-inverse:fpt-inverse'
     'blind-rotate:hoge-blind-rotate:fpt-blind-rotate'
+    'buffered-blind-rotate:hoge-blind-rotate:fpt-buffered-blind-rotate'
 )
 for period_dir in "$runs_dir"/period-*; do
     [[ -d $period_dir ]] || continue

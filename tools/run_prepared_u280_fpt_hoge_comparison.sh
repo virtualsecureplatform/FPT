@@ -81,12 +81,14 @@ fpt_inverse=$sources/sgen/inverse.v
 hoge_forward=$sources/hoge/HOGEForwardINTTBaseline.v
 hoge_inverse=$sources/hoge/HOGEInverseNTTBaseline.v
 fpt_br=$sources/fpt-blind-rotate/BatchedBlindRotateSampleExtractEngine.sv
+fpt_buffered_br=$sources/fpt-buffered-blind-rotate/BufferedBlindRotateAccelerator.sv
 hoge_br=$sources/hoge/HOGEBlindRotateBaseline.v
 verify_hash fpt_forward_sha256 "$fpt_forward"
 verify_hash fpt_inverse_sha256 "$fpt_inverse"
 verify_hash hoge_forward_sha256 "$hoge_forward"
 verify_hash hoge_inverse_sha256 "$hoge_inverse"
 verify_hash fpt_blind_rotate_sha256 "$fpt_br"
+verify_hash fpt_buffered_blind_rotate_sha256 "$fpt_buffered_br"
 verify_hash hoge_blind_rotate_sha256 "$hoge_br"
 
 single_tcl=$repo_root/chisel/scripts/synth_sgen_u280.tcl
@@ -127,7 +129,7 @@ for period in "${periods[@]}"; do
     fi
 done
 
-known_designs=' fpt-forward hoge-forward fpt-inverse hoge-inverse fpt-blind-rotate hoge-blind-rotate '
+known_designs=' fpt-forward hoge-forward fpt-inverse hoge-inverse fpt-blind-rotate fpt-buffered-blind-rotate hoge-blind-rotate '
 read -r -a designs <<< "$design_list"
 if [[ ${#designs[@]} == 0 ]]; then
     echo "FPT_HOGE_DESIGNS must select at least one design" >&2
@@ -206,16 +208,18 @@ run_single() {
 }
 
 run_fpt_blind_rotate() {
-    local period=$1
-    local design=fpt-blind-rotate
+    local design=$1
+    local source_file=$2
+    local top=$3
+    local period=$4
     local period_tag=${period//./p}
     local run_dir=$runs_dir/period-$period_tag/$design
     local signature
 
-    signature=$(printf '%s\n' "$design" "$(sha256 "$fpt_br")" \
+    signature=$(printf '%s\n' "$design" "$(sha256 "$source_file")" \
         "$(sha256 "$fpt_forward")" "$(sha256 "$fpt_inverse")" \
         "$composed_flow_sha" "$part" "$period" "$jobs" \
-        "$vivado_version" | sha256sum | awk '{ print $1 }')
+        "$vivado_version" "$top" | sha256sum | awk '{ print $1 }')
     mkdir -p "$run_dir"
     if [[ $reuse == 1 && -s $run_dir/metrics.tsv && \
           -s $run_dir/input.sha256 && \
@@ -231,8 +235,8 @@ run_fpt_blind_rotate() {
     vivado -mode batch -log "$run_dir/vivado.log" \
         -journal "$run_dir/vivado.jou" \
         -source "$composed_tcl" \
-        -tclargs "$fpt_br" "$fpt_forward" "$fpt_inverse" "$run_dir" \
-            "$period" BatchedBlindRotateSampleExtractEngine "$part" "$jobs"
+        -tclargs "$source_file" "$fpt_forward" "$fpt_inverse" "$run_dir" \
+            "$period" "$top" "$part" "$jobs"
     "$route_metrics_checker" "$run_dir/metrics.tsv"
 }
 
@@ -248,7 +252,11 @@ for period in "${periods[@]}"; do
             hoge-inverse)
                 run_single "$design" "$hoge_inverse" HOGEInverseNTTBaseline clock "$period" ;;
             fpt-blind-rotate)
-                run_fpt_blind_rotate "$period" ;;
+                run_fpt_blind_rotate "$design" "$fpt_br" \
+                    BatchedBlindRotateSampleExtractEngine "$period" ;;
+            fpt-buffered-blind-rotate)
+                run_fpt_blind_rotate "$design" "$fpt_buffered_br" \
+                    BufferedBlindRotateAccelerator "$period" ;;
             hoge-blind-rotate)
                 run_single "$design" "$hoge_br" HOGEBlindRotateBaseline clock "$period" ;;
         esac

@@ -10,7 +10,7 @@ period_list=${FPT_VIVADO_CLOCK_PERIODS:-5.0 3.425}
 jobs=${FPT_VIVADO_JOBS:-8}
 reuse=${FPT_VIVADO_REUSE:-0}
 prepare_only=${FPT_VIVADO_PREPARE_ONLY:-0}
-design_list=${FPT_HOGE_DESIGNS:-fpt-forward hoge-forward fpt-inverse hoge-inverse fpt-blind-rotate hoge-blind-rotate}
+design_list=${FPT_HOGE_DESIGNS:-fpt-forward hoge-forward fpt-inverse hoge-inverse fpt-buffered-blind-rotate hoge-blind-rotate}
 skip_yosys_boundary=${FPT_SKIP_YOSYS_BOUNDARY:-0}
 skip_fpt_schedule=${FPT_SKIP_FPT_SCHEDULE:-0}
 skip_hoge_schedule=${FPT_SKIP_HOGE_SCHEDULE:-0}
@@ -44,7 +44,7 @@ for period in "${periods[@]}"; do
     fi
 done
 
-known_designs=' fpt-forward hoge-forward fpt-inverse hoge-inverse fpt-blind-rotate hoge-blind-rotate '
+known_designs=' fpt-forward hoge-forward fpt-inverse hoge-inverse fpt-blind-rotate fpt-buffered-blind-rotate hoge-blind-rotate '
 read -r -a designs <<< "$design_list"
 if [[ ${#designs[@]} == 0 ]]; then
     echo "FPT_HOGE_DESIGNS must select at least one design" >&2
@@ -62,6 +62,8 @@ sgen_dir=$(realpath "$sgen_dir")
 output_root=$(realpath -m "$output_root")
 fpt_schedule_dir=$(realpath -m \
     "${FPT_SCHEDULE_BUILD_DIR:-$output_root/fpt-schedule}")
+fpt_buffered_schedule_dir=$(realpath -m \
+    "${FPT_BUFFERED_SCHEDULE_BUILD_DIR:-$output_root/fpt-buffered-schedule}")
 hoge_schedule_dir=$(realpath -m \
     "${HOGE_SCHEDULE_BUILD_DIR:-$output_root/hoge-schedule}")
 fpt_yosys_boundary_dir=$(realpath -m \
@@ -70,6 +72,7 @@ sources_dir=$output_root/sources
 sgen_sources=$sources_dir/sgen
 hoge_sources=$sources_dir/hoge
 fpt_br_sources=$sources_dir/fpt-blind-rotate
+fpt_buffered_br_sources=$sources_dir/fpt-buffered-blind-rotate
 runs_dir=$output_root/runs
 manifest=$output_root/manifest.tsv
 route_metrics_checker=$repo_root/tools/check_u280_route_metrics.sh
@@ -100,6 +103,9 @@ fi
 "$repo_root/tools/generate_hoge_baselines.sh" "$hoge_dir" "$hoge_sources"
 "$repo_root/tools/emit_paper_bitwise_batched_blind_rotate_sample_extract.sh" \
     "$sgen_sources/forward.v" "$sgen_sources/inverse.v" "$fpt_br_sources"
+"$repo_root/tools/emit_paper_buffered_blind_rotate_accelerator.sh" \
+    "$sgen_sources/forward.v" "$sgen_sources/inverse.v" \
+    "$fpt_buffered_br_sources"
 
 fpt_forward=$sgen_sources/forward.v
 fpt_inverse=$sgen_sources/inverse.v
@@ -107,8 +113,9 @@ hoge_forward=$hoge_sources/HOGEForwardINTTBaseline.v
 hoge_inverse=$hoge_sources/HOGEInverseNTTBaseline.v
 hoge_br=$hoge_sources/HOGEBlindRotateBaseline.v
 fpt_br=$fpt_br_sources/BatchedBlindRotateSampleExtractEngine.sv
+fpt_buffered_br=$fpt_buffered_br_sources/BufferedBlindRotateAccelerator.sv
 for source_file in "$fpt_forward" "$fpt_inverse" "$hoge_forward" \
-    "$hoge_inverse" "$hoge_br" "$fpt_br"; do
+    "$hoge_inverse" "$hoge_br" "$fpt_br" "$fpt_buffered_br"; do
     if [[ ! -s $source_file ]]; then
         echo "Expected comparison RTL is missing: $source_file" >&2
         exit 1
@@ -127,6 +134,22 @@ if [[ $fpt_gauss_modules != 1 || $fpt_split_modules != 1 || \
       $fpt_split_instances != 3 || $fpt_inverse_instances != 1 ]]; then
     echo "Unexpected FPT datapath structure: gauss_modules=$fpt_gauss_modules split_modules=$fpt_split_modules split_instances=$fpt_split_instances inverse_instances=$fpt_inverse_instances" \
         >&2
+    exit 1
+fi
+
+fpt_buffered_gauss_modules=$(rg -c \
+    '^module FptExactGaussComplexMultiply ' "$fpt_buffered_br" || true)
+fpt_buffered_split_instances=$(rg -c '^  FptSignedSplitMultiply #' \
+    "$fpt_buffered_br" || true)
+fpt_buffered_inverse_instances=$(rg -c '^  FptSGenInverse generated ' \
+    "$fpt_buffered_br" || true)
+fpt_buffered_block_memories=$(rg -c 'ram_style = "block"' \
+    "$fpt_buffered_br" || true)
+if [[ $fpt_buffered_gauss_modules != 1 || \
+      $fpt_buffered_split_instances != 3 || \
+      $fpt_buffered_inverse_instances != 1 || \
+      $fpt_buffered_block_memories != 1 ]]; then
+    echo "Unexpected buffered FPT structure: gauss_modules=$fpt_buffered_gauss_modules split_instances=$fpt_buffered_split_instances inverse_instances=$fpt_buffered_inverse_instances block_memories=$fpt_buffered_block_memories" >&2
     exit 1
 fi
 
@@ -257,6 +280,61 @@ if [[ $skip_fpt_schedule == 0 ]] && command -v verilator >/dev/null; then
     fi
 fi
 
+fpt_buffered_br_batch_cycles=unmeasured
+fpt_buffered_br_cycles_per_result=unmeasured
+fpt_buffered_br_input_phase_cycles=unmeasured
+fpt_buffered_br_compute_phase_cycles=unmeasured
+fpt_buffered_br_drain_tail_cycles=unmeasured
+fpt_buffered_br_input_coefficients=unmeasured
+fpt_buffered_br_key_load_coefficients=unmeasured
+fpt_buffered_br_key_load_beats=unmeasured
+fpt_buffered_br_schedule_output_beats=unmeasured
+if [[ $skip_fpt_schedule == 0 ]] && command -v verilator >/dev/null; then
+    "$repo_root/tools/measure_fpt_buffered_blind_rotate_accelerator_schedule.sh" \
+        "$fpt_buffered_br_sources" "$sgen_sources" \
+        "$fpt_buffered_schedule_dir"
+    fpt_buffered_schedule_file=$fpt_buffered_schedule_dir/schedule.txt
+    fpt_buffered_br_batch_cycles=$(awk -F= \
+        '$1 == "fpt_buffered_blind_rotate_batch_cycles" { print $2 }' \
+        "$fpt_buffered_schedule_file")
+    fpt_buffered_br_cycles_per_result=$(awk -F= \
+        '$1 == "fpt_buffered_blind_rotate_cycles_per_result" { print $2 }' \
+        "$fpt_buffered_schedule_file")
+    fpt_buffered_br_input_phase_cycles=$(awk -F= \
+        '$1 == "fpt_buffered_blind_rotate_input_phase_cycles" { print $2 }' \
+        "$fpt_buffered_schedule_file")
+    fpt_buffered_br_compute_phase_cycles=$(awk -F= \
+        '$1 == "fpt_buffered_blind_rotate_compute_phase_cycles" { print $2 }' \
+        "$fpt_buffered_schedule_file")
+    fpt_buffered_br_drain_tail_cycles=$(awk -F= \
+        '$1 == "fpt_buffered_blind_rotate_drain_tail_cycles" { print $2 }' \
+        "$fpt_buffered_schedule_file")
+    fpt_buffered_br_input_coefficients=$(awk -F= \
+        '$1 == "fpt_input_coefficients" { print $2 }' \
+        "$fpt_buffered_schedule_file")
+    fpt_buffered_br_key_load_coefficients=$(awk -F= \
+        '$1 == "fpt_key_load_coefficients" { print $2 }' \
+        "$fpt_buffered_schedule_file")
+    fpt_buffered_br_key_load_beats=$(awk -F= \
+        '$1 == "fpt_key_load_beats" { print $2 }' \
+        "$fpt_buffered_schedule_file")
+    fpt_buffered_br_schedule_output_beats=$(awk -F= \
+        '$1 == "fpt_output_beats" { print $2 }' \
+        "$fpt_buffered_schedule_file")
+    if [[ ! $fpt_buffered_br_batch_cycles =~ ^[0-9]+$ || \
+          ! $fpt_buffered_br_cycles_per_result =~ ^[0-9]+([.][0-9]+)?$ || \
+          ! $fpt_buffered_br_input_phase_cycles =~ ^[0-9]+$ || \
+          ! $fpt_buffered_br_compute_phase_cycles =~ ^[0-9]+$ || \
+          ! $fpt_buffered_br_drain_tail_cycles =~ ^[0-9]+$ || \
+          ! $fpt_buffered_br_input_coefficients =~ ^[0-9]+$ || \
+          ! $fpt_buffered_br_key_load_coefficients =~ ^[0-9]+$ || \
+          ! $fpt_buffered_br_key_load_beats =~ ^[0-9]+$ || \
+          ! $fpt_buffered_br_schedule_output_beats =~ ^[0-9]+$ ]]; then
+        echo "Could not parse the buffered FPT Blind Rotate schedule" >&2
+        exit 1
+    fi
+fi
+
 hoge_br_batch_cycles=unmeasured
 hoge_br_cycles_per_result=unmeasured
 hoge_br_input_beats=unmeasured
@@ -328,12 +406,18 @@ hoge_forward_sha=$(sha256 "$hoge_forward")
 hoge_inverse_sha=$(sha256 "$hoge_inverse")
 hoge_br_sha=$(sha256 "$hoge_br")
 fpt_br_sha=$(sha256 "$fpt_br")
+fpt_buffered_br_sha=$(sha256 "$fpt_buffered_br")
 fpt_schedule_harness_sha=$(sha256 \
     "$repo_root/tests/fpt_blind_rotate_schedule.cpp")
+fpt_buffered_schedule_harness_sha=$(sha256 \
+    "$repo_root/tests/fpt_buffered_blind_rotate_schedule.cpp")
 hoge_schedule_harness_sha=$(sha256 \
     "$repo_root/tests/hoge_blind_rotate_schedule.cpp")
 fpt_schedule_flow_sha=$(sha256 \
     "$repo_root/tools/measure_fpt_blind_rotate_schedule.sh")
+fpt_buffered_schedule_flow_sha=$(hash_lines \
+    "$(sha256 "$repo_root/tools/measure_fpt_buffered_blind_rotate_schedule.sh")" \
+    "$(sha256 "$repo_root/tools/measure_fpt_buffered_blind_rotate_accelerator_schedule.sh")")
 hoge_schedule_flow_sha=$(sha256 \
     "$repo_root/tools/measure_hoge_blind_rotate_schedule.sh")
 fpt_yosys_boundary_flow_sha=$(sha256 \
@@ -416,6 +500,32 @@ composed_flow_sha=$(hash_lines \
         "$fpt_br_schedule_output_beats"
     printf 'fpt_blind_rotate_output\tsample-extracted-tlwe\n'
     printf 'fpt_blind_rotate_output_beats\t16400\n'
+    printf 'fpt_buffered_blind_rotate_dimension\t630\n'
+    printf 'fpt_buffered_blind_rotate_contexts\t16\n'
+    printf 'fpt_buffered_blind_rotate_top\tBufferedBlindRotateAccelerator\n'
+    printf 'fpt_buffered_blind_rotate_key_load_bits\t864\n'
+    printf 'fpt_buffered_blind_rotate_cache_coefficients\t2\n'
+    printf 'fpt_buffered_blind_rotate_cache_logical_bits\t442368\n'
+    printf 'fpt_buffered_blind_rotate_batch_cycles\t%s\n' \
+        "$fpt_buffered_br_batch_cycles"
+    printf 'fpt_buffered_blind_rotate_cycles_per_result\t%s\n' \
+        "$fpt_buffered_br_cycles_per_result"
+    printf 'fpt_buffered_blind_rotate_input_phase_cycles\t%s\n' \
+        "$fpt_buffered_br_input_phase_cycles"
+    printf 'fpt_buffered_blind_rotate_compute_phase_cycles\t%s\n' \
+        "$fpt_buffered_br_compute_phase_cycles"
+    printf 'fpt_buffered_blind_rotate_drain_tail_cycles\t%s\n' \
+        "$fpt_buffered_br_drain_tail_cycles"
+    printf 'fpt_buffered_blind_rotate_input_coefficients\t%s\n' \
+        "$fpt_buffered_br_input_coefficients"
+    printf 'fpt_buffered_blind_rotate_key_load_coefficients\t%s\n' \
+        "$fpt_buffered_br_key_load_coefficients"
+    printf 'fpt_buffered_blind_rotate_key_load_beats\t%s\n' \
+        "$fpt_buffered_br_key_load_beats"
+    printf 'fpt_buffered_blind_rotate_schedule_output_beats\t%s\n' \
+        "$fpt_buffered_br_schedule_output_beats"
+    printf 'fpt_buffered_blind_rotate_output\tsample-extracted-tlwe\n'
+    printf 'fpt_buffered_blind_rotate_output_beats\t16400\n'
     printf 'hoge_blind_rotate_dimension\t636\n'
     printf 'hoge_blind_rotate_contexts\t2\n'
     printf 'hoge_blind_rotate_top\tHOGEBlindRotateBaseline\n'
@@ -437,13 +547,19 @@ composed_flow_sha=$(hash_lines \
     printf 'hoge_forward_sha256\t%s\n' "$hoge_forward_sha"
     printf 'hoge_inverse_sha256\t%s\n' "$hoge_inverse_sha"
     printf 'fpt_blind_rotate_sha256\t%s\n' "$fpt_br_sha"
+    printf 'fpt_buffered_blind_rotate_sha256\t%s\n' \
+        "$fpt_buffered_br_sha"
     printf 'hoge_blind_rotate_sha256\t%s\n' "$hoge_br_sha"
     printf 'fpt_blind_rotate_schedule_harness_sha256\t%s\n' \
         "$fpt_schedule_harness_sha"
+    printf 'fpt_buffered_blind_rotate_schedule_harness_sha256\t%s\n' \
+        "$fpt_buffered_schedule_harness_sha"
     printf 'hoge_blind_rotate_schedule_harness_sha256\t%s\n' \
         "$hoge_schedule_harness_sha"
     printf 'fpt_blind_rotate_schedule_flow_sha256\t%s\n' \
         "$fpt_schedule_flow_sha"
+    printf 'fpt_buffered_blind_rotate_schedule_flow_sha256\t%s\n' \
+        "$fpt_buffered_schedule_flow_sha"
     printf 'hoge_blind_rotate_schedule_flow_sha256\t%s\n' \
         "$hoge_schedule_flow_sha"
     printf 'fpt_yosys_boundary_flow_sha256\t%s\n' \
@@ -495,15 +611,18 @@ run_single() {
 }
 
 run_fpt_blind_rotate() {
-    local period=$1
-    local design=fpt-blind-rotate
+    local design=$1
+    local source_file=$2
+    local source_sha=$3
+    local top=$4
+    local period=$5
     local period_tag=${period//./p}
     local run_dir=$runs_dir/period-$period_tag/$design
     local signature
 
-    signature=$(printf '%s\n' "$design" "$fpt_br_sha" "$fpt_forward_sha" \
+    signature=$(printf '%s\n' "$design" "$source_sha" "$fpt_forward_sha" \
         "$fpt_inverse_sha" "$composed_flow_sha" "$part" "$period" "$jobs" \
-        "$vivado_version" | sha256sum | awk '{ print $1 }')
+        "$vivado_version" "$top" | sha256sum | awk '{ print $1 }')
     mkdir -p "$run_dir"
     if [[ $reuse == 1 && -s $run_dir/metrics.tsv && \
           -s $run_dir/input.sha256 && \
@@ -519,8 +638,8 @@ run_fpt_blind_rotate() {
     vivado -mode batch -log "$run_dir/vivado.log" \
         -journal "$run_dir/vivado.jou" \
         -source "$repo_root/chisel/scripts/synth_paper_cmux_u280.tcl" \
-        -tclargs "$fpt_br" "$fpt_forward" "$fpt_inverse" "$run_dir" \
-            "$period" BatchedBlindRotateSampleExtractEngine "$part" "$jobs"
+        -tclargs "$source_file" "$fpt_forward" "$fpt_inverse" "$run_dir" \
+            "$period" "$top" "$part" "$jobs"
 }
 
 for period in "${periods[@]}"; do
@@ -535,7 +654,12 @@ for period in "${periods[@]}"; do
             hoge-inverse)
                 run_single "$design" "$hoge_inverse" HOGEInverseNTTBaseline clock "$period" ;;
             fpt-blind-rotate)
-                run_fpt_blind_rotate "$period" ;;
+                run_fpt_blind_rotate "$design" "$fpt_br" "$fpt_br_sha" \
+                    BatchedBlindRotateSampleExtractEngine "$period" ;;
+            fpt-buffered-blind-rotate)
+                run_fpt_blind_rotate "$design" "$fpt_buffered_br" \
+                    "$fpt_buffered_br_sha" BufferedBlindRotateAccelerator \
+                    "$period" ;;
             hoge-blind-rotate)
                 run_single "$design" "$hoge_br" HOGEBlindRotateBaseline clock "$period" ;;
         esac

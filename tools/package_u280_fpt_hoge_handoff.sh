@@ -60,6 +60,7 @@ source_entries=(
     'hoge_forward_sha256:sources/hoge/HOGEForwardINTTBaseline.v'
     'hoge_inverse_sha256:sources/hoge/HOGEInverseNTTBaseline.v'
     'fpt_blind_rotate_sha256:sources/fpt-blind-rotate/BatchedBlindRotateSampleExtractEngine.sv'
+    'fpt_buffered_blind_rotate_sha256:sources/fpt-buffered-blind-rotate/BufferedBlindRotateAccelerator.sv'
     'hoge_blind_rotate_sha256:sources/hoge/HOGEBlindRotateBaseline.v'
 )
 for entry in "${source_entries[@]}"; do
@@ -100,6 +101,7 @@ done
 mkdir -p "$bundle_root/sources/sgen" \
     "$bundle_root/sources/hoge" \
     "$bundle_root/sources/fpt-blind-rotate" \
+    "$bundle_root/sources/fpt-buffered-blind-rotate" \
     "$bundle_root/tools" \
     "$bundle_root/chisel/scripts" \
     "$bundle_root/docs"
@@ -124,7 +126,7 @@ chmod +x "$bundle_root/tools/"*.sh
 
 prepared_manifest_sha=$(sha256sum "$manifest" | awk '{ print $1 }')
 {
-    printf 'bundle_format_version\t1\n'
+    printf 'bundle_format_version\t2\n'
     printf 'bundle_generated_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'prepared_manifest_sha256\t%s\n' "$prepared_manifest_sha"
 } >> "$bundle_root/manifest.tsv"
