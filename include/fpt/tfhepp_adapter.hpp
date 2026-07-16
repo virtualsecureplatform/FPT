@@ -55,6 +55,9 @@ struct BlindRotateStats {
     std::uint64_t cmux_count = 0;
 };
 
+inline constexpr ArithmeticProfile tfhepp_guarded_profile{
+    {8, 24}, {18, 20}, {27, 14}, 4};
+
 template <class P>
 [[nodiscard]] constexpr ArithmeticProfile profile_for()
 {
@@ -62,45 +65,46 @@ template <class P>
                   "the current FPT reference supports N=512 or N=1024");
     // Keep the paper profiles available in ArithmeticProfile, but use extra
     // fractional guard bits for TFHEpp's different decomposition parameters.
-    // A later format sweep will narrow these independently.
-    return {{8, 24}, {18, 20}, {27, 14}, 4};
+    // The deterministic profile sweep shows that the paper FFT and IFFT
+    // fractional widths are not reliable with TFHEpp's default parameters.
+    return tfhepp_guarded_profile;
 }
 
-template <class P>
+template <class P, ArithmeticProfile Profile = profile_for<P>()>
 [[nodiscard]] const NegacyclicFFT &bootstrapping_key_plan()
 {
-    constexpr auto profile = profile_for<P>();
     static const NegacyclicFFT plan(
-        {P::n, profile.bootstrapping_key,
-         profile.twiddle_width_reduction, {}});
+        {P::n, Profile.bootstrapping_key,
+         Profile.twiddle_width_reduction, {}});
     return plan;
 }
 
-template <class P>
+template <class P, ArithmeticProfile Profile = profile_for<P>()>
 [[nodiscard]] const NegacyclicFFT &forward_plan()
 {
-    constexpr auto profile = profile_for<P>();
     static const NegacyclicFFT plan(
-        {P::n, profile.forward_fft, profile.twiddle_width_reduction, {}});
+        {P::n, Profile.forward_fft, Profile.twiddle_width_reduction, {}});
     return plan;
 }
 
-template <class P>
+template <class P, ArithmeticProfile Profile = profile_for<P>()>
 [[nodiscard]] const NegacyclicFFT &inverse_plan()
 {
-    constexpr auto profile = profile_for<P>();
     static const NegacyclicFFT plan(
-        {P::n, profile.inverse_fft, profile.twiddle_width_reduction, {}});
+        {P::n, Profile.inverse_fft, Profile.twiddle_width_reduction, {}});
     return plan;
 }
 
-template <class P>
+template <class P, ArithmeticProfile Profile = profile_for<P>()>
 void TransformBootstrappingKeyPolynomial(
     PolynomialFPT<P> &destination, const TFHEpp::Polynomial<P> &source,
     QuantizationStats *stats = nullptr)
 {
     static_assert(std::is_same_v<typename P::T, std::uint32_t>,
                   "FPT key normalization currently supports a 32-bit Torus");
+    static_assert(Profile.bootstrapping_key.valid() &&
+                      Profile.bootstrapping_key.width() <= 32,
+                  "the packed FPT bootstrapping key must fit in int32_t");
     std::vector<double> normalized(P::n);
     constexpr double torus_scale = 0x1p-32;
     for (std::size_t i = 0; i < P::n; ++i)
@@ -109,9 +113,10 @@ void TransformBootstrappingKeyPolynomial(
             torus_scale;
 
     const auto reference =
-        bootstrapping_key_plan<P>().reference_forward(normalized);
+        bootstrapping_key_plan<P, Profile>().reference_forward(normalized);
     const auto quantized =
-        bootstrapping_key_plan<P>().quantize_reference(reference, stats);
+        bootstrapping_key_plan<P, Profile>().quantize_reference(
+            reference, stats);
     for (std::size_t i = 0; i < P::n / 2; ++i) {
         destination[i].real =
             static_cast<std::int32_t>(quantized.values[i].real);
@@ -120,7 +125,7 @@ void TransformBootstrappingKeyPolynomial(
     }
 }
 
-template <class P>
+template <class P, ArithmeticProfile Profile = profile_for<P>()>
 void TransformBootstrappingKey(TRGSWFPT<P> &destination,
                                const TFHEpp::TRGSW<P> &source,
                                QuantizationStats *stats = nullptr)
@@ -129,7 +134,7 @@ void TransformBootstrappingKey(TRGSWFPT<P> &destination,
                   "the first FPT reference handles standard decomposition");
     for (int row = 0; row < fpt_trgsw_rows<P>; ++row)
         for (int component = 0; component < P::k + 1; ++component)
-            TransformBootstrappingKeyPolynomial<P>(
+            TransformBootstrappingKeyPolynomial<P, Profile>(
                 destination[row][component], source[row][component], stats);
 }
 
@@ -146,9 +151,10 @@ template <class P>
 // selected floating-point backend. This remains a genuine noisy encryption:
 // masks are uniform Torus polynomials and b = sum(a_i * s_i) + e. The double
 // transform is used only during offline bootstrapping-key preparation.
-template <class P>
+template <class P, ArithmeticProfile Profile = profile_for<P>()>
 void EncryptBootstrappingKeyTRLWE(
-    TFHEpp::TRLWE<P> &ciphertext, const TFHEpp::Key<P> &key)
+    TFHEpp::TRLWE<P> &ciphertext, const TFHEpp::Key<P> &key,
+    std::mt19937_64 *random_generator = nullptr)
 {
     static_assert(std::is_same_v<typename P::T, std::uint32_t>,
                   "FPT key generation currently supports a 32-bit Torus");
@@ -156,7 +162,11 @@ void EncryptBootstrappingKeyTRLWE(
     std::vector<double> normalized_mask(P::n);
     std::vector<double> signed_key(P::n);
     constexpr double torus_scale = 0x1p-32;
-    static thread_local std::mt19937_64 generator(std::random_device{}());
+    static thread_local std::mt19937_64 default_generator(
+        std::random_device{}());
+    auto &generator = random_generator == nullptr
+        ? default_generator
+        : *random_generator;
     std::uniform_int_distribution<std::uint32_t> uniform_torus;
     std::normal_distribution<double> gaussian(0.0, P::α);
 
@@ -170,27 +180,32 @@ void EncryptBootstrappingKeyTRLWE(
                 key[component * P::n + i]));
         }
         const auto mask_spectrum =
-            bootstrapping_key_plan<P>().reference_forward(normalized_mask);
+            bootstrapping_key_plan<P, Profile>().reference_forward(
+                normalized_mask);
         const auto key_spectrum =
-            bootstrapping_key_plan<P>().reference_forward(signed_key);
+            bootstrapping_key_plan<P, Profile>().reference_forward(signed_key);
         for (std::size_t i = 0; i < product_spectrum.size(); ++i)
             product_spectrum[i] += mask_spectrum[i] * key_spectrum[i];
     }
 
     const auto product =
-        bootstrapping_key_plan<P>().reference_inverse(product_spectrum);
+        bootstrapping_key_plan<P, Profile>().reference_inverse(
+            product_spectrum);
     for (std::size_t i = 0; i < P::n; ++i)
         ciphertext[P::k][i] =
             NormalizedToTorus<P>(product[i]) +
             NormalizedToTorus<P>(gaussian(generator));
 }
 
-template <class P>
+template <
+    class P,
+    ArithmeticProfile Profile = profile_for<typename P::targetP>()>
 void BootstrappingKeyFPTGen(
     BootstrappingKeyFPT<P> &destination,
     const TFHEpp::Key<typename P::domainP> &domain_key,
     const TFHEpp::Key<typename P::targetP> &target_key,
-    QuantizationStats *stats = nullptr)
+    QuantizationStats *stats = nullptr,
+    std::mt19937_64 *random_generator = nullptr)
 {
     static_assert(P::Addends == 1,
                   "the first FPT reference does not use key bundling");
@@ -207,8 +222,8 @@ void BootstrappingKeyFPTGen(
             value <= P::domainP::key_value_max; ++value) {
             if (value == 0) continue;
             for (auto &row_ciphertext : *coefficient_key)
-                EncryptBootstrappingKeyTRLWE<Target>(row_ciphertext,
-                                                      target_key);
+                EncryptBootstrappingKeyTRLWE<Target, Profile>(
+                    row_ciphertext, target_key, random_generator);
 
             const typename Target::T plaintext = domain_key[i] == value;
             int row = 0;
@@ -219,24 +234,27 @@ void BootstrappingKeyFPTGen(
             for (int level = 0; level < Target::l; ++level, ++row)
                 (*coefficient_key)[row][Target::k][0] +=
                     plaintext * main_gadget[level];
-            TransformBootstrappingKey<Target>(
+            TransformBootstrappingKey<Target, Profile>(
                 destination[i][key_index], *coefficient_key, stats);
             ++key_index;
         }
     }
 }
 
-template <class P>
+template <
+    class P,
+    ArithmeticProfile Profile = profile_for<typename P::targetP>()>
 void BootstrappingKeyFPTGen(BootstrappingKeyFPT<P> &destination,
                             const TFHEpp::SecretKey &secret_key,
-                            QuantizationStats *stats = nullptr)
+                            QuantizationStats *stats = nullptr,
+                            std::mt19937_64 *random_generator = nullptr)
 {
-    BootstrappingKeyFPTGen<P>(
+    BootstrappingKeyFPTGen<P, Profile>(
         destination, secret_key.key.get<typename P::domainP>(),
-        secret_key.key.get<typename P::targetP>(), stats);
+        secret_key.key.get<typename P::targetP>(), stats, random_generator);
 }
 
-template <class P>
+template <class P, ArithmeticProfile Profile = profile_for<P>()>
 [[nodiscard]] QuantizedSpectrum ForwardDecomposedPolynomial(
     const TFHEpp::Polynomial<P> &polynomial,
     QuantizationStats *stats = nullptr)
@@ -247,19 +265,19 @@ template <class P>
     for (std::size_t i = 0; i < P::n; ++i)
         signed_coefficients[i] =
             static_cast<std::int32_t>(polynomial[i]);
-    return forward_plan<P>().forward_integer(signed_coefficients, stats);
+    return forward_plan<P, Profile>().forward_integer(
+        signed_coefficients, stats);
 }
 
-template <class P>
+template <class P, ArithmeticProfile Profile = profile_for<P>()>
 void MultiplyAccumulatePacked(
     std::span<FixedComplex> accumulator,
     const QuantizedSpectrum &decomposed_spectrum,
     const PolynomialFPT<P> &bootstrapping_key_spectrum,
     QuantizationStats *stats = nullptr)
 {
-    constexpr auto profile = profile_for<P>();
-    const int source_fractional = profile.forward_fft.fractional_bits +
-                                  profile.bootstrapping_key.fractional_bits;
+    const int source_fractional = Profile.forward_fft.fractional_bits +
+                                  Profile.bootstrapping_key.fractional_bits;
     for (std::size_t i = 0; i < accumulator.size(); ++i) {
         const __int128 real =
             static_cast<__int128>(decomposed_spectrum.values[i].real) *
@@ -272,17 +290,17 @@ void MultiplyAccumulatePacked(
             static_cast<__int128>(decomposed_spectrum.values[i].imag) *
                 bootstrapping_key_spectrum[i].real;
         const std::int64_t product_real = requantize_raw(
-            real, source_fractional, profile.inverse_fft, stats);
+            real, source_fractional, Profile.inverse_fft, stats);
         const std::int64_t product_imag = requantize_raw(
-            imag, source_fractional, profile.inverse_fft, stats);
+            imag, source_fractional, Profile.inverse_fft, stats);
         accumulator[i].real = add_raw(accumulator[i].real, product_real,
-                                      profile.inverse_fft, stats);
+                                      Profile.inverse_fft, stats);
         accumulator[i].imag = add_raw(accumulator[i].imag, product_imag,
-                                      profile.inverse_fft, stats);
+                                      Profile.inverse_fft, stats);
     }
 }
 
-template <class P>
+template <class P, ArithmeticProfile Profile = profile_for<P>()>
 void ExternalProductFPT(TFHEpp::TRLWE<P> &result,
                         const TFHEpp::TRLWE<P> &input,
                         const TRGSWFPT<P> &bootstrapping_key,
@@ -290,16 +308,15 @@ void ExternalProductFPT(TFHEpp::TRLWE<P> &result,
 {
     static_assert(P::l̅ == 1 && P::l̅ₐ == 1,
                   "the first FPT reference handles standard decomposition");
-    constexpr auto profile = profile_for<P>();
     std::array<std::vector<FixedComplex>, P::k + 1> accumulators;
     for (auto &accumulator : accumulators)
         accumulator.resize(P::n / 2);
 
     auto process_row = [&](const TFHEpp::Polynomial<P> &polynomial, int row) {
-        auto spectrum = ForwardDecomposedPolynomial<P>(
+        auto spectrum = ForwardDecomposedPolynomial<P, Profile>(
             polynomial, stats == nullptr ? nullptr : &stats->forward_fft);
         for (int component = 0; component < P::k + 1; ++component)
-            MultiplyAccumulatePacked<P>(
+            MultiplyAccumulatePacked<P, Profile>(
                 accumulators[component], spectrum,
                 bootstrapping_key[row][component],
                 stats == nullptr ? nullptr : &stats->pointwise);
@@ -322,19 +339,22 @@ void ExternalProductFPT(TFHEpp::TRLWE<P> &result,
     for (int component = 0; component < P::k + 1; ++component) {
         QuantizedSpectrum spectrum;
         spectrum.values = std::move(accumulators[component]);
-        spectrum.format = profile.inverse_fft;
-        spectrum.scale_exponent = forward_plan<P>().stage_scale_exponent();
-        const auto coefficients = inverse_plan<P>().inverse_raw(
+        spectrum.format = Profile.inverse_fft;
+        spectrum.scale_exponent =
+            forward_plan<P, Profile>().stage_scale_exponent();
+        const auto coefficients = inverse_plan<P, Profile>().inverse_raw(
             spectrum, stats == nullptr ? nullptr : &stats->inverse_fft);
         for (std::size_t i = 0; i < P::n; ++i)
             result[component][i] = static_cast<typename P::T>(
                 fixed_raw_to_torus(
-                    coefficients[i], profile.inverse_fft.fractional_bits,
+                    coefficients[i], Profile.inverse_fft.fractional_bits,
                     std::numeric_limits<typename P::T>::digits));
     }
 }
 
-template <class P>
+template <
+    class P,
+    ArithmeticProfile Profile = profile_for<typename P::targetP>()>
 void CMUXFPTWithPolynomialMulByXaiMinusOne(
     TFHEpp::TRLWE<typename P::targetP> &accumulator,
     const BootstrappingKeyElementFPT<P> &bootstrapping_key, int exponent,
@@ -347,15 +367,17 @@ void CMUXFPTWithPolynomialMulByXaiMinusOne(
     for (int component = 0; component < Target::k + 1; ++component)
         TFHEpp::PolynomialMulByXaiMinusOne<Target>(
             difference[component], accumulator[component], exponent);
-    ExternalProductFPT<Target>(difference, difference, bootstrapping_key[0],
-                               stats);
+    ExternalProductFPT<Target, Profile>(
+        difference, difference, bootstrapping_key[0], stats);
     for (int component = 0; component < Target::k + 1; ++component)
         for (std::size_t i = 0; i < Target::n; ++i)
             accumulator[component][i] += difference[component][i];
     if (stats != nullptr) ++stats->cmux_count;
 }
 
-template <class P, std::uint32_t num_out = 1>
+template <
+    class P, std::uint32_t num_out = 1,
+    ArithmeticProfile Profile = profile_for<typename P::targetP>()>
 void BlindRotateFPT(
     TFHEpp::TRLWE<typename P::targetP> &result,
     const TFHEpp::TLWE<typename P::domainP> &input,
@@ -398,12 +420,14 @@ void BlindRotateFPT(
         modulus_switched[P::domainP::k * P::domainP::n]);
     for (int i = 0; i < P::domainP::k * P::domainP::n; ++i) {
         if (modulus_switched[i] == 0) continue;
-        CMUXFPTWithPolynomialMulByXaiMinusOne<P>(
+        CMUXFPTWithPolynomialMulByXaiMinusOne<P, Profile>(
             result, bootstrapping_key[i], modulus_switched[i], stats);
     }
 }
 
-template <class P>
+template <
+    class P,
+    ArithmeticProfile Profile = profile_for<typename P::targetP>()>
 void GateBootstrappingTLWE2TLWEFPT(
     TFHEpp::TLWE<typename P::targetP> &result,
     const TFHEpp::TLWE<typename P::domainP> &input,
@@ -412,8 +436,8 @@ void GateBootstrappingTLWE2TLWEFPT(
     BlindRotateStats *stats = nullptr)
 {
     TFHEpp::TRLWE<typename P::targetP> accumulator;
-    BlindRotateFPT<P>(accumulator, input, bootstrapping_key, test_vector,
-                      stats);
+    BlindRotateFPT<P, 1, Profile>(
+        accumulator, input, bootstrapping_key, test_vector, stats);
     TFHEpp::SampleExtractIndex<typename P::targetP>(result, accumulator, 0);
 }
 
