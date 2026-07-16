@@ -147,12 +147,13 @@ object PaperSetII {
   def bufferedBlindRotate(
       forwardPath: String,
       inversePath: String,
-      domainDimension: Int
+      domainDimension: Int,
+      includeVerilogSource: Boolean = false
   ): BufferedBlindRotateConfig = {
     val engine = cmuxEngine(
       forwardPath,
       inversePath,
-      includeVerilogSource = false,
+      includeVerilogSource = includeVerilogSource,
       bitwiseBitsPerCycle = Some(2)
     )
     val blindRotate = BatchedBlindRotateEngineConfig(
