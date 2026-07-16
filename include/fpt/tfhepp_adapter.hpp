@@ -59,6 +59,8 @@ inline constexpr ArithmeticProfile tfhepp_guarded_profile{
     {8, 24}, {18, 20}, {27, 14}, 4};
 inline constexpr ArithmeticProfile tfhepp_reference_profile{
     {8, 24}, {18, 28}, {27, 24}, 4};
+inline constexpr ArithmeticProfile tfhepp_hardware_profile{
+    {8, 21}, {18, 28}, {27, 24}, 4};
 
 template <class P>
 [[nodiscard]] constexpr ArithmeticProfile profile_for()

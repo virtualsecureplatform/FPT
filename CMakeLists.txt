@@ -171,6 +171,9 @@ if(FPT_BUILD_TFHEPP_TESTS)
     add_executable(fpt_tfhepp_profile_sweep
         tests/tfhepp_profile_sweep.cpp
     )
+    add_executable(fpt_tfhepp_rtl_profile_stress
+        tests/tfhepp_rtl_profile_stress.cpp
+    )
     target_include_directories(fpt_tfhepp_blind_rotate_test PRIVATE
         "${FPT_TFHEPP_SOURCE_DIR}/include"
         "${FPT_TFHEPP_SOURCE_DIR}/thirdparties/spqlios"
@@ -189,13 +192,26 @@ if(FPT_BUILD_TFHEPP_TESTS)
     target_link_libraries(fpt_tfhepp_profile_sweep PRIVATE
         FPT::reference
     )
+    target_include_directories(fpt_tfhepp_rtl_profile_stress PRIVATE
+        "${FPT_TFHEPP_SOURCE_DIR}/include"
+        "${FPT_TFHEPP_SOURCE_DIR}/thirdparties/spqlios"
+        "${FPT_TFHEPP_SOURCE_DIR}/thirdparties/cereal/include"
+        "${FPT_TFHEPP_SOURCE_DIR}/thirdparties/HLS_arbitrary_Precision_Types/include"
+    )
+    target_link_libraries(fpt_tfhepp_rtl_profile_stress PRIVATE
+        FPT::reference
+    )
     target_compile_options(fpt_tfhepp_blind_rotate_test PRIVATE
         -Wall -Wextra -Wno-sign-compare -Wno-unknown-pragmas
     )
     target_compile_options(fpt_tfhepp_profile_sweep PRIVATE
         -Wall -Wextra -Wno-sign-compare -Wno-unknown-pragmas
     )
-    # The deterministic profile sweep is an opt-in, multi-minute diagnostic.
+    target_compile_options(fpt_tfhepp_rtl_profile_stress PRIVATE
+        -Wall -Wextra -Wno-sign-compare -Wno-unknown-pragmas
+    )
+    # The profile sweep and randomized RTL-profile stress are opt-in,
+    # multi-minute diagnostics.
     add_test(NAME fpt_tfhepp_blind_rotate_test
              COMMAND fpt_tfhepp_blind_rotate_test)
 endif()

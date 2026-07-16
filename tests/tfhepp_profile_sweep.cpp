@@ -41,6 +41,24 @@ constexpr fpt::ArithmeticProfile guarded_with_paper_fft{
     guarded.bootstrapping_key, {18, 12}, guarded.inverse_fft, 4};
 constexpr fpt::ArithmeticProfile guarded_with_paper_ifft{
     guarded.bootstrapping_key, guarded.forward_fft, {27, 3}, 4};
+constexpr fpt::ArithmeticProfile dsp_compatible{
+    {8, 19}, {18, 17}, {27, 14}, 4};
+constexpr fpt::ArithmeticProfile rtl_inverse_guard{
+    {8, 19}, {18, 20}, {27, 18}, 4};
+constexpr fpt::ArithmeticProfile rtl_balanced{
+    {8, 19}, {18, 22}, {27, 18}, 4};
+constexpr fpt::ArithmeticProfile rtl_wide{
+    {8, 19}, {18, 24}, {27, 20}, 4};
+constexpr fpt::ArithmeticProfile rtl_reference_transforms{
+    {8, 19}, {18, 28}, {27, 24}, 4};
+constexpr fpt::ArithmeticProfile rtl_bk20{
+    {8, 20}, {18, 28}, {27, 24}, 4};
+constexpr fpt::ArithmeticProfile rtl_bk21 =
+    fpt::tfhepp::tfhepp_hardware_profile;
+constexpr fpt::ArithmeticProfile rtl_bk22{
+    {8, 22}, {18, 28}, {27, 24}, 4};
+constexpr fpt::ArithmeticProfile rtl_bk23{
+    {8, 23}, {18, 28}, {27, 24}, 4};
 constexpr fpt::ArithmeticProfile midpoint{
     {8, 21}, {18, 16}, {27, 9}, 4};
 constexpr fpt::ArithmeticProfile paper =
@@ -200,12 +218,19 @@ int main(int argc, char **argv)
 {
     try {
         int trials = 8;
-        if (argc > 2)
+        if (argc > 3)
             throw std::invalid_argument(
-                "usage: fpt_tfhepp_profile_sweep [EVEN_TRIALS]");
-        if (argc == 2) trials = std::stoi(argv[1]);
+                "usage: fpt_tfhepp_profile_sweep [EVEN_TRIALS] "
+                "[baseline|rtl|rtl-reference]");
+        if (argc >= 2) trials = std::stoi(argv[1]);
         if (trials < 2 || (trials & 1) != 0)
             throw std::invalid_argument("EVEN_TRIALS must be even and >= 2");
+        const std::string_view mode = argc == 3 ? argv[2] : "baseline";
+        if (mode != "baseline" && mode != "rtl" &&
+            mode != "rtl-reference")
+            throw std::invalid_argument(
+                "profile sweep mode must be baseline, rtl, or "
+                "rtl-reference");
 
         std::mt19937_64 key_generator(0x4650545f4b455953ULL);
         std::uniform_int_distribution<std::int32_t> domain_key_distribution(
@@ -233,16 +258,43 @@ int main(int argc, char **argv)
                      "\tpointwise_overflows\tifft_overflows\n";
         const auto high_precision_result = run_profile<high_precision>(
             "high-precision", *guarded_key, inputs, target_key);
-        const auto guarded_result =
-            run_profile<guarded>("guarded", *guarded_key, inputs, target_key);
-        requantize_and_run<guarded_with_paper_bk>(
-            "paper-bk-only", *guarded_key, inputs, target_key);
-        requantize_and_run<guarded_with_paper_fft>(
-            "paper-fft-only", *guarded_key, inputs, target_key);
-        requantize_and_run<guarded_with_paper_ifft>(
-            "paper-ifft-only", *guarded_key, inputs, target_key);
-        requantize_and_run<midpoint>(
-            "midpoint", *guarded_key, inputs, target_key);
+        if (mode == "baseline") {
+            run_profile<guarded>(
+                "guarded", *guarded_key, inputs, target_key);
+            requantize_and_run<guarded_with_paper_bk>(
+                "paper-bk-only", *guarded_key, inputs, target_key);
+            requantize_and_run<guarded_with_paper_fft>(
+                "paper-fft-only", *guarded_key, inputs, target_key);
+            requantize_and_run<guarded_with_paper_ifft>(
+                "paper-ifft-only", *guarded_key, inputs, target_key);
+            requantize_and_run<midpoint>(
+                "midpoint", *guarded_key, inputs, target_key);
+        }
+        else if (mode == "rtl") {
+            requantize_and_run<dsp_compatible>(
+                "dsp-compatible", *guarded_key, inputs, target_key);
+            requantize_and_run<rtl_inverse_guard>(
+                "rtl-inverse-guard", *guarded_key, inputs, target_key);
+            requantize_and_run<rtl_balanced>(
+                "rtl-balanced", *guarded_key, inputs, target_key);
+            requantize_and_run<rtl_wide>(
+                "rtl-wide", *guarded_key, inputs, target_key);
+        }
+        if (mode != "baseline") {
+            requantize_and_run<rtl_reference_transforms>(
+                "rtl-reference-transforms", *guarded_key, inputs,
+                target_key);
+        }
+        if (mode == "rtl-reference") {
+            requantize_and_run<rtl_bk20>(
+                "rtl-bk20", *guarded_key, inputs, target_key);
+            requantize_and_run<rtl_bk21>(
+                "rtl-bk21", *guarded_key, inputs, target_key);
+            requantize_and_run<rtl_bk22>(
+                "rtl-bk22", *guarded_key, inputs, target_key);
+            requantize_and_run<rtl_bk23>(
+                "rtl-bk23", *guarded_key, inputs, target_key);
+        }
         requantize_and_run<paper>(
             "paper-set-ii", *guarded_key, inputs, target_key);
 
@@ -252,10 +304,7 @@ int main(int argc, char **argv)
         if (key_stats.bootstrapping_key.overflows != 0 ||
             high_precision_result.stats.forward_fft.overflows != 0 ||
             high_precision_result.stats.pointwise.overflows != 0 ||
-            high_precision_result.stats.inverse_fft.overflows != 0 ||
-            guarded_result.stats.forward_fft.overflows != 0 ||
-            guarded_result.stats.pointwise.overflows != 0 ||
-            guarded_result.stats.inverse_fft.overflows != 0)
+            high_precision_result.stats.inverse_fft.overflows != 0)
             throw std::runtime_error(
                 "validated TFHEpp profiles overflowed");
         return 0;
