@@ -170,6 +170,9 @@ if(FPT_BUILD_RTL_TESTS)
         add_test(NAME fpt_yosys_blind_rotate_report
             COMMAND bash
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/yosys_blind_rotate_report_test.sh")
+        add_test(NAME fpt_singularity_wrapper
+            COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/singularity_wrapper_test.sh")
 endif()
 
 if(FPT_BUILD_TFHEPP_TESTS)

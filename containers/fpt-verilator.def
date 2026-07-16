@@ -1,0 +1,125 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%labels
+    org.opencontainers.image.title FPT Verilator development toolchain
+    org.opencontainers.image.source https://github.com/virtualsecureplatform/FPT
+    org.opencontainers.image.description C++/TFHEpp, Chisel, SGen, HOGE, and Verilator test toolchain for FPT
+    org.fpt.toolchain.sbt 1.11.6
+    org.fpt.toolchain.verilator 5.026
+
+%files
+    chisel/build.sbt /opt/fpt-sbt-projects/chisel/build.sbt
+    chisel/project/build.properties /opt/fpt-sbt-projects/chisel/project/build.properties
+    third_party/SGen/build.sbt /opt/fpt-sbt-projects/sgen/build.sbt
+    third_party/SGen/project/build.properties /opt/fpt-sbt-projects/sgen/project/build.properties
+    third_party/SGen/project/plugins.sbt /opt/fpt-sbt-projects/sgen/project/plugins.sbt
+    third_party/HOGE/chisel/HomGate/build.sbt /opt/fpt-sbt-projects/hoge/build.sbt
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        autoconf \
+        bison \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        flex \
+        git \
+        help2man \
+        libfl-dev \
+        libfl2 \
+        ninja-build \
+        openjdk-21-jdk-headless \
+        perl \
+        pkg-config \
+        python3 \
+        ripgrep \
+        tcl \
+        time \
+        zlib1g-dev
+
+    sbt_version=1.11.6
+    sbt_sha256=ce4995e86acf7fdd57db78595cd6918c01781a6a741170e6409adba597e0d83d
+    curl -fL --retry 3 \
+        -o /tmp/sbt.tgz \
+        "https://github.com/sbt/sbt/releases/download/v${sbt_version}/sbt-${sbt_version}.tgz"
+    echo "${sbt_sha256}  /tmp/sbt.tgz" | sha256sum -c -
+    tar -xzf /tmp/sbt.tgz -C /opt
+    rm -f /opt/sbt/bin/sbtn-*
+    ln -s /opt/sbt/bin/sbt /usr/local/bin/sbt
+
+    verilator_version=5.026
+    verilator_sha256=87fdecf3967007d9ee8c30191ff2476f2a33635d0e0c6e3dbf345cc2f0c50b78
+    curl -fL --retry 3 \
+        -o /tmp/verilator.tar.gz \
+        "https://github.com/verilator/verilator/archive/refs/tags/v${verilator_version}.tar.gz"
+    echo "${verilator_sha256}  /tmp/verilator.tar.gz" | sha256sum -c -
+    tar -xzf /tmp/verilator.tar.gz -C /tmp
+    cd "/tmp/verilator-${verilator_version}"
+    autoconf
+    ./configure --prefix=/usr/local
+    build_jobs=$(nproc)
+    if [ "$build_jobs" -gt 8 ]; then build_jobs=8; fi
+    make -j"$build_jobs"
+    make install
+    rm -f \
+        /usr/local/bin/verilator_bin_dbg \
+        /usr/local/bin/verilator_coverage_bin_dbg \
+        /usr/local/share/verilator/bin/verilator_bin_dbg \
+        /usr/local/share/verilator/bin/verilator_coverage_bin_dbg
+
+    mkdir -p /opt/fpt-sbt-projects/hoge/project
+    printf 'sbt.version=%s\n' "$sbt_version" \
+        > /opt/fpt-sbt-projects/hoge/project/build.properties
+    mkdir -p \
+        /opt/fpt-cache-seed/coursier \
+        /opt/fpt-cache-seed/ivy2 \
+        /opt/fpt-cache-seed/sbt/boot \
+        /opt/fpt-cache-seed/sbt/global \
+        /opt/fpt-cache-seed/xdg
+    export COURSIER_CACHE=/opt/fpt-cache-seed/coursier
+    export XDG_CACHE_HOME=/opt/fpt-cache-seed/xdg
+    export SBT_OPTS="-Dsbt.global.base=/opt/fpt-cache-seed/sbt/global -Dsbt.boot.directory=/opt/fpt-cache-seed/sbt/boot -Dsbt.ivy.home=/opt/fpt-cache-seed/ivy2 -Dsbt.server.autostart=false"
+    for project in chisel sgen hoge; do
+        cd "/opt/fpt-sbt-projects/$project"
+        sbt -batch update
+    done
+
+    printf '%s\n' \
+        "ubuntu=24.04" \
+        "sbt=${sbt_version}" \
+        "verilator=${verilator_version}" \
+        > /opt/fpt-cache-seed/toolchain-versions.txt
+    chmod -R a+rX /opt/fpt-cache-seed
+
+    rm -rf \
+        /tmp/sbt.tgz \
+        /tmp/verilator.tar.gz \
+        "/tmp/verilator-${verilator_version}" \
+        /opt/fpt-sbt-projects \
+        /var/lib/apt/lists/*
+
+%environment
+    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+    export PATH=/opt/sbt/bin:/usr/local/bin:/usr/bin:/bin
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+
+%test
+    set -eu
+    export HOME=/tmp/fpt-sbt-test-home
+    export SBT_OPTS="-Dsbt.global.base=/tmp/fpt-sbt-test/global -Dsbt.boot.directory=/tmp/fpt-sbt-test/boot -Dsbt.ivy.home=/tmp/fpt-sbt-test/ivy2 -Dsbt.server.autostart=false"
+    mkdir -p "$HOME" /tmp/fpt-sbt-test
+    cmake --version
+    c++ --version
+    java -version
+    test "$(sbt --script-version)" = "1.11.6"
+    verilator --version | grep -F "Verilator 5.026"
+
+%runscript
+    exec /bin/bash "$@"

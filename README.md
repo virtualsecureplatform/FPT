@@ -46,6 +46,22 @@ git submodule update --init --recursive
 The scripts use these pinned checkouts by default. Their optional path
 arguments remain available when comparing another dependency revision.
 
+## Singularity test toolchain
+
+The remaining compiler, CMake, Java/sbt, and Verilator dependencies are
+packaged in `containers/fpt-verilator.def`. Build the image and run the normal
+C++, TFHEpp, Chisel, and Verilator tests with:
+
+```sh
+tools/build_singularity.sh
+tools/test_in_singularity.sh
+```
+
+Use `tools/run_singularity.sh` for an interactive shell or an individual test
+command. See `docs/singularity.md` for cache locations, Apptainer support, and
+the full paper-size numerical commands. Vivado and Vitis remain outside this
+image and are used only on the U280 synthesis machine.
+
 ## Build the standalone tests
 
 ```sh
