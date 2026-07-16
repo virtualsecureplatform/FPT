@@ -28,13 +28,13 @@ using Target = BootstrapParams::targetP;
 using Key = fpt::tfhepp::BootstrappingKeyFPT<BootstrapParams>;
 static_assert(std::is_same_v<Target::T, std::uint32_t>);
 
-// The high-precision control and guarded profile share the same Q8.24 key.
+// The high-precision reference and guarded profile share the same Q8.24 key.
 // Narrower profiles requantize that one spectral key so every row, mask, and
 // noise sample is identical across the sweep.
 constexpr fpt::ArithmeticProfile guarded =
     fpt::tfhepp::tfhepp_guarded_profile;
-constexpr fpt::ArithmeticProfile high_precision{
-    guarded.bootstrapping_key, {18, 28}, {27, 24}, 4};
+constexpr fpt::ArithmeticProfile high_precision =
+    fpt::tfhepp::tfhepp_reference_profile;
 constexpr fpt::ArithmeticProfile guarded_with_paper_bk{
     {8, 19}, guarded.forward_fft, guarded.inverse_fft, 4};
 constexpr fpt::ArithmeticProfile guarded_with_paper_fft{

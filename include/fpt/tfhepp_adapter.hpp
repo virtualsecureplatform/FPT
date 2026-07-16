@@ -57,17 +57,20 @@ struct BlindRotateStats {
 
 inline constexpr ArithmeticProfile tfhepp_guarded_profile{
     {8, 24}, {18, 20}, {27, 14}, 4};
+inline constexpr ArithmeticProfile tfhepp_reference_profile{
+    {8, 24}, {18, 28}, {27, 24}, 4};
 
 template <class P>
 [[nodiscard]] constexpr ArithmeticProfile profile_for()
 {
     static_assert(P::n == 512 || P::n == 1024,
                   "the current FPT reference supports N=512 or N=1024");
-    // Keep the paper profiles available in ArithmeticProfile, but use extra
-    // fractional guard bits for TFHEpp's different decomposition parameters.
-    // The deterministic profile sweep shows that the paper FFT and IFFT
-    // fractional widths are not reliable with TFHEpp's default parameters.
-    return tfhepp_guarded_profile;
+    // Keep the paper and guarded profiles available for explicit sweeps, but
+    // default to the wider reference profile for TFHEpp's different
+    // decomposition parameters. Both the deterministic profile sweep and a
+    // randomized integration test exposed decryption failures at narrower
+    // FFT/IFFT widths without arithmetic overflow.
+    return tfhepp_reference_profile;
 }
 
 template <class P, ArithmeticProfile Profile = profile_for<P>()>
