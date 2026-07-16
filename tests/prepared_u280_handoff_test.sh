@@ -8,7 +8,8 @@ trap 'rm -rf "$work_dir"' EXIT
 prepared=$work_dir/prepared
 mkdir -p "$prepared/sources/sgen" \
     "$prepared/sources/hoge" \
-    "$prepared/sources/fpt-blind-rotate"
+    "$prepared/sources/fpt-blind-rotate" \
+    "$prepared/sources/fpt-buffered-blind-rotate"
 printf 'module FptSGenForward(input clk); endmodule\n' \
     > "$prepared/sources/sgen/forward.v"
 printf 'module FptSGenInverse(input clk); endmodule\n' \
@@ -19,6 +20,8 @@ printf 'module HOGEInverseNTTBaseline(input clock); endmodule\n' \
     > "$prepared/sources/hoge/HOGEInverseNTTBaseline.v"
 printf 'module BatchedBlindRotateSampleExtractEngine(input clock); endmodule\n' \
     > "$prepared/sources/fpt-blind-rotate/BatchedBlindRotateSampleExtractEngine.sv"
+printf 'module BufferedBlindRotateAccelerator(input clock); endmodule\n' \
+    > "$prepared/sources/fpt-buffered-blind-rotate/BufferedBlindRotateAccelerator.sv"
 printf 'module HOGEBlindRotateBaseline(input clock); endmodule\n' \
     > "$prepared/sources/hoge/HOGEBlindRotateBaseline.v"
 
@@ -50,8 +53,9 @@ composed_flow_sha=$(hash_lines "$composed_tcl_sha" "$metrics_tcl_sha")
     printf 'part\txcu280-fsvh2892-2L-e\n'
     printf 'clock_periods_ns\t5.0\n'
     printf 'vivado_jobs\t2\n'
-    printf 'selected_designs\tfpt-forward hoge-forward fpt-blind-rotate\n'
+    printf 'selected_designs\tfpt-forward hoge-forward fpt-blind-rotate fpt-buffered-blind-rotate hoge-blind-rotate\n'
     printf 'fpt_blind_rotate_cycles_per_result\t12.5\n'
+    printf 'fpt_buffered_blind_rotate_cycles_per_result\t12.6\n'
     printf 'hoge_blind_rotate_cycles_per_result\t100.0\n'
     printf 'fpt_forward_sha256\t%s\n' \
         "$(sha256 "$prepared/sources/sgen/forward.v")"
@@ -63,6 +67,8 @@ composed_flow_sha=$(hash_lines "$composed_tcl_sha" "$metrics_tcl_sha")
         "$(sha256 "$prepared/sources/hoge/HOGEInverseNTTBaseline.v")"
     printf 'fpt_blind_rotate_sha256\t%s\n' \
         "$(sha256 "$prepared/sources/fpt-blind-rotate/BatchedBlindRotateSampleExtractEngine.sv")"
+    printf 'fpt_buffered_blind_rotate_sha256\t%s\n' \
+        "$(sha256 "$prepared/sources/fpt-buffered-blind-rotate/BufferedBlindRotateAccelerator.sv")"
     printf 'hoge_blind_rotate_sha256\t%s\n' \
         "$(sha256 "$prepared/sources/hoge/HOGEBlindRotateBaseline.v")"
     printf 'single_source_top_flow_sha256\t%s\n' "$single_tcl_sha"
@@ -75,6 +81,11 @@ composed_flow_sha=$(hash_lines "$composed_tcl_sha" "$metrics_tcl_sha")
 bundle_verify=$work_dir/bundle-verify
 "$repo_root/tools/package_u280_fpt_hoge_handoff.sh" \
     "$prepared" "$bundle_verify" >/dev/null
+if [[ $(awk -F '\t' '$1 == "bundle_format_version" { print $2 }' \
+        "$bundle_verify/manifest.tsv") != 2 ]]; then
+    echo "Prepared handoff did not use the cache-inclusive bundle format" >&2
+    exit 1
+fi
 FPT_PREPARED_VERIFY_ONLY=1 \
     "$bundle_verify/tools/run_prepared_u280_fpt_hoge_comparison.sh" \
     "$bundle_verify" >/dev/null
@@ -151,27 +162,39 @@ export VALID_METRICS="$valid_metrics"
 export VIVADO_CALL_LOG="$call_log"
 PATH="$fake_bin:$PATH" \
 FPT_VIVADO_CLOCK_PERIODS=5.0 \
-FPT_HOGE_DESIGNS='fpt-forward hoge-forward fpt-blind-rotate' \
+FPT_HOGE_DESIGNS='fpt-forward hoge-forward fpt-blind-rotate fpt-buffered-blind-rotate hoge-blind-rotate' \
     "$bundle_route/tools/run_prepared_u280_fpt_hoge_comparison.sh" \
     "$bundle_route" >/dev/null
 
-if [[ $(find "$bundle_route/runs" -name metrics.tsv -type f | wc -l) != 3 || \
-      $(wc -l < "$call_log") != 3 ]]; then
+if [[ $(find "$bundle_route/runs" -name metrics.tsv -type f | wc -l) != 5 || \
+      $(wc -l < "$call_log") != 5 ]]; then
     echo "Prepared handoff runner did not execute all mocked routes" >&2
     exit 1
 fi
-if [[ $(wc -l < "$bundle_route/summary.tsv") != 4 ]]; then
+if [[ $(wc -l < "$bundle_route/summary.tsv") != 6 ]]; then
     echo "Prepared handoff report does not contain all mocked routes" >&2
+    exit 1
+fi
+if ! awk -F '\t' \
+    '$1 == "buffered-blind-rotate" { found = 1 }
+     END { exit !found }' "$bundle_route/comparison.tsv"; then
+    echo "Prepared handoff report omitted the buffered FPT/HOGE comparison" >&2
+    exit 1
+fi
+if ! awk -F '\t' \
+    '$1 == "fpt-buffered-blind-rotate" && $14 == 12.6 { found = 1 }
+     END { exit !found }' "$bundle_route/summary.tsv"; then
+    echo "Prepared handoff report lost the buffered FPT schedule" >&2
     exit 1
 fi
 
 PATH="$fake_bin:$PATH" \
 FPT_VIVADO_CLOCK_PERIODS=5.0 \
-FPT_HOGE_DESIGNS='fpt-forward hoge-forward fpt-blind-rotate' \
+FPT_HOGE_DESIGNS='fpt-forward hoge-forward fpt-blind-rotate fpt-buffered-blind-rotate hoge-blind-rotate' \
 FPT_VIVADO_REUSE=1 \
     "$bundle_route/tools/run_prepared_u280_fpt_hoge_comparison.sh" \
     "$bundle_route" >/dev/null
-if [[ $(wc -l < "$call_log") != 3 ]]; then
+if [[ $(wc -l < "$call_log") != 5 ]]; then
     echo "Prepared handoff runner did not reuse signature-matched routes" >&2
     exit 1
 fi
