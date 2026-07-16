@@ -3,6 +3,13 @@ package fpt
 import chisel3._
 import chisel3.util._
 
+sealed trait ExternalProductMultiplier
+
+object ExternalProductMultiplier {
+  case object Schoolbook extends ExternalProductMultiplier
+  case object ExactGaussDsp extends ExternalProductMultiplier
+}
+
 final case class ExternalProductConfig(
     points: Int,
     inputLanes: Int,
@@ -11,7 +18,9 @@ final case class ExternalProductConfig(
     outputComponents: Int,
     spectrum: FixedFormat,
     bootstrappingKey: FixedFormat,
-    accumulator: FixedFormat
+    accumulator: FixedFormat,
+    multiplier: ExternalProductMultiplier =
+      ExternalProductMultiplier.Schoolbook
 ) {
   require(points >= 1 && isPow2(points))
   require(inputLanes >= 1 && isPow2(inputLanes) && inputLanes <= points)
@@ -31,6 +40,35 @@ final case class ExternalProductConfig(
     productShift + accumulator.width <=
       spectrum.width + bootstrappingKey.width + 1
   )
+  if (multiplier == ExternalProductMultiplier.ExactGaussDsp) {
+    require(spectrum.width > 27 && spectrum.width <= 35)
+    require(bootstrappingKey.width >= 2 && bootstrappingKey.width <= 27)
+  }
+}
+
+private[fpt] object ExternalProductMultiply {
+  def apply(
+      a: ComplexSInt,
+      b: ComplexSInt,
+      config: ExternalProductConfig
+  ): (SInt, SInt) = config.multiplier match {
+    case ExternalProductMultiplier.Schoolbook =>
+      val ac = a.real * b.real
+      val bd = a.imag * b.imag
+      val ad = a.real * b.imag
+      val bc = a.imag * b.real
+      (ac -& bd, ad +& bc)
+    case ExternalProductMultiplier.ExactGaussDsp =>
+      val multiply = Module(
+        new ExactGaussComplexMultiply(
+          config.spectrum.width,
+          config.bootstrappingKey.width
+        )
+      )
+      multiply.io.a := a
+      multiply.io.b := b
+      (multiply.io.productReal, multiply.io.productImag)
+  }
 }
 
 /** Lane-parallel frequency-domain accumulator for a TFHE External Product.
@@ -168,12 +206,8 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
         val outputLane = lane % config.outputLanes
         val a = io.decomposition(lane)
         val b = io.bootstrappingKey(component)(lane)
-        val ac = a.real * b.real
-        val bd = a.imag * b.imag
-        val ad = a.real * b.imag
-        val bc = a.imag * b.real
-        val productReal = ac -& bd
-        val productImag = ad +& bc
+        val (productReal, productImag) =
+          ExternalProductMultiply(a, b, config)
         val quantizedReal = FixedPointBits.shiftedLowSigned(
           productReal,
           config.productShift,
@@ -393,12 +427,8 @@ final class DoubleBufferedExternalProductAccumulator(
             val outputLane = lane % config.outputLanes
             val a = io.decomposition(lane)
             val b = io.bootstrappingKey(component)(lane)
-            val ac = a.real * b.real
-            val bd = a.imag * b.imag
-            val ad = a.real * b.imag
-            val bc = a.imag * b.real
-            val productReal = ac -& bd
-            val productImag = ad +& bc
+            val (productReal, productImag) =
+              ExternalProductMultiply(a, b, config)
             val quantizedReal = FixedPointBits.shiftedLowSigned(
               productReal,
               config.productShift,

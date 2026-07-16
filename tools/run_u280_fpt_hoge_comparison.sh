@@ -115,6 +115,19 @@ for source_file in "$fpt_forward" "$fpt_inverse" "$hoge_forward" \
     fi
 done
 
+fpt_gauss_modules=$(rg -c '^module FptExactGaussComplexMultiply ' \
+    "$fpt_br" || true)
+fpt_split_modules=$(rg -c '^module FptSignedSplitMultiply ' \
+    "$fpt_br" || true)
+fpt_split_instances=$(rg -c '^  FptSignedSplitMultiply #' \
+    "$fpt_br" || true)
+if [[ $fpt_gauss_modules != 1 || $fpt_split_modules != 1 || \
+      $fpt_split_instances != 3 ]]; then
+    echo "Unexpected FPT Gauss multiplier structure: gauss_modules=$fpt_gauss_modules split_modules=$fpt_split_modules split_instances=$fpt_split_instances" \
+        >&2
+    exit 1
+fi
+
 instance_count() {
     local source_file=$1
     rg -c '^  INTorusMUL ' "$source_file"
@@ -366,6 +379,11 @@ composed_flow_sha=$(hash_lines \
     printf 'polynomial_size\t1024\n'
     printf 'fpt_forward_frame_ii_cycles\t4\n'
     printf 'fpt_inverse_frame_ii_cycles\t8\n'
+    printf 'fpt_external_product_complex_lanes\t256\n'
+    printf 'fpt_external_product_real_products_per_complex\t3\n'
+    printf 'fpt_external_product_dsps_per_real_product\t2\n'
+    printf 'fpt_external_product_expected_dsps\t1536\n'
+    printf 'fpt_external_product_multiplier\texact-gauss-split\n'
     printf 'hoge_forward_frame_ii_cycles\t32\n'
     printf 'hoge_inverse_frame_ii_cycles\t32\n'
     printf 'fpt_blind_rotate_dimension\t630\n'

@@ -118,11 +118,13 @@ guarded-format bound of `2^19` Torus units.
 ## RTL source policy
 
 All handwritten synthesizable FPT RTL is Chisel under `chisel/src/main`.
-Verilog is used only for generated SGen transform BlackBoxes, including the
-three checked-in small regression fixtures. Chisel-emitted SystemVerilog and
-paper-sized SGen output remain generated build artifacts rather than a second
-handwritten implementation. `tools/check_rtl_source_policy.sh` enforces this
-boundary over tracked HDL files and runs with the CTest reference suite.
+Verilog is used for generated SGen transform BlackBoxes, including the three
+checked-in small regression fixtures, and for one Chisel-inline generated
+width-control BlackBox around the DSP-sized signed External Product
+multipliers. Chisel-emitted SystemVerilog and paper-sized SGen output remain
+generated build artifacts rather than a second handwritten implementation.
+`tools/check_rtl_source_policy.sh` enforces this boundary over tracked HDL
+files and runs with the CTest reference suite.
 
 The deterministic C++ vectors named `rtl_*.txt` are retained because the
 Chisel arithmetic, transform, CMUX, and Blind Rotate regressions consume them;
@@ -392,12 +394,15 @@ tools/synthesize_fpt_hoge_blind_rotate.sh
 ```
 
 At an equal clock, the measured wrapper schedules give FPT 12.959x the HOGE
-result rate and 1.807x the throughput per mapped DSP. The complete map also
-exposes the next implementation work: CIRCT's widened External Product
-multiplications and the two parallel inverse cores raise the current FPT
-total to 14,574 DSPs. This is a local technology map without timing or
-routing, so the U280 bundle remains the final comparison. The raw counts,
-normalization, and planned reductions are in
+result rate and 1.807x the throughput per mapped DSP in the `66c8dc1`
+baseline. Its 14,574 DSPs exposed CIRCT's widened External Product
+multiplications and the two parallel inverse cores. The new exact Gauss MAC
+maps the standalone 256-lane External Product to 1,536 DSPs instead of 9,216,
+making the projected parent total 6,894 before inverse-core sharing. Run
+`tools/synthesize_fpt_external_product.sh` to reproduce that map. These are
+local technology maps without timing or routing, so the U280 bundle remains
+the final comparison. The raw counts, normalization, and planned reductions
+are in
 [the FPT/HOGE comparison guide](docs/fpt-hoge-comparison.md).
 
 The integration currently supports native 32-bit Torus parameters.  Its

@@ -25,4 +25,4 @@ if [[ ${#violations[@]} != 0 ]]; then
     exit 1
 fi
 
-echo "RTL source policy passed: repository HDL is generated SGen fixture output"
+echo "RTL source policy passed: handwritten RTL is Chisel; tracked HDL is generated SGen fixture output"

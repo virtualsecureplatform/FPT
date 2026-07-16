@@ -30,9 +30,10 @@ private final class SGenPorts(val lanes: Int, val wordWidth: Int)
   )
 }
 
-/** The only non-Chisel RTL exception in the implementation: an SGen-generated
-  * cyclic or tangent FFT. All arithmetic around the BlackBox is typed and
-  * controlled by Chisel.
+/** One of the two non-Chisel RTL exceptions in the implementation: an
+  * SGen-generated cyclic or tangent FFT. The other is the inline, generated
+  * signed-product width-control module used by the External Product. All
+  * surrounding arithmetic and control is typed in Chisel.
   */
 private abstract class SGenBlackBoxBase(
     val lanes: Int,

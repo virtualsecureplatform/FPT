@@ -326,13 +326,15 @@ over HOGE: 1.664x forward and 1.378x inverse. The exact U280 result must still
 come from Vivado because only placement and routing determine achieved clock,
 congestion, routed resources, and power.
 
-The complete-wrapper local map also shows a 12.959x equal-clock result-rate
-ratio and 1.807x throughput per DSP relative to HOGE, but its current 14,574
-DSPs expose two implementation gaps before route: CIRCT widens the External
-Product's signed products to 57-by-57-bit unsigned multipliers, and the
-wrapper instantiates two inverse cores. The width-preserving Gauss MAC and a
-single serialized inverse path are the next RTL reductions to validate. See
-`docs/fpt-hoge-comparison.md` for the exact decomposition and caveats.
+The `66c8dc1` complete-wrapper map also shows a 12.959x equal-clock
+result-rate ratio and 1.807x throughput per DSP relative to HOGE, but its
+14,574 DSPs exposed two implementation gaps before route. The first is now
+fixed: the width-preserving exact Gauss MAC maps the standalone 256-lane
+External Product to the paper's 1,536 DSPs instead of CIRCT's former 9,216,
+while also reducing LUT, MUXF, and carry counts. The wrapper still
+instantiates two inverse cores; a single serialized inverse path is the next
+RTL reduction to validate. See `docs/fpt-hoge-comparison.md` for the exact
+decomposition and caveats.
 
 The first apples-to-apples transform route is automated as:
 

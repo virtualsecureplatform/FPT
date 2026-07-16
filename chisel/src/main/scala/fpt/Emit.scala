@@ -2,7 +2,7 @@ package fpt
 
 import circt.stage.ChiselStage
 
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
 
 private object SynthesisEmitter {
   val firtoolOptions: Array[String] = Array(
@@ -13,6 +13,22 @@ private object SynthesisEmitter {
 
   def outputDirectory(argument: String): String =
     Path.of(argument).toAbsolutePath.normalize.toString
+
+  /** CIRCT concatenates the inline BlackBox source and its auxiliary file-list
+    * artifact when `emitSystemVerilogFile` is used. The source is valid and
+    * intentionally retained; the final plain-text filename is not Verilog and
+    * must be removed from the self-contained synthesis file.
+    */
+  def removeInlineFileList(systemVerilog: Path): Unit = {
+    val marker =
+      "\n// ----- 8< ----- FILE \"firrtl_black_box_resource_files.f\" " +
+        "----- 8< -----\n"
+    val source = Files.readString(systemVerilog)
+    val markerIndex = source.indexOf(marker)
+    if (markerIndex >= 0) {
+      Files.writeString(systemVerilog, source.substring(0, markerIndex) + "\n")
+    }
+  }
 }
 
 object PaperSetII {
@@ -53,7 +69,8 @@ object PaperSetII {
     outputComponents = 2,
     spectrum = FixedFormat(18, 12),
     bootstrappingKey = FixedFormat(8, 19),
-    accumulator = FixedFormat(27, 3)
+    accumulator = FixedFormat(27, 3),
+    multiplier = ExternalProductMultiplier.ExactGaussDsp
   )
   def cmuxEngine(
       forwardPath: String,
@@ -87,6 +104,23 @@ object PaperSetII {
     )
 }
 
+object EmitPaperExternalProduct extends App {
+  require(args.length == 1, "usage: EmitPaperExternalProduct OUTPUT_DIR")
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  ChiselStage.emitSystemVerilogFile(
+    new DoubleBufferedExternalProductAccumulator(
+      PaperSetII.external,
+      tagWidth = 4
+    ),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  SynthesisEmitter.removeInlineFileList(
+    outputDirectory.resolve("DoubleBufferedExternalProductAccumulator.sv")
+  )
+}
+
 object EmitPaperCmux extends App {
   require(
     args.length == 3,
@@ -106,6 +140,9 @@ object EmitPaperCmux extends App {
     new CmuxEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  SynthesisEmitter.removeInlineFileList(
+    outputDirectory.resolve("CmuxEngine.sv")
   )
 }
 
@@ -130,6 +167,9 @@ object EmitPaperBitwiseCmux extends App {
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
   )
+  SynthesisEmitter.removeInlineFileList(
+    outputDirectory.resolve("CmuxEngine.sv")
+  )
 }
 
 object EmitPaperBatchedCmux extends App {
@@ -152,6 +192,9 @@ object EmitPaperBatchedCmux extends App {
     new BatchedCmuxEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  SynthesisEmitter.removeInlineFileList(
+    outputDirectory.resolve("BatchedCmuxEngine.sv")
   )
 }
 
@@ -180,6 +223,9 @@ object EmitPaperBankedBatchedCmux extends App {
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
   )
+  SynthesisEmitter.removeInlineFileList(
+    outputDirectory.resolve("BatchedCmuxEngine.sv")
+  )
 }
 
 object EmitPaperBitwiseBatchedCmux extends App {
@@ -207,6 +253,9 @@ object EmitPaperBitwiseBatchedCmux extends App {
     new BatchedCmuxEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  SynthesisEmitter.removeInlineFileList(
+    outputDirectory.resolve("BatchedCmuxEngine.sv")
   )
 }
 
@@ -242,6 +291,9 @@ object EmitPaperBatchedBlindRotate extends App {
     new BatchedBlindRotateEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  SynthesisEmitter.removeInlineFileList(
+    outputDirectory.resolve("BatchedBlindRotateEngine.sv")
   )
 }
 
@@ -279,6 +331,9 @@ object EmitPaperBitwiseBatchedBlindRotate extends App {
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
   )
+  SynthesisEmitter.removeInlineFileList(
+    outputDirectory.resolve("BatchedBlindRotateEngine.sv")
+  )
 }
 
 object EmitPaperBitwiseBatchedBlindRotateSampleExtract extends App {
@@ -314,6 +369,9 @@ object EmitPaperBitwiseBatchedBlindRotateSampleExtract extends App {
     new BatchedBlindRotateSampleExtractEngine(config),
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  SynthesisEmitter.removeInlineFileList(
+    outputDirectory.resolve("BatchedBlindRotateSampleExtractEngine.sv")
   )
 }
 

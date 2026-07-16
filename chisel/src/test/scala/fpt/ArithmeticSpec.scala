@@ -2,11 +2,13 @@ package fpt
 
 import chisel3._
 import chiseltest._
+import chiseltest.simulator.VerilatorBackendAnnotation
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters._
+import scala.util.Random
 
 final class ArithmeticSpec
     extends AnyFlatSpec
@@ -86,6 +88,70 @@ final class ArithmeticSpec
           dut.io.result.real.expect(row(6).S)
         }
         dut.io.result.imag.expect(row(7).S)
+      }
+    }
+  }
+
+  it should "keep the DSP-sized Gauss product exact at signed boundaries" in {
+    val aWidth = 30
+    val bWidth = 27
+    val aLimit = BigInt(1) << (aWidth - 1)
+    val bLimit = BigInt(1) << (bWidth - 1)
+    val aBoundary = Seq(
+      -aLimit,
+      -aLimit + 1,
+      BigInt(-1),
+      BigInt(0),
+      BigInt(1),
+      aLimit - 2,
+      aLimit - 1
+    )
+    val bBoundary = Seq(
+      -bLimit,
+      -bLimit + 1,
+      BigInt(-1),
+      BigInt(0),
+      BigInt(1),
+      bLimit - 2,
+      bLimit - 1
+    )
+    val boundaryVectors = for {
+      aReal <- aBoundary
+      aImag <- aBoundary
+      bReal <- bBoundary
+      bImag <- bBoundary
+    } yield (aReal, aImag, bReal, bImag)
+
+    val random = new Random(0x465054L)
+    def randomSigned(width: Int): BigInt = {
+      val bits = BigInt(width, random)
+      if (bits.testBit(width - 1)) bits - (BigInt(1) << width) else bits
+    }
+    val randomVectors = Seq.fill(5000)(
+      (
+        randomSigned(aWidth),
+        randomSigned(aWidth),
+        randomSigned(bWidth),
+        randomSigned(bWidth)
+      )
+    )
+
+    test(new ExactGaussComplexMultiply(aWidth, bWidth))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      for (((aReal, aImag, bReal, bImag), index) <-
+          (boundaryVectors ++ randomVectors).zipWithIndex) {
+        dut.io.a.real.poke(aReal.S)
+        dut.io.a.imag.poke(aImag.S)
+        dut.io.b.real.poke(bReal.S)
+        dut.io.b.imag.poke(bImag.S)
+        val expectedReal = aReal * bReal - aImag * bImag
+        val expectedImag = aReal * bImag + aImag * bReal
+        withClue(s"Gauss product vector=$index real") {
+          dut.io.productReal.expect(expectedReal.S)
+        }
+        withClue(s"Gauss product vector=$index imag") {
+          dut.io.productImag.expect(expectedImag.S)
+        }
       }
     }
   }

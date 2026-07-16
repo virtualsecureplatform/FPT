@@ -160,9 +160,9 @@ run with `-widemux 5` expanded its large multiplexers into `$shiftx` cells
 and exceeded 53 GiB before technology mapping, so that pass is not a useful
 common local baseline.
 
-Yosys 0.45+139 produces the following complete maps. These remain
-technology-mapped estimates: there is no placement, routing, clock result, or
-power estimate.
+At checkpoint `66c8dc1`, Yosys 0.45+139 produced the following complete maps.
+These remain technology-mapped estimates: there is no placement, routing,
+clock result, or power estimate.
 
 | Wrapper | Cycles/result | Estimated logic cells | LUT1--6 | FF | BRAM | Distributed RAM | DSP48E2 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -175,22 +175,44 @@ At an equal clock, the measured schedules and mapped resources give:
 | ---: | ---: | ---: | ---: | ---: |
 | 12.959x | 2.645x | 2.720x | 5.345x | 1.807x |
 
-Thus the current FPT wrapper produces more results per mapped resource than
-HOGE at equal clock even before its main arithmetic inefficiencies are fixed.
-This is encouraging but is not yet a hardware-speed result: congestion may
-reduce FPT's achieved clock, and the 14,574-DSP implementation is far beyond
-the paper's 5,980-DSP full-design target.
+Thus that FPT baseline produces more results per mapped resource than HOGE at
+equal clock even before its main arithmetic inefficiencies are fixed. This is
+encouraging but is not yet a hardware-speed result: congestion may reduce
+FPT's achieved clock, and the 14,574-DSP implementation is far beyond the
+paper's 5,980-DSP full-design target.
 
-The exact FPT DSP contract also identifies why the total is high. The map is
+The baseline DSP contract also identifies why the total is high. The map is
 `2,384` forward-transform DSPs, two inverse transforms at `1,486` DSPs each,
-`9,216` External Product DSPs, and two wrapper-glue DSPs. CIRCT currently
-emits each nominal signed 30-by-27-bit External Product multiplication as a
+`9,216` External Product DSPs, and two wrapper-glue DSPs. CIRCT emitted each
+nominal signed 30-by-27-bit External Product multiplication as a
 57-by-57-bit unsigned modular multiplication over sign-extended operands.
 After synthesis merges the two accumulator-buffer copies, each of the 1,024
 remaining real multiplications occupies nine DSP48E2s. In contrast, an
 explicit width-preserving schoolbook complex MAC would require two DSPs for
 each of four real products per lane (`2,048` total), and a three-product Gauss
 MAC would require `1,536`, matching the paper's MAC count.
+
+The width-preserving Gauss MAC now implements that reduction. It keeps three
+30-by-27-bit real products, splits each into two signed DSP48E2-sized
+products, and uses explicit pre-add overflow corrections so its result is
+bit-exact with the old four-product expression for every input bit pattern.
+Its generated SystemVerilog is an inline Chisel BlackBox, the permitted
+SGen-like exception for controlling signed multiplier widths. Reproduce its
+standalone map with:
+
+```sh
+tools/synthesize_fpt_external_product.sh
+```
+
+The complete 256-lane double-buffered External Product maps to exactly 1,536
+DSPs, down from 9,216. LUT1--6 also fall from 402,802 to 327,168, MUXF cells
+from 233,119 to 89,560, and carry cells from 60,929 to 33,665; FFs remain
+122,906. Yosys's packing heuristic raises its estimated logic-cell figure
+from 216,504 to 253,102 despite the lower primitive counts, so the raw LUT
+and mux counts are the safer local comparison. The new full-wrapper DSP
+contract is 6,894 before inverse-core sharing; a complete remap is still
+needed to measure its combined logic and confirm synthesis sharing in the
+parent design.
 
 There is a second likely reduction to verify. The current wrapper instantiates
 two inverse cores, while one inverse core has frame II 8 and the CMUX accepts
@@ -199,8 +221,8 @@ through one inverse core should therefore preserve the sustained CMUX II and
 remove another 1,486 DSPs, provided ordering and backpressure tests confirm
 the schedule. This is a follow-up design hypothesis, not a measured result.
 
-The local flow retains `stat.json`, synthesis logs, host timing and peak RSS,
-and source/tool/flow signatures under
+The complete baseline flow retains `stat.json`, synthesis logs, host timing
+and peak RSS, and source/tool/flow signatures under
 `build/yosys-fpt-hoge-blind-rotate/`. The FPT map took 7,206 seconds and
 44,803,252 KiB peak RSS on the development host; HOGE took 1,919 seconds and
 16,443,268 KiB. `summary.tsv` records the raw counts and `comparison.tsv`
