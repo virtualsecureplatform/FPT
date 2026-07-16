@@ -178,6 +178,27 @@ raw units is `[731,764,386,138,29]`. One Q27.3 raw unit is `2^29` Torus units,
 so this test records the coarse Set-II phase precision rather than hiding it
 behind a permissive raw-Torus tolerance.
 
+The companion physical-boundary regression retains the complete Set-II
+datapath and 16-context batch but uses one Blind Rotate key coefficient. It
+streams a dense nonzero key through the accelerator's 864-bit loader, applies
+one generated-FTT CMUX to every independently initialized context, and checks
+all 16,400 sample-extracted TLWE words under result backpressure:
+
+```sh
+tools/test_paper_buffered_blind_rotate_numerics.sh \
+  ../SGen build/paper-buffered-blind-rotate-numerics
+```
+
+The deterministic C++ oracle changes 14,341 output words. The RTL has 5,551
+bit-exact words, 11,978 within one Q27.3 unit, and the zero-through-four-unit
+histogram `[5551,6427,3166,1041,215]`; no output exceeds the same four-unit
+bound as the single-CMUX regression. This closes the nonzero composition path
+through raw-TLWE loading, corrected modulus switching, the key cache, folded
+coefficient frontend, integrated SGen transforms, and sample extraction. The
+full `n=630` regression remains the separate zero-data throughput test because
+one nonzero coefficient is sufficient to exercise the arithmetic datapath
+without multiplying simulation time by 630.
+
 The paper-shaped Chisel top uses Set II's `N=1024`, two components, two
 decomposition levels, 128 forward lanes, and 64 inverse lanes.  Generate the
 SGen sources and emit/lint the composed design with:

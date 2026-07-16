@@ -208,6 +208,21 @@ Verilator run through the 1,012-bit physical boundary reproduces the same
 190,646-cycle batch and all load/output counts. At an equal clock, the
 buffered schedule still has 13.287 times HOGE's measured result rate.
 
+That zero-data schedule is complemented by a nonzero arithmetic test of the
+same 16-context, 864-bit physical boundary. With the domain dimension reduced
+to one, it loads one dense spectral key coefficient through the real cache,
+runs one complete CMUX per context with the generated FTTs, and verifies all
+16,400 sample-extracted words against the fixed radix-2 C++ oracle under
+output backpressure. The zero-through-four Q27.3-unit error histogram is
+`[5551,6427,3166,1041,215]`; 11,978 words are within one unit and none exceed
+four. The oracle changes 14,341 extracted words, so the test cannot pass via a
+zero-key identity. Reproduce it with:
+
+```sh
+tools/test_paper_buffered_blind_rotate_numerics.sh \
+  ../SGen build/paper-buffered-blind-rotate-numerics
+```
+
 The two banks store 442,368 logical bits (54 KiB). A standalone UltraScale+
 Yosys map of the exact emitted cache is:
 

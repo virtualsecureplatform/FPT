@@ -90,6 +90,25 @@ count at its expected 224-cycle latency. Thus its 17-cycle penalty is isolated
 to the folded coefficient frontend in this vector; the frontend introduces no
 measurable distribution change.
 
+The host-facing physical top now has a separate nonzero paper-size regression:
+
+```sh
+tools/test_paper_buffered_blind_rotate_numerics.sh \
+  ../SGen build/paper-buffered-blind-rotate-numerics
+```
+
+It keeps the 16-context Set-II datapath and sets the domain dimension to one,
+then loads the complete dense spectral coefficient through the 16-complex-lane
+key port. All 16 contexts cross raw-TLWE modulus switching, accumulator
+initialization, one folded-bitwise CMUX, the ping-pong cache, and automatic
+sample extraction. Its 16,400-word histogram against the independent C++
+model is `[5551,6427,3166,1041,215]` for zero through four Q27.3 raw units;
+11,978 words are within one unit and none exceed four. The C++ result differs
+from the pre-CMUX accumulator in 14,341 extracted positions, excluding the
+zero-product identity case. The simulation takes 20,977 cycles from run launch
+through a deliberately backpressured drain; that number is functional-test
+timing, not the unthrottled `n=630` performance schedule.
+
 ## Locally measurable transform tradeoff
 
 The following counts are source-level real multiply expressions in SGen's
