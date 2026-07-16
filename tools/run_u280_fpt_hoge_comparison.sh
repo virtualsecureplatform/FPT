@@ -75,6 +75,7 @@ fpt_br_sources=$sources_dir/fpt-blind-rotate
 fpt_buffered_br_sources=$sources_dir/fpt-buffered-blind-rotate
 runs_dir=$output_root/runs
 manifest=$output_root/manifest.tsv
+hoge_boundary_metrics=$output_root/hoge-blind-rotate-boundary.tsv
 route_metrics_checker=$repo_root/tools/check_u280_route_metrics.sh
 mkdir -p "$sources_dir" "$runs_dir"
 
@@ -166,6 +167,30 @@ if [[ $hoge_forward_multipliers != 31 || \
     echo "Unexpected HOGE multiplier structure: forward=$hoge_forward_multipliers inverse=$hoge_inverse_multipliers br=$hoge_br_multipliers" >&2
     exit 1
 fi
+
+"$repo_root/tools/check_hoge_blind_rotate_boundary.sh" \
+    "$hoge_br" "$hoge_boundary_metrics"
+hoge_boundary_value() {
+    local metric=$1
+    awk -F '\t' -v metric="$metric" '
+        $1 == metric { print $2; found = 1; exit }
+        END { if (!found) exit 1 }
+    ' "$hoge_boundary_metrics"
+}
+hoge_br_top_ports=$(hoge_boundary_value top_ports)
+hoge_br_top_port_bits=$(hoge_boundary_value top_port_bits)
+hoge_br_key_streams=$(hoge_boundary_value key_streams)
+hoge_br_key_data_bits=$(hoge_boundary_value key_data_bits)
+hoge_br_key_interface_bits=$(hoge_boundary_value key_interface_bits)
+hoge_br_tlwe_interface_bits=$(hoge_boundary_value tlwe_interface_bits)
+hoge_br_result_interface_bits=$(hoge_boundary_value result_interface_bits)
+hoge_br_cache_instances=$(hoge_boundary_value trgsw_cache_instances)
+hoge_br_cache_banks=$(hoge_boundary_value cache_banks_per_instance)
+hoge_br_cache_depth=$(hoge_boundary_value cache_depth_per_bank)
+hoge_br_cache_word_bits=$(hoge_boundary_value cache_word_bits)
+hoge_br_cache_logical_bits=$(hoge_boundary_value cache_logical_bits)
+hoge_br_expected_key_beats=$(hoge_boundary_value key_beats_per_bus)
+hoge_br_key_transfer_bits=$(hoge_boundary_value key_transfer_bits)
 
 fpt_yosys_boundary_status=unavailable
 fpt_yosys_version=unavailable
@@ -372,6 +397,10 @@ if [[ $skip_hoge_schedule == 0 ]] && command -v verilator >/dev/null; then
         echo "Could not parse the HOGE Blind Rotate schedule" >&2
         exit 1
     fi
+    if [[ $hoge_br_key_beats_per_bus != "$hoge_br_expected_key_beats" ]]; then
+        echo "HOGE schedule consumed $hoge_br_key_beats_per_bus key beats per bus; expected $hoge_br_expected_key_beats" >&2
+        exit 1
+    fi
 fi
 
 vivado_version=unavailable
@@ -420,6 +449,8 @@ fpt_buffered_schedule_flow_sha=$(hash_lines \
     "$(sha256 "$repo_root/tools/measure_fpt_buffered_blind_rotate_accelerator_schedule.sh")")
 hoge_schedule_flow_sha=$(sha256 \
     "$repo_root/tools/measure_hoge_blind_rotate_schedule.sh")
+hoge_boundary_flow_sha=$(sha256 \
+    "$repo_root/tools/check_hoge_blind_rotate_boundary.sh")
 fpt_yosys_boundary_flow_sha=$(sha256 \
     "$repo_root/tools/check_fpt_synthesis_boundary.sh")
 post_route_metrics_flow_sha=$(sha256 \
@@ -529,6 +560,30 @@ composed_flow_sha=$(hash_lines \
     printf 'hoge_blind_rotate_dimension\t636\n'
     printf 'hoge_blind_rotate_contexts\t2\n'
     printf 'hoge_blind_rotate_top\tHOGEBlindRotateBaseline\n'
+    printf 'hoge_blind_rotate_top_ports\t%s\n' "$hoge_br_top_ports"
+    printf 'hoge_blind_rotate_top_port_bits\t%s\n' \
+        "$hoge_br_top_port_bits"
+    printf 'hoge_blind_rotate_key_streams\t%s\n' "$hoge_br_key_streams"
+    printf 'hoge_blind_rotate_key_data_bits\t%s\n' \
+        "$hoge_br_key_data_bits"
+    printf 'hoge_blind_rotate_key_interface_bits\t%s\n' \
+        "$hoge_br_key_interface_bits"
+    printf 'hoge_blind_rotate_tlwe_interface_bits\t%s\n' \
+        "$hoge_br_tlwe_interface_bits"
+    printf 'hoge_blind_rotate_result_interface_bits\t%s\n' \
+        "$hoge_br_result_interface_bits"
+    printf 'hoge_blind_rotate_trgsw_cache_instances\t%s\n' \
+        "$hoge_br_cache_instances"
+    printf 'hoge_blind_rotate_cache_banks_per_instance\t%s\n' \
+        "$hoge_br_cache_banks"
+    printf 'hoge_blind_rotate_cache_depth_per_bank\t%s\n' \
+        "$hoge_br_cache_depth"
+    printf 'hoge_blind_rotate_cache_word_bits\t%s\n' \
+        "$hoge_br_cache_word_bits"
+    printf 'hoge_blind_rotate_cache_logical_bits\t%s\n' \
+        "$hoge_br_cache_logical_bits"
+    printf 'hoge_blind_rotate_key_transfer_bits\t%s\n' \
+        "$hoge_br_key_transfer_bits"
     printf 'hoge_blind_rotate_output\tsample-extracted-tlwe\n'
     printf 'hoge_blind_rotate_batch_cycles\t%s\n' "$hoge_br_batch_cycles"
     printf 'hoge_blind_rotate_cycles_per_result\t%s\n' \
@@ -562,6 +617,8 @@ composed_flow_sha=$(hash_lines \
         "$fpt_buffered_schedule_flow_sha"
     printf 'hoge_blind_rotate_schedule_flow_sha256\t%s\n' \
         "$hoge_schedule_flow_sha"
+    printf 'hoge_blind_rotate_boundary_flow_sha256\t%s\n' \
+        "$hoge_boundary_flow_sha"
     printf 'fpt_yosys_boundary_flow_sha256\t%s\n' \
         "$fpt_yosys_boundary_flow_sha"
     printf 'post_route_metrics_flow_sha256\t%s\n' \

@@ -130,6 +130,9 @@ if(FPT_BUILD_RTL_TESTS)
         add_test(NAME fpt_prepared_u280_handoff
             COMMAND bash
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/prepared_u280_handoff_test.sh")
+        add_test(NAME fpt_hoge_blind_rotate_boundary
+            COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/hoge_blind_rotate_boundary_test.sh")
         add_test(NAME fpt_yosys_blind_rotate_report
             COMMAND bash
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/yosys_blind_rotate_report_test.sh")
