@@ -84,6 +84,16 @@ final class BatchedBlindRotateEngine(
         )
       )
     )
+    val bootstrappingKeyValid = Input(Bool())
+    val bootstrappingKeyReady = Output(Bool())
+    val keyReadRequestValid = Output(Bool())
+    val keyReadRequestReady = Input(Bool())
+    val keyReadRequestIndex = Output(UInt(config.dimensionWidth.W))
+    val keyReadRequestContext = Output(UInt(contextWidth.W))
+    val keyReadRequestRow = Output(UInt(rowWidth.W))
+    val keyReadRequestBeat = Output(
+      UInt(counterWidth(external.inputFrameBeats).W)
+    )
     val keyValid = Output(Bool())
     val keyFirst = Output(Bool())
     val keyIndex = Output(UInt(config.dimensionWidth.W))
@@ -397,6 +407,16 @@ final class BatchedBlindRotateEngine(
   }
 
   cmux.io.bootstrappingKey := io.bootstrappingKey
+  cmux.io.bootstrappingKeyValid := io.bootstrappingKeyValid
+  io.bootstrappingKeyReady := cmux.io.bootstrappingKeyReady
+  cmux.io.keyReadRequestReady := io.keyReadRequestReady
+  io.keyReadRequestValid := cmux.io.keyReadRequestValid
+  io.keyReadRequestContext := cmux.io.keyReadRequestContext
+  io.keyReadRequestIndex := inFlightKeyIndex(
+    cmux.io.keyReadRequestContext
+  )
+  io.keyReadRequestRow := cmux.io.keyReadRequestRow
+  io.keyReadRequestBeat := cmux.io.keyReadRequestBeat
   cmux.io.forwardTwist := io.forwardTwist
   cmux.io.inverseUntwist := io.inverseUntwist
   io.forwardTwistIndex := cmux.io.forwardTwistIndex

@@ -17,7 +17,8 @@ final case class BatchedCmuxEngineConfig(
     coefficientStorage: BatchedCoefficientStorage =
       BatchedCoefficientStorage.RegisterArray,
     serializeInverseComponents: Boolean = false,
-    useSynchronousExternalProductMemory: Boolean = false
+    useSynchronousExternalProductMemory: Boolean = false,
+    decoupledBootstrappingKey: Boolean = false
 ) {
   require(batchContexts >= 2)
   require(
@@ -102,6 +103,15 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
     val keyValid = Output(Bool())
     val keyFirst = Output(Bool())
     val keyContext = Output(UInt(contextWidth.W))
+    val keyReadRequestValid = Output(Bool())
+    val keyReadRequestReady = Input(Bool())
+    val keyReadRequestContext = Output(UInt(contextWidth.W))
+    val keyReadRequestRow = Output(UInt(rowWidth.W))
+    val keyReadRequestBeat = Output(
+      UInt(TransformUtil.counterWidth(externalConfig.inputFrameBeats).W)
+    )
+    val bootstrappingKeyValid = Input(Bool())
+    val bootstrappingKeyReady = Output(Bool())
 
     val forwardTwistIndex = Output(
       Vec(base.forwardTransform.lanes, UInt(base.forwardTransform.logPoints.W))
@@ -222,30 +232,115 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
   val forwardFirst = forwardTransactionBeat === 0.U
   val forwardLast = forwardTransactionBeat ===
     (forwardTransactionBeats - 1).U
-  external.io.inputValid := forward.io.outputValid && forwardTags.io.deq.valid
-  external.io.inputFirst := external.io.inputValid && forwardFirst
-  external.io.inputTag := forwardTags.io.deq.bits
-  external.io.decomposition := forward.io.output
   external.io.bootstrappingKey := io.bootstrappingKey
-  forward.io.outputReady := external.io.inputReady && forwardTags.io.deq.valid
-  val forwardOutputFire = external.io.inputValid && external.io.inputReady
-  forwardTags.io.deq.ready := forwardOutputFire && forwardLast
-  when(forwardOutputFire) {
-    when(forwardLast) {
-      forwardTransactionBeat := 0.U
-    }.otherwise {
-      forwardTransactionBeat := forwardTransactionBeat + 1.U
+  io.keyReadRequestValid := false.B
+  io.keyReadRequestContext := 0.U
+  io.keyReadRequestRow := 0.U
+  io.keyReadRequestBeat := 0.U
+  io.bootstrappingKeyReady := false.B
+
+  if (!config.decoupledBootstrappingKey) {
+    external.io.inputValid := forward.io.outputValid &&
+      forwardTags.io.deq.valid
+    external.io.inputFirst := external.io.inputValid && forwardFirst
+    external.io.inputTag := forwardTags.io.deq.bits
+    external.io.decomposition := forward.io.output
+    forward.io.outputReady := external.io.inputReady &&
+      forwardTags.io.deq.valid
+    val forwardOutputFire = external.io.inputValid && external.io.inputReady
+    forwardTags.io.deq.ready := forwardOutputFire && forwardLast
+    when(forwardOutputFire) {
+      when(forwardLast) {
+        forwardTransactionBeat := 0.U
+      }.otherwise {
+        forwardTransactionBeat := forwardTransactionBeat + 1.U
+      }
+    }
+    io.keyContext := Mux(
+      forwardTags.io.deq.valid,
+      forwardTags.io.deq.bits,
+      0.U
+    )
+  } else {
+    val requestRow = (
+      forwardTransactionBeat / externalConfig.inputFrameBeats.U
+    )(rowWidth - 1, 0)
+    val requestBeat = (
+      forwardTransactionBeat % externalConfig.inputFrameBeats.U
+    )(TransformUtil.counterWidth(externalConfig.inputFrameBeats) - 1, 0)
+
+    val pendingValid = RegInit(false.B)
+    val pendingFirst = RegInit(false.B)
+    val pendingTag = RegInit(0.U(contextWidth.W))
+    val pendingRow = RegInit(0.U(rowWidth.W))
+    val pendingBeat = RegInit(
+      0.U(TransformUtil.counterWidth(externalConfig.inputFrameBeats).W)
+    )
+    val pendingDecomposition = Reg(
+      Vec(
+        externalConfig.inputLanes,
+        new ComplexSInt(externalConfig.spectrum.width)
+      )
+    )
+
+    val responseFire = pendingValid && io.bootstrappingKeyValid &&
+      external.io.inputReady
+    val pendingReady = !pendingValid || responseFire
+    io.keyReadRequestValid := forward.io.outputValid &&
+      forwardTags.io.deq.valid && pendingReady
+    io.keyReadRequestContext := Mux(
+      forwardTags.io.deq.valid,
+      forwardTags.io.deq.bits,
+      0.U
+    )
+    io.keyReadRequestRow := requestRow
+    io.keyReadRequestBeat := requestBeat
+    val requestFire = io.keyReadRequestValid && io.keyReadRequestReady
+    forward.io.outputReady := forwardTags.io.deq.valid && pendingReady &&
+      io.keyReadRequestReady
+    forwardTags.io.deq.ready := requestFire && forwardLast
+
+    when(requestFire) {
+      pendingFirst := forwardFirst
+      pendingTag := forwardTags.io.deq.bits
+      pendingRow := requestRow
+      pendingBeat := requestBeat
+      pendingDecomposition := forward.io.output
+      when(forwardLast) {
+        forwardTransactionBeat := 0.U
+      }.otherwise {
+        forwardTransactionBeat := forwardTransactionBeat + 1.U
+      }
+    }
+    when(responseFire =/= requestFire) {
+      pendingValid := requestFire
+    }
+
+    external.io.inputValid := pendingValid && io.bootstrappingKeyValid
+    external.io.inputFirst := pendingValid && pendingFirst
+    external.io.inputTag := pendingTag
+    external.io.decomposition := pendingDecomposition
+    io.bootstrappingKeyReady := pendingValid && external.io.inputReady
+    io.keyContext := pendingTag
+
+    when(responseFire) {
+      assert(
+        external.io.keyRow === pendingRow,
+        "bootstrapping-key response row does not match External Product"
+      )
+      for (lane <- 0 until externalConfig.inputLanes) {
+        val expectedPoint = pendingBeat * externalConfig.inputLanes.U + lane.U
+        assert(
+          external.io.pointIndex(lane) === expectedPoint,
+          "bootstrapping-key response point does not match External Product"
+        )
+      }
     }
   }
   io.keyRow := external.io.keyRow
   io.keyPoint := external.io.pointIndex
   io.keyValid := external.io.inputValid
   io.keyFirst := external.io.inputFirst
-  io.keyContext := Mux(
-    forwardTags.io.deq.valid,
-    forwardTags.io.deq.bits,
-    0.U
-  )
 
   if (config.serializeInverseComponents) {
     val inverse = Module(

@@ -245,9 +245,14 @@ final class BlindRotateSampleExtractSpec
       cmux = config.cmux.copy(
         engine = config.cmux.engine.copy(bitwiseBitsPerCycle = Some(2)),
         batchContexts = oracleContexts,
-        coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks
+        coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
+        decoupledBootstrappingKey = true
       ),
       domainDimension = oracleDimensions
+    )
+    val bufferedConfig = BufferedBlindRotateConfig(
+      oracleConfig,
+      keyLoadLanes = 2
     )
     val rows = vectors("rtl_blind_rotate_vectors.txt")
     val inputRows = rows.take(oracleContexts)
@@ -278,7 +283,7 @@ final class BlindRotateSampleExtractSpec
     val inverseOffset = forward.points / 2 + forward.points
     val inverseUntwists = twiddles.drop(inverseOffset + inverse.points / 2)
 
-    test(new BatchedBlindRotateSampleExtractEngine(oracleConfig))
+    test(new BufferedBatchedBlindRotateSampleExtractEngine(bufferedConfig))
       .withAnnotations(
         Seq(
           VerilatorBackendAnnotation,
@@ -297,13 +302,14 @@ final class BlindRotateSampleExtractSpec
         dut.io.testVector.poke(0.U)
         dut.io.inputValid.poke(false.B)
         dut.io.inputCoefficient.poke(0.U)
+        dut.io.keyLoadStart.poke(false.B)
+        dut.io.keyLoadIndex.poke(0.U)
+        dut.io.keyLoadValid.poke(false.B)
         dut.io.runStart.poke(false.B)
         dut.io.resultReady.poke(false.B)
-        for (component <- 0 until external.outputComponents) {
-          for (lane <- 0 until external.inputLanes) {
-            dut.io.bootstrappingKey(component)(lane).real.poke(0.S)
-            dut.io.bootstrappingKey(component)(lane).imag.poke(0.S)
-          }
+        for (lane <- 0 until bufferedConfig.keyBuffer.loadLanes) {
+          dut.io.keyLoad(lane).real.poke(0.S)
+          dut.io.keyLoad(lane).imag.poke(0.S)
         }
         for (lane <- 0 until forward.lanes) {
           dut.io.forwardTwist(lane).c.poke(0.S)
@@ -329,30 +335,65 @@ final class BlindRotateSampleExtractSpec
             val index = dut.io.inverseUntwistIndex(lane).peek().litValue.toInt
             pokeTwiddle(dut.io.inverseUntwist(lane), inverseUntwists(index))
           }
-          val keyIndex = dut.io.keyIndex.peek().litValue.toInt
-          val keyRow = dut.io.keyRow.peek().litValue.toInt
-          for (lane <- 0 until external.inputLanes) {
-            val point = dut.io.keyPoint(lane).peek().litValue.toInt
-            val vector = key(
-              (keyIndex * external.rows + keyRow) * external.points + point
-            )
-            for (component <- 0 until external.outputComponents) {
-              dut.io.bootstrappingKey(component)(lane).real.poke(
-                vector(2 * component).S
-              )
-              dut.io.bootstrappingKey(component)(lane).imag.poke(
-                vector(2 * component + 1).S
-              )
-            }
-          }
         }
 
         var cycle = 0
+        val keyCycles = ArrayBuffer.empty[Int]
+        val keyTransactions = ArrayBuffer.empty[(Int, Int)]
+        def observeKey(): Unit = {
+          if (dut.io.keyValid.peek().litToBoolean &&
+              dut.io.keyFirst.peek().litToBoolean) {
+            keyCycles += cycle
+            keyTransactions += ((
+              dut.io.keyContext.peek().litValue.toInt,
+              dut.io.keyIndex.peek().litValue.toInt
+            ))
+          }
+        }
         def step(): Unit = {
           driveReadOnlyInputs()
+          observeKey()
           dut.clock.step()
           cycle += 1
         }
+
+        def loadKeyCoefficient(index: Int): Unit = {
+          dut.io.keyLoadIndex.poke(index.U)
+          dut.io.keyLoadStartReady.expect(true.B)
+          dut.io.keyLoadStart.poke(true.B)
+          step()
+          dut.io.keyLoadStart.poke(false.B)
+          dut.io.keyLoadValid.poke(true.B)
+          for (
+            word <- 0 until bufferedConfig.keyBuffer.wordsPerCoefficient;
+            group <- 0 until bufferedConfig.keyBuffer.loadGroupsPerRead
+          ) {
+            val row = word / external.inputFrameBeats
+            val beat = word % external.inputFrameBeats
+            for (loadLane <- 0 until bufferedConfig.keyBuffer.loadLanes) {
+              val scalar =
+                group * bufferedConfig.keyBuffer.loadLanes + loadLane
+              val lane = scalar / external.outputComponents
+              val component = scalar % external.outputComponents
+              val point = beat * external.inputLanes + lane
+              val vector = key(
+                (index * external.rows + row) * external.points + point
+              )
+              dut.io.keyLoad(loadLane).real.poke(vector(2 * component).S)
+              dut.io.keyLoad(loadLane).imag.poke(
+                vector(2 * component + 1).S
+              )
+            }
+            dut.io.keyLoadReady.expect(true.B)
+            step()
+          }
+          dut.io.keyLoadValid.poke(false.B)
+          dut.io.keyLoadDone.expect(true.B)
+          dut.io.keyLoadDoneIndex.expect(index.U)
+          step()
+        }
+
+        loadKeyCoefficient(0)
 
         for (context <- 0 until oracleContexts) {
           dut.io.inputContext.poke(context.U)
@@ -382,6 +423,7 @@ final class BlindRotateSampleExtractSpec
         dut.io.runStart.poke(true.B)
         step()
         dut.io.runStart.poke(false.B)
+        loadKeyCoefficient(1)
 
         var outputIndex = 0
         var maximumError = BigInt(0)
@@ -392,6 +434,7 @@ final class BlindRotateSampleExtractSpec
         val totalOutputs = oracleContexts * outputsPerContext
         while (!finalDone) {
           driveReadOnlyInputs()
+          observeKey()
           val ready = cycle % 7 != 2
           dut.io.resultReady.poke(ready.B)
           if (dut.io.computeDone.peek().litToBoolean) {
@@ -427,9 +470,24 @@ final class BlindRotateSampleExtractSpec
         computeDoneCycle should not be empty
         firstResultCycle.get should be > computeDoneCycle.get
         dut.io.active.expect(false.B)
-        dut.io.runReady.expect(true.B)
+        dut.io.runReady.expect(false.B)
+        dut.io.keyBankValid(0).expect(false.B)
+        dut.io.keyBankValid(1).expect(false.B)
+        keyTransactions.toSeq should be(
+          (0 until oracleDimensions).flatMap(dimension =>
+            (0 until oracleContexts).map(context => (context, dimension))
+          )
+        )
         info(
-          "sample-extracted C++ Blind Rotate oracle maximum wrapped error: " +
+          "buffered key transaction cycles: " + keyCycles.mkString(",")
+        )
+        keyCycles.grouped(oracleContexts).foreach { wave =>
+          wave.sliding(2).foreach { pair =>
+            pair(1) - pair(0) should be(oracleConfig.cmux.commandInterval)
+          }
+        }
+        info(
+          "buffered sample-extracted C++ Blind Rotate maximum wrapped error: " +
             maximumError
         )
       }

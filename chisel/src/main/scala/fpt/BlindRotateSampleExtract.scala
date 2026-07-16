@@ -49,6 +49,16 @@ final class BatchedBlindRotateSampleExtractEngine(
         )
       )
     )
+    val bootstrappingKeyValid = Input(Bool())
+    val bootstrappingKeyReady = Output(Bool())
+    val keyReadRequestValid = Output(Bool())
+    val keyReadRequestReady = Input(Bool())
+    val keyReadRequestIndex = Output(UInt(config.dimensionWidth.W))
+    val keyReadRequestContext = Output(UInt(contextWidth.W))
+    val keyReadRequestRow = Output(UInt(rowWidth.W))
+    val keyReadRequestBeat = Output(
+      UInt(TransformUtil.counterWidth(external.inputFrameBeats).W)
+    )
     val keyValid = Output(Bool())
     val keyFirst = Output(Bool())
     val keyIndex = Output(UInt(config.dimensionWidth.W))
@@ -129,6 +139,14 @@ final class BatchedBlindRotateSampleExtractEngine(
   io.contextComplete := blindRotate.io.contextComplete
 
   blindRotate.io.bootstrappingKey := io.bootstrappingKey
+  blindRotate.io.bootstrappingKeyValid := io.bootstrappingKeyValid
+  io.bootstrappingKeyReady := blindRotate.io.bootstrappingKeyReady
+  blindRotate.io.keyReadRequestReady := io.keyReadRequestReady
+  io.keyReadRequestValid := blindRotate.io.keyReadRequestValid
+  io.keyReadRequestIndex := blindRotate.io.keyReadRequestIndex
+  io.keyReadRequestContext := blindRotate.io.keyReadRequestContext
+  io.keyReadRequestRow := blindRotate.io.keyReadRequestRow
+  io.keyReadRequestBeat := blindRotate.io.keyReadRequestBeat
   io.keyValid := blindRotate.io.keyValid
   io.keyFirst := blindRotate.io.keyFirst
   io.keyIndex := blindRotate.io.keyIndex
