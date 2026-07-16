@@ -29,12 +29,53 @@ private object SynthesisEmitter {
       Files.writeString(systemVerilog, source.substring(0, markerIndex) + "\n")
     }
   }
+
+  /** Mark one generated inferred memory as block RAM. Chisel 6's CIRCT
+    * emitter does not carry the legacy FIRRTL AttributeAnnotation API, so the
+    * synthesis-only attribute is inserted into the generated artifact. The
+    * surrounding module and declaration checks make emitter changes fail
+    * loudly instead of silently tagging the wrong storage.
+    */
+  def addBlockRamStyle(systemVerilog: Path, memoryModule: String): Unit = {
+    val source = Files.readString(systemVerilog)
+    val moduleStart = source.indexOf(s"module $memoryModule(")
+    require(moduleStart >= 0, s"missing memory module $memoryModule")
+    require(
+      source.indexOf(s"module $memoryModule(", moduleStart + 1) < 0,
+      s"duplicate memory module $memoryModule"
+    )
+    val moduleEnd = source.indexOf("\nendmodule", moduleStart)
+    require(moduleEnd >= 0, s"unterminated memory module $memoryModule")
+    val memoryToken = " Memory["
+    val token = source.indexOf(memoryToken, moduleStart)
+    require(
+      token >= 0 && token < moduleEnd,
+      s"missing inferred-memory declaration in $memoryModule"
+    )
+    val lineStart = source.lastIndexOf('\n', token) + 1
+    val lineEnd = source.indexOf('\n', token)
+    val declaration = source.substring(lineStart, lineEnd)
+    require(
+      declaration.startsWith("  reg ") &&
+        !declaration.contains("ram_style"),
+      s"unexpected inferred-memory declaration: $declaration"
+    )
+    val tagged = declaration.replace(
+      "  reg ",
+      "  (* ram_style = \"block\" *) reg "
+    )
+    Files.writeString(
+      systemVerilog,
+      source.substring(0, lineStart) + tagged + source.substring(lineEnd)
+    )
+  }
 }
 
 object PaperSetII {
   val blindRotateDomainDimension = 630
   val barrelBatchContexts = 14
   val bitwiseBatchContexts = 16
+  val keyLoadLanes = 16
 
   val coefficient = CmuxCoefficientConfig(
     polynomialSize = 1024,
@@ -120,6 +161,30 @@ object EmitPaperExternalProduct extends App {
   SynthesisEmitter.removeInlineFileList(
     outputDirectory.resolve("DoubleBufferedExternalProductAccumulator.sv")
   )
+}
+
+object EmitPaperBootstrappingKeyBuffer extends App {
+  require(
+    args.length == 1,
+    "usage: EmitPaperBootstrappingKeyBuffer OUTPUT_DIR"
+  )
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  val config = BootstrappingKeyBufferConfig(
+    PaperSetII.external,
+    PaperSetII.bitwiseBatchContexts,
+    PaperSetII.blindRotateDomainDimension,
+    PaperSetII.keyLoadLanes
+  )
+  val systemVerilog = outputDirectory.resolve(
+    "BootstrappingKeyPingPongBuffer.sv"
+  )
+  ChiselStage.emitSystemVerilogFile(
+    new BootstrappingKeyPingPongBuffer(config),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  SynthesisEmitter.addBlockRamStyle(systemVerilog, "memory_32x13824")
 }
 
 object EmitPaperCmux extends App {
@@ -389,6 +454,54 @@ object EmitPaperBitwiseBatchedBlindRotateSampleExtract extends App {
   SynthesisEmitter.removeInlineFileList(
     outputDirectory.resolve("BatchedBlindRotateSampleExtractEngine.sv")
   )
+}
+
+object EmitPaperBufferedBitwiseBatchedBlindRotateSampleExtract extends App {
+  require(
+    args.length == 3 || args.length == 4,
+    "usage: EmitPaperBufferedBitwiseBatchedBlindRotateSampleExtract " +
+      "OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V [DOMAIN_DIMENSION]"
+  )
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
+  val inversePath = Path.of(args(2)).toAbsolutePath.normalize
+  val domainDimension =
+    if (args.length == 4) args(3).toInt
+    else PaperSetII.blindRotateDomainDimension
+  require(domainDimension >= 1, "DOMAIN_DIMENSION must be positive")
+  val engine = PaperSetII.cmuxEngine(
+    forwardPath.toString,
+    inversePath.toString,
+    includeVerilogSource = false,
+    bitwiseBitsPerCycle = Some(2)
+  )
+  val blindRotate = BatchedBlindRotateEngineConfig(
+    BatchedCmuxEngineConfig(
+      engine,
+      batchContexts = PaperSetII.bitwiseBatchContexts,
+      coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
+      serializeInverseComponents = true,
+      useSynchronousExternalProductMemory = true,
+      decoupledBootstrappingKey = true
+    ),
+    domainDimension
+  )
+  val config = BufferedBlindRotateConfig(
+    blindRotate,
+    keyLoadLanes = PaperSetII.keyLoadLanes
+  )
+
+  ChiselStage.emitSystemVerilogFile(
+    new BufferedBatchedBlindRotateSampleExtractEngine(config),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  val systemVerilog = outputDirectory.resolve(
+    "BufferedBatchedBlindRotateSampleExtractEngine.sv"
+  )
+  SynthesisEmitter.removeInlineFileList(systemVerilog)
+  SynthesisEmitter.addBlockRamStyle(systemVerilog, "memory_32x13824")
 }
 
 object EmitPaperAccumulatorBanks extends App {
