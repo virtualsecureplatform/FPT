@@ -3,8 +3,12 @@ set -euo pipefail
 
 sgen_dir=${1:-../SGen}
 output_dir=${2:-build/sgen-fpt}
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=tools/fpt_arithmetic_profile_contract.sh
+source "$repo_root/tools/fpt_arithmetic_profile_contract.sh"
 forward_module=${FORWARD_MODULE:-FptSGenForward}
 inverse_module=${INVERSE_MODULE:-FptSGenInverse}
+arithmetic_profile=${FPT_ARITHMETIC_PROFILE:-custom}
 
 if [[ ! "$forward_module" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ||
    [[ ! "$inverse_module" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
@@ -17,10 +21,37 @@ fft_log_lanes=${FFT_LOG_LANES:-7}
 ifft_log_lanes=${IFFT_LOG_LANES:-6}
 radix_log=${RADIX_LOG:-3}
 ifft_radix_log=${IFFT_RADIX_LOG:-1}
-fft_integer_bits=${FFT_INTEGER_BITS:-18}
-fft_fractional_bits=${FFT_FRACTIONAL_BITS:-12}
-ifft_integer_bits=${IFFT_INTEGER_BITS:-27}
-ifft_fractional_bits=${IFFT_FRACTIONAL_BITS:-3}
+case "$arithmetic_profile" in
+    custom)
+        default_fft_integer_bits=18
+        default_fft_fractional_bits=12
+        default_ifft_integer_bits=27
+        default_ifft_fractional_bits=3
+        ;;
+    paper-set-ii|tfhepp-hardware)
+        fpt_resolve_arithmetic_profile "$arithmetic_profile"
+        default_fft_integer_bits=$FPT_PROFILE_FFT_INTEGER_BITS
+        default_fft_fractional_bits=$FPT_PROFILE_FFT_FRACTIONAL_BITS
+        default_ifft_integer_bits=$FPT_PROFILE_IFFT_INTEGER_BITS
+        default_ifft_fractional_bits=$FPT_PROFILE_IFFT_FRACTIONAL_BITS
+        ;;
+    *)
+        echo "Unknown FPT_ARITHMETIC_PROFILE: $arithmetic_profile" >&2
+        exit 1
+        ;;
+esac
+fft_integer_bits=${FFT_INTEGER_BITS:-$default_fft_integer_bits}
+fft_fractional_bits=${FFT_FRACTIONAL_BITS:-$default_fft_fractional_bits}
+ifft_integer_bits=${IFFT_INTEGER_BITS:-$default_ifft_integer_bits}
+ifft_fractional_bits=${IFFT_FRACTIONAL_BITS:-$default_ifft_fractional_bits}
+if [[ $arithmetic_profile != custom ]] &&
+   [[ $fft_integer_bits != "$default_fft_integer_bits" ||
+      $fft_fractional_bits != "$default_fft_fractional_bits" ||
+      $ifft_integer_bits != "$default_ifft_integer_bits" ||
+      $ifft_fractional_bits != "$default_ifft_fractional_bits" ]]; then
+    echo "Explicit FFT widths conflict with $arithmetic_profile" >&2
+    exit 1
+fi
 ifft_stage_scale=${IFFT_STAGE_SCALE:-0.5}
 integrated_tangent=${INTEGRATED_TANGENT:-1}
 
@@ -76,5 +107,5 @@ sed "0,/module main(/s//module $inverse_module(/" \
     "$output_dir/inverse.raw.v" > "$output_dir/inverse.v"
 rm -f "$output_dir/forward.raw.v" "$output_dir/inverse.raw.v"
 
-printf 'Generated FPT-adapted SGen transforms in %s (integrated tangent: %s)\n' \
-    "$output_dir" "$integrated_tangent"
+printf 'Generated FPT-adapted SGen transforms in %s (integrated tangent: %s, profile: %s)\n' \
+    "$output_dir" "$integrated_tangent" "$arithmetic_profile"

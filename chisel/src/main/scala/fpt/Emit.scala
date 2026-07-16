@@ -71,107 +71,6 @@ private object SynthesisEmitter {
   }
 }
 
-object PaperSetII {
-  val blindRotateDomainDimension = 630
-  val barrelBatchContexts = 14
-  val bitwiseBatchContexts = 16
-  val keyLoadLanes = 16
-
-  val coefficient = CmuxCoefficientConfig(
-    polynomialSize = 1024,
-    forwardLanes = 128,
-    inverseLanes = 64,
-    components = 2,
-    levels = 2,
-    baseBits = 10,
-    torusWidth = 32,
-    forwardFormat = FixedFormat(18, 12),
-    inverseFormat = FixedFormat(27, 3)
-  )
-  val forward = TransformConfig(
-    points = 512,
-    lanes = 128,
-    dataWidth = 30,
-    twiddleWidth = 26,
-    twiddleFractionalBits = 24
-  )
-  val inverse = TransformConfig(
-    points = 512,
-    lanes = 64,
-    dataWidth = 30,
-    twiddleWidth = 26,
-    twiddleFractionalBits = 24
-  )
-  val external = ExternalProductConfig(
-    points = 512,
-    inputLanes = 128,
-    outputLanes = 64,
-    rows = 4,
-    outputComponents = 2,
-    spectrum = FixedFormat(18, 12),
-    bootstrappingKey = FixedFormat(8, 19),
-    accumulator = FixedFormat(27, 3),
-    multiplier = ExternalProductMultiplier.ExactGaussDsp
-  )
-  def cmuxEngine(
-      forwardPath: String,
-      inversePath: String,
-      includeVerilogSource: Boolean,
-      bitwiseBitsPerCycle: Option[Int] = None
-  ): CmuxEngineConfig =
-    CmuxEngineConfig(
-      coefficient,
-      forward,
-      inverse,
-      external,
-      inverseNormalizeShift = 0,
-      forwardSGen = Some(
-        SGenBackendConfig(
-          "FptSGenForward",
-          forwardPath,
-          includeVerilogSource = includeVerilogSource,
-          integratedTangent = true
-        )
-      ),
-      inverseSGen = Some(
-        SGenBackendConfig(
-          "FptSGenInverse",
-          inversePath,
-          includeVerilogSource = includeVerilogSource,
-          integratedTangent = true
-        )
-      ),
-      bitwiseBitsPerCycle = bitwiseBitsPerCycle
-    )
-
-  def bufferedBlindRotate(
-      forwardPath: String,
-      inversePath: String,
-      domainDimension: Int,
-      includeVerilogSource: Boolean = false
-  ): BufferedBlindRotateConfig = {
-    val engine = cmuxEngine(
-      forwardPath,
-      inversePath,
-      includeVerilogSource = includeVerilogSource,
-      bitwiseBitsPerCycle = Some(2)
-    )
-    val blindRotate = BatchedBlindRotateEngineConfig(
-      BatchedCmuxEngineConfig(
-        engine,
-        batchContexts = bitwiseBatchContexts,
-        coefficientStorage =
-          BatchedCoefficientStorage.BitwiseReplicatedBanks,
-        serializeInverseComponents = true,
-        useSynchronousExternalProductMemory = true,
-        decoupledBootstrappingKey = true
-      ),
-      domainDimension
-    )
-    BufferedBlindRotateConfig(blindRotate, keyLoadLanes)
-  }
-}
-
 object EmitPaperExternalProduct extends App {
   require(args.length == 1, "usage: EmitPaperExternalProduct OUTPUT_DIR")
 
@@ -485,19 +384,23 @@ object EmitPaperBitwiseBatchedBlindRotateSampleExtract extends App {
 
 object EmitPaperBufferedBitwiseBatchedBlindRotateSampleExtract extends App {
   require(
-    args.length == 3 || args.length == 4,
+    args.length >= 3 && args.length <= 5,
     "usage: EmitPaperBufferedBitwiseBatchedBlindRotateSampleExtract " +
-      "OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V [DOMAIN_DIMENSION]"
+      "OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V " +
+      "[DOMAIN_DIMENSION [ARITHMETIC_PROFILE]]"
   )
 
   val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
   val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
   val inversePath = Path.of(args(2)).toAbsolutePath.normalize
   val domainDimension =
-    if (args.length == 4) args(3).toInt
+    if (args.length >= 4) args(3).toInt
     else PaperSetII.blindRotateDomainDimension
+  val rtlProfile =
+    if (args.length == 5) FptRtlProfile.named(args(4))
+    else PaperSetII
   require(domainDimension >= 1, "DOMAIN_DIMENSION must be positive")
-  val config = PaperSetII.bufferedBlindRotate(
+  val config = rtlProfile.bufferedBlindRotate(
     forwardPath.toString,
     inversePath.toString,
     domainDimension
@@ -512,24 +415,31 @@ object EmitPaperBufferedBitwiseBatchedBlindRotateSampleExtract extends App {
     "BufferedBatchedBlindRotateSampleExtractEngine.sv"
   )
   SynthesisEmitter.removeInlineFileList(systemVerilog)
-  SynthesisEmitter.addBlockRamStyle(systemVerilog, "memory_32x13824")
+  SynthesisEmitter.addBlockRamStyle(
+    systemVerilog,
+    config.keyMemoryModuleName
+  )
 }
 
 object EmitPaperBufferedBlindRotateAccelerator extends App {
   require(
-    args.length == 3 || args.length == 4,
+    args.length >= 3 && args.length <= 5,
     "usage: EmitPaperBufferedBlindRotateAccelerator " +
-      "OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V [DOMAIN_DIMENSION]"
+      "OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V " +
+      "[DOMAIN_DIMENSION [ARITHMETIC_PROFILE]]"
   )
 
   val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
   val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
   val inversePath = Path.of(args(2)).toAbsolutePath.normalize
   val domainDimension =
-    if (args.length == 4) args(3).toInt
+    if (args.length >= 4) args(3).toInt
     else PaperSetII.blindRotateDomainDimension
+  val rtlProfile =
+    if (args.length == 5) FptRtlProfile.named(args(4))
+    else PaperSetII
   require(domainDimension >= 1, "DOMAIN_DIMENSION must be positive")
-  val config = PaperSetII.bufferedBlindRotate(
+  val config = rtlProfile.bufferedBlindRotate(
     forwardPath.toString,
     inversePath.toString,
     domainDimension
@@ -544,7 +454,10 @@ object EmitPaperBufferedBlindRotateAccelerator extends App {
     "BufferedBlindRotateAccelerator.sv"
   )
   SynthesisEmitter.removeInlineFileList(systemVerilog)
-  SynthesisEmitter.addBlockRamStyle(systemVerilog, "memory_32x13824")
+  SynthesisEmitter.addBlockRamStyle(
+    systemVerilog,
+    config.keyMemoryModuleName
+  )
 }
 
 object EmitPaperAccumulatorBanks extends App {

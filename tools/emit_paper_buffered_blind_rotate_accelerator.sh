@@ -2,10 +2,13 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=tools/fpt_arithmetic_profile_contract.sh
+source "$repo_root/tools/fpt_arithmetic_profile_contract.sh"
 forward=${1:-$repo_root/build/sgen-fpt/forward.v}
 inverse=${2:-$repo_root/build/sgen-fpt/inverse.v}
 output_dir=${3:-$repo_root/build/chisel-paper-buffered-blind-rotate-accelerator}
 domain_dimension=${FPT_BLIND_ROTATE_DIMENSION:-630}
+arithmetic_profile=${FPT_ARITHMETIC_PROFILE:-paper-set-ii}
 
 forward=$(realpath "$forward")
 inverse=$(realpath "$inverse")
@@ -26,11 +29,13 @@ if ! rg -q '^module FptSGenInverse\(' "$inverse"; then
     echo "FptSGenInverse not found in $inverse" >&2
     exit 1
 fi
+fpt_check_sgen_arithmetic_profile \
+    "$arithmetic_profile" "$forward" "$inverse"
 
 rm -f "$output_file"
 (cd "$repo_root/chisel" &&
     sbt -J-Xmx"$heap_size" \
-        "runMain fpt.EmitPaperBufferedBlindRotateAccelerator $output_dir $forward $inverse $domain_dimension")
+        "runMain fpt.EmitPaperBufferedBlindRotateAccelerator $output_dir $forward $inverse $domain_dimension $arithmetic_profile")
 
 if [[ ! -s $output_file ]]; then
     echo "Chisel did not emit $output_file" >&2
@@ -38,7 +43,7 @@ if [[ ! -s $output_file ]]; then
 fi
 for module in BufferedBlindRotateAccelerator \
     BufferedBatchedBlindRotateSampleExtractEngine \
-    BootstrappingKeyPingPongBuffer memory_32x13824 \
+    BootstrappingKeyPingPongBuffer "$FPT_PROFILE_KEY_MEMORY_MODULE" \
     BatchedBlindRotateSampleExtractEngine SampleExtractIndexZero; do
     if ! rg -q "^module $module\\(" "$output_file"; then
         echo "Emitted source is missing $module" >&2

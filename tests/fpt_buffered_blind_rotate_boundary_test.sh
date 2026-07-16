@@ -74,6 +74,24 @@ awk -F '\t' '
     END { exit !(ports && key && cache) }
 ' "$metrics"
 
+cp "$source_file" "$work_dir/paper.sv"
+sed -i \
+    -e 's/\[13823:0\] Memory\[0:31\]/[14847:0] Memory[0:31]/' \
+    -e 's/input  \[26:0\] io_keyLoad_0_real/input  [28:0] io_keyLoad_0_real/' \
+    "$source_file"
+hardware_metrics=$work_dir/hardware-metrics.tsv
+"$repo_root/tools/check_fpt_buffered_blind_rotate_boundary.sh" \
+    "$source_file" "$hardware_metrics" tfhepp-hardware >/dev/null
+awk -F '\t' '
+    $1 == "arithmetic_profile" && $2 == "tfhepp-hardware" { profile = 1 }
+    $1 == "top_port_bits" && $2 == 1076 { ports = 1 }
+    $1 == "key_data_bits" && $2 == 928 { key = 1 }
+    $1 == "cache_logical_bits" && $2 == 475136 { cache = 1 }
+    END { exit !(profile && ports && key && cache) }
+' "$hardware_metrics"
+
+cp "$work_dir/paper.sv" "$source_file"
+
 sed -i 's/input  \[26:0\] io_keyLoad_0_real/input  [25:0] io_keyLoad_0_real/' \
     "$source_file"
 if "$repo_root/tools/check_fpt_buffered_blind_rotate_boundary.sh" \

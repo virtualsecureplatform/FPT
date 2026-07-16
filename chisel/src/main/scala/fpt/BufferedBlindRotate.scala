@@ -19,6 +19,12 @@ final case class BufferedBlindRotateConfig(
       blindRotate.domainDimension,
       keyLoadLanes
     )
+  val keyMemoryDepth: Int = 2 * keyBuffer.wordsPerCoefficient
+  val keyMemoryWordBits: Int =
+    keyBuffer.complexValuesPerRead *
+      2 * keyBuffer.externalProduct.bootstrappingKey.width
+  val keyMemoryModuleName: String =
+    s"memory_${keyMemoryDepth}x${keyMemoryWordBits}"
 }
 
 /** Sample-extracted Blind Rotate with the paper's two-coefficient key cache.

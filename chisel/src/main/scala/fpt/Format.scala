@@ -23,4 +23,7 @@ object ArithmeticProfile {
   val TfheppGuarded: ArithmeticProfile = ArithmeticProfile(
     FixedFormat(8, 24), FixedFormat(18, 20), FixedFormat(27, 14)
   )
+  val TfheppHardware: ArithmeticProfile = ArithmeticProfile(
+    FixedFormat(8, 21), FixedFormat(18, 28), FixedFormat(27, 24)
+  )
 }
