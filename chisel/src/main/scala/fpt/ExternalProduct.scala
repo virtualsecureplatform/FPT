@@ -8,6 +8,7 @@ sealed trait ExternalProductMultiplier
 object ExternalProductMultiplier {
   case object Schoolbook extends ExternalProductMultiplier
   case object ExactGaussDsp extends ExternalProductMultiplier
+  case object ExactGaussTwoLimbDsp extends ExternalProductMultiplier
 }
 
 final case class ExternalProductConfig(
@@ -44,6 +45,10 @@ final case class ExternalProductConfig(
     require(spectrum.width > 27 && spectrum.width <= 35)
     require(bootstrappingKey.width >= 2 && bootstrappingKey.width <= 27)
   }
+  if (multiplier == ExternalProductMultiplier.ExactGaussTwoLimbDsp) {
+    require(spectrum.width >= 36 && spectrum.width <= 51)
+    require(bootstrappingKey.width >= 28 && bootstrappingKey.width <= 33)
+  }
 }
 
 private[fpt] object ExternalProductMultiply {
@@ -61,6 +66,16 @@ private[fpt] object ExternalProductMultiply {
     case ExternalProductMultiplier.ExactGaussDsp =>
       val multiply = Module(
         new ExactGaussComplexMultiply(
+          config.spectrum.width,
+          config.bootstrappingKey.width
+        )
+      )
+      multiply.io.a := a
+      multiply.io.b := b
+      (multiply.io.productReal, multiply.io.productImag)
+    case ExternalProductMultiplier.ExactGaussTwoLimbDsp =>
+      val multiply = Module(
+        new ExactGaussTwoLimbComplexMultiply(
           config.spectrum.width,
           config.bootstrappingKey.width
         )

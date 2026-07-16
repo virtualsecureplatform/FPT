@@ -155,4 +155,68 @@ final class ArithmeticSpec
       }
     }
   }
+
+  it should "keep the wider two-limb Gauss product exact" in {
+    val aWidth = 46
+    val bWidth = 29
+    val aLimit = BigInt(1) << (aWidth - 1)
+    val bLimit = BigInt(1) << (bWidth - 1)
+    val aBoundary = Seq(
+      -aLimit,
+      -aLimit + 1,
+      BigInt(-1),
+      BigInt(0),
+      BigInt(1),
+      aLimit - 2,
+      aLimit - 1
+    )
+    val bBoundary = Seq(
+      -bLimit,
+      -bLimit + 1,
+      BigInt(-1),
+      BigInt(0),
+      BigInt(1),
+      bLimit - 2,
+      bLimit - 1
+    )
+    val boundaryVectors = for {
+      aReal <- aBoundary
+      aImag <- aBoundary
+      bReal <- bBoundary
+      bImag <- bBoundary
+    } yield (aReal, aImag, bReal, bImag)
+
+    val random = new Random(0x46505457494445L)
+    def randomSigned(width: Int): BigInt = {
+      val bits = BigInt(width, random)
+      if (bits.testBit(width - 1)) bits - (BigInt(1) << width) else bits
+    }
+    val randomVectors = Seq.fill(5000)(
+      (
+        randomSigned(aWidth),
+        randomSigned(aWidth),
+        randomSigned(bWidth),
+        randomSigned(bWidth)
+      )
+    )
+
+    test(new ExactGaussTwoLimbComplexMultiply(aWidth, bWidth))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      for (((aReal, aImag, bReal, bImag), index) <-
+          (boundaryVectors ++ randomVectors).zipWithIndex) {
+        dut.io.a.real.poke(aReal.S)
+        dut.io.a.imag.poke(aImag.S)
+        dut.io.b.real.poke(bReal.S)
+        dut.io.b.imag.poke(bImag.S)
+        val expectedReal = aReal * bReal - aImag * bImag
+        val expectedImag = aReal * bImag + aImag * bReal
+        withClue(s"two-limb Gauss vector=$index real") {
+          dut.io.productReal.expect(expectedReal.S)
+        }
+        withClue(s"two-limb Gauss vector=$index imag") {
+          dut.io.productImag.expect(expectedImag.S)
+        }
+      }
+    }
+  }
 }

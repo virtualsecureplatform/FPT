@@ -216,6 +216,168 @@ private final class ExactGaussComplexMultiplyBlackBox(
   )
 }
 
+/** Exact Gauss complex multiplier for the wider TFHEpp hardware profile.
+  *
+  * Each real product decomposes its operands into unsigned low limbs and
+  * signed high limbs. The 26-bit and 17-bit limb radices leave one leading
+  * zero bit for the unsigned limbs, so all four partial products are signed
+  * 27-by-18-bit DSP48E2 multiplies. Widening the Gauss pre-additions avoids
+  * the overflow-correction network needed by the paper-width specialization.
+  */
+final class ExactGaussTwoLimbComplexMultiply(
+    val aWidth: Int,
+    val bWidth: Int
+) extends Module {
+  require(aWidth >= 36 && aWidth <= 51)
+  require(bWidth >= 28 && bWidth <= 33)
+
+  val io = IO(new Bundle {
+    val a = Input(new ComplexSInt(aWidth))
+    val b = Input(new ComplexSInt(bWidth))
+    val productReal = Output(SInt((aWidth + bWidth + 1).W))
+    val productImag = Output(SInt((aWidth + bWidth + 1).W))
+  })
+
+  private val multiplier = Module(
+    new ExactGaussTwoLimbComplexMultiplyBlackBox(aWidth, bWidth)
+  )
+  multiplier.io.aReal := io.a.real
+  multiplier.io.aImag := io.a.imag
+  multiplier.io.bReal := io.b.real
+  multiplier.io.bImag := io.b.imag
+  io.productReal := multiplier.io.productReal
+  io.productImag := multiplier.io.productImag
+}
+
+private final class ExactGaussTwoLimbComplexMultiplyBlackBox(
+    aWidth: Int,
+    bWidth: Int
+) extends BlackBox(
+      Map("A_WIDTH" -> IntParam(aWidth), "B_WIDTH" -> IntParam(bWidth))
+    )
+    with HasBlackBoxInline {
+  override def desiredName: String = "FptExactGaussTwoLimbComplexMultiply"
+
+  val io = IO(new Bundle {
+    val aReal = Input(SInt(aWidth.W))
+    val aImag = Input(SInt(aWidth.W))
+    val bReal = Input(SInt(bWidth.W))
+    val bImag = Input(SInt(bWidth.W))
+    val productReal = Output(SInt((aWidth + bWidth + 1).W))
+    val productImag = Output(SInt((aWidth + bWidth + 1).W))
+  })
+
+  setInline(
+    "FptExactGaussTwoLimbComplexMultiply.sv",
+    """module FptSignedTwoLimbMultiply #(
+      |  parameter integer A_WIDTH = 46,
+      |  parameter integer B_WIDTH = 29
+      |) (
+      |  input  wire signed [A_WIDTH-1:0] a,
+      |  input  wire signed [B_WIDTH-1:0] b,
+      |  output wire signed [A_WIDTH+B_WIDTH-1:0] product
+      |);
+      |  localparam integer A_LOW_WIDTH = 26;
+      |  localparam integer B_LOW_WIDTH = 17;
+      |  localparam integer A_DSP_WIDTH = 27;
+      |  localparam integer B_DSP_WIDTH = 18;
+      |  localparam integer PARTIAL_WIDTH = A_DSP_WIDTH + B_DSP_WIDTH;
+      |  localparam integer PRODUCT_WIDTH = A_WIDTH + B_WIDTH;
+      |
+      |  wire signed [A_DSP_WIDTH-1:0] a_low =
+      |    $signed({1'b0, a[A_LOW_WIDTH-1:0]});
+      |  wire signed [A_DSP_WIDTH-1:0] a_high =
+      |    $signed({{(A_DSP_WIDTH-(A_WIDTH-A_LOW_WIDTH)){
+      |      a[A_WIDTH-1]}}, a[A_WIDTH-1:A_LOW_WIDTH]});
+      |  wire signed [B_DSP_WIDTH-1:0] b_low =
+      |    $signed({1'b0, b[B_LOW_WIDTH-1:0]});
+      |  wire signed [B_DSP_WIDTH-1:0] b_high =
+      |    $signed({{(B_DSP_WIDTH-(B_WIDTH-B_LOW_WIDTH)){
+      |      b[B_WIDTH-1]}}, b[B_WIDTH-1:B_LOW_WIDTH]});
+      |
+      |  (* use_dsp = "yes" *)
+      |  wire signed [PARTIAL_WIDTH-1:0] partial_low_low = a_low * b_low;
+      |  (* use_dsp = "yes" *)
+      |  wire signed [PARTIAL_WIDTH-1:0] partial_low_high = a_low * b_high;
+      |  (* use_dsp = "yes" *)
+      |  wire signed [PARTIAL_WIDTH-1:0] partial_high_low = a_high * b_low;
+      |  (* use_dsp = "yes" *)
+      |  wire signed [PARTIAL_WIDTH-1:0] partial_high_high = a_high * b_high;
+      |
+      |  wire signed [PRODUCT_WIDTH-1:0] extended_low_low =
+      |    {{(PRODUCT_WIDTH-PARTIAL_WIDTH){partial_low_low[
+      |      PARTIAL_WIDTH-1]}}, partial_low_low};
+      |  wire signed [PRODUCT_WIDTH-1:0] extended_low_high =
+      |    {{(PRODUCT_WIDTH-PARTIAL_WIDTH){partial_low_high[
+      |      PARTIAL_WIDTH-1]}}, partial_low_high};
+      |  wire signed [PRODUCT_WIDTH-1:0] extended_high_low =
+      |    {{(PRODUCT_WIDTH-PARTIAL_WIDTH){partial_high_low[
+      |      PARTIAL_WIDTH-1]}}, partial_high_low};
+      |  wire signed [PRODUCT_WIDTH-1:0] extended_high_high =
+      |    {{(PRODUCT_WIDTH-PARTIAL_WIDTH){partial_high_high[
+      |      PARTIAL_WIDTH-1]}}, partial_high_high};
+      |
+      |  assign product = extended_low_low +
+      |    (extended_low_high <<< B_LOW_WIDTH) +
+      |    (extended_high_low <<< A_LOW_WIDTH) +
+      |    (extended_high_high <<< (A_LOW_WIDTH+B_LOW_WIDTH));
+      |endmodule
+      |
+      |module FptExactGaussTwoLimbComplexMultiply #(
+      |  parameter integer A_WIDTH = 46,
+      |  parameter integer B_WIDTH = 29
+      |) (
+      |  input  wire signed [A_WIDTH-1:0] aReal,
+      |  input  wire signed [A_WIDTH-1:0] aImag,
+      |  input  wire signed [B_WIDTH-1:0] bReal,
+      |  input  wire signed [B_WIDTH-1:0] bImag,
+      |  output wire signed [A_WIDTH+B_WIDTH:0] productReal,
+      |  output wire signed [A_WIDTH+B_WIDTH:0] productImag
+      |);
+      |  localparam integer PRODUCT_WIDTH = A_WIDTH + B_WIDTH;
+      |  localparam integer EXT_WIDTH = PRODUCT_WIDTH + 2;
+      |
+      |  wire signed [A_WIDTH:0] sum_a =
+      |    $signed({aReal[A_WIDTH-1], aReal}) +
+      |    $signed({aImag[A_WIDTH-1], aImag});
+      |  wire signed [B_WIDTH:0] sum_b =
+      |    $signed({bReal[B_WIDTH-1], bReal}) +
+      |    $signed({bImag[B_WIDTH-1], bImag});
+      |  wire signed [PRODUCT_WIDTH-1:0] product_ac;
+      |  wire signed [PRODUCT_WIDTH-1:0] product_bd;
+      |  wire signed [EXT_WIDTH-1:0] product_sum;
+      |
+      |  FptSignedTwoLimbMultiply #(
+      |    .A_WIDTH(A_WIDTH), .B_WIDTH(B_WIDTH)
+      |  ) multiply_ac (
+      |    .a(aReal), .b(bReal), .product(product_ac)
+      |  );
+      |  FptSignedTwoLimbMultiply #(
+      |    .A_WIDTH(A_WIDTH), .B_WIDTH(B_WIDTH)
+      |  ) multiply_bd (
+      |    .a(aImag), .b(bImag), .product(product_bd)
+      |  );
+      |  FptSignedTwoLimbMultiply #(
+      |    .A_WIDTH(A_WIDTH+1), .B_WIDTH(B_WIDTH+1)
+      |  ) multiply_sum (
+      |    .a(sum_a), .b(sum_b), .product(product_sum)
+      |  );
+      |
+      |  wire signed [EXT_WIDTH-1:0] ac_extended =
+      |    {{2{product_ac[PRODUCT_WIDTH-1]}}, product_ac};
+      |  wire signed [EXT_WIDTH-1:0] bd_extended =
+      |    {{2{product_bd[PRODUCT_WIDTH-1]}}, product_bd};
+      |  wire signed [EXT_WIDTH-1:0] full_real = ac_extended - bd_extended;
+      |  wire signed [EXT_WIDTH-1:0] full_imag =
+      |    product_sum - ac_extended - bd_extended;
+      |
+      |  assign productReal = full_real[PRODUCT_WIDTH:0];
+      |  assign productImag = full_imag[PRODUCT_WIDTH:0];
+      |endmodule
+      |""".stripMargin
+  )
+}
+
 /** Equation (6) from the FPT paper, with wrap and product truncation matching
   * the C++ reference. This is combinational so a caller can place registers at
   * architecture-specific boundaries.
