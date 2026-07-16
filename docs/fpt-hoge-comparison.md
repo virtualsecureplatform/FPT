@@ -502,5 +502,8 @@ two-coefficient cache and its physical 864-bit load port. The comparison still
 includes intentionally different parameter sets, batch sizes, and key-stream
 organizations, so it is an architectural upper-level view rather than a
 controlled arithmetic microbenchmark. The transform-only pairs remain the
-controlled evidence for the fixed-point FTT datapath itself. Vivado vectorless
-power is an estimate, not board power.
+controlled evidence for the fixed-point FTT datapath itself. Exact Set II is
+also not decrypt-reliable under TFHEpp's default decomposition; the
+deterministic format results and synthesis interpretation are recorded in
+[`u280-handoff.md`](u280-handoff.md#numerical-scope-before-synthesis). Vivado
+vectorless power is an estimate, not board power.

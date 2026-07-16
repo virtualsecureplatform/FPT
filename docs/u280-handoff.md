@@ -21,6 +21,43 @@ is 10,080 scheduled CMUX cycles per Blind Rotate. The manifest records the
 command count and first-acceptance-to-last-completion span for each batch
 shape; these are schedule-derived values, not post-route timing measurements.
 
+## Numerical scope before synthesis
+
+There is no numerical prerequisite blocking synthesis of the prepared U280
+bundle. Its FPT sources intentionally instantiate the paper Set II widths:
+BK Q8.19, forward FTT Q18.12, and inverse FTT Q27.3. Routing therefore measures
+the area, timing, congestion, and power of that architecture.
+
+Those widths are not yet a decrypt-reliable configuration for TFHEpp's
+different default `lvl01param` decomposition. The deterministic reference
+sweep uses one key, one noisy spectral bootstrapping key, and the same 16 TLWE
+inputs for every profile:
+
+| Profile | BK | FFT | IFFT | Correct decryptions | Maximum phase error |
+| --- | --- | --- | --- | ---: | ---: |
+| High-precision control | Q8.24 | Q18.28 | Q27.24 | 16/16 | 0.00449449 |
+| Guarded TFHEpp | Q8.24 | Q18.20 | Q27.14 | 16/16 | 0.0665894 |
+| Paper BK only | Q8.19 | Q18.20 | Q27.14 | 16/16 | 0.0634155 |
+| Paper FFT only | Q8.24 | Q18.12 | Q27.14 | 10/16 | 0.491394 |
+| Paper IFFT only | Q8.24 | Q18.20 | Q27.3 | 8/16 | 0.5 |
+| Midpoint | Q8.21 | Q18.16 | Q27.9 | 9/16 | 0.476563 |
+| Paper Set II | Q8.19 | Q18.12 | Q27.3 | 9/16 | 0.5 |
+
+All transform, pointwise, and inverse overflow counters were zero. The result
+isolates fractional precision, especially the FFT and IFFT widths, rather than
+range overflow. Reproduce it with:
+
+```sh
+cmake -S . -B build-tfhepp -DFPT_BUILD_TFHEPP_TESTS=ON
+cmake --build build-tfhepp -j --target fpt_tfhepp_profile_sweep
+./build-tfhepp/fpt_tfhepp_profile_sweep 16
+```
+
+Sixteen deterministic samples are a format-regression diagnostic, not a
+cryptographic failure-rate estimate. Until the parameters or formats are
+retuned, report the U280 result as a paper-width architectural implementation,
+not as an end-to-end validated TFHEpp parameter set.
+
 ## Prerequisites
 
 Use the `fpt` branch of

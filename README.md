@@ -39,9 +39,15 @@ ctest --test-dir build --output-on-failure
 
 ```sh
 cmake -S . -B build-tfhepp -DFPT_BUILD_TFHEPP_TESTS=ON
-cmake --build build-tfhepp -j --target fpt_tfhepp_blind_rotate_test
+cmake --build build-tfhepp -j --target \
+  fpt_tfhepp_blind_rotate_test fpt_tfhepp_profile_sweep
 ctest --test-dir build-tfhepp -R fpt_tfhepp --output-on-failure
+./build-tfhepp/fpt_tfhepp_profile_sweep 16
 ```
+
+The profile sweep is a deterministic, multi-minute diagnostic rather than a
+default CTest. It reuses one secret key, spectral bootstrapping key, and input
+sequence across every arithmetic profile.
 
 ## Chisel RTL
 
@@ -479,6 +485,8 @@ U280 bundle remains the final comparison. The raw counts and normalization
 are in
 [the FPT/HOGE comparison guide](docs/fpt-hoge-comparison.md).
 
+## TFHEpp fixed-point Blind Rotate
+
 The integration currently supports native 32-bit Torus parameters.  Its
 bootstrapping key is normalized to real Torus units before being quantized to
 the paper's BK format; this is why it is a distinct key type rather than a
@@ -498,7 +506,12 @@ silently restore precision that the RTL does not have.
 Because TFHEpp's decomposition parameters differ from the paper's, the adapter
 currently uses a guarded profile (BK Q8.24, FFT Q18.20, IFFT Q27.14).  The
 paper's narrower formats remain available through `ArithmeticProfile` and are
-covered by standalone arithmetic tests; directly applying Set II to TFHEpp's
-default parameters was empirically unreliable even without overflow.  Format
-narrowing is therefore an explicit evaluation step rather than an assumed
-equivalence.
+covered by standalone arithmetic tests. In the deterministic 16-input sweep,
+the high-precision control, guarded profile, and guarded profile with only the
+BK narrowed to Q8.19 each decrypted 16/16. Narrowing only the FFT to Q18.12
+gave 10/16, narrowing only the IFFT to Q27.3 gave 8/16, and exact Set II gave
+9/16; every overflow counter remained zero. This small diagnostic is not a
+failure-probability or security study, but it establishes that directly
+applying Set II to TFHEpp's default parameters is not a valid cryptographic
+configuration. Format or TFHE parameters must be retuned before making that
+claim.
