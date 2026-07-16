@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -31,6 +32,11 @@ int main(int argc, char **argv)
     std::uint64_t output_last_count = 0;
     std::uint64_t compute_done_edge =
         std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t last_key_transaction_cycle =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t minimum_key_transaction_gap =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t maximum_key_transaction_gap = 0;
 
     constexpr std::uint64_t contexts = 16;
     constexpr std::uint64_t dimension = 630;
@@ -52,7 +58,19 @@ int main(int argc, char **argv)
         if (!dut.reset) {
             if (dut.io_inputValid && dut.io_inputReady)
                 ++input_coefficients;
-            if (dut.io_keyValid && dut.io_keyFirst) ++key_transactions;
+            if (dut.io_keyValid && dut.io_keyFirst) {
+                if (last_key_transaction_cycle !=
+                    std::numeric_limits<std::uint64_t>::max()) {
+                    const std::uint64_t gap =
+                        cycles - last_key_transaction_cycle;
+                    minimum_key_transaction_gap =
+                        std::min(minimum_key_transaction_gap, gap);
+                    maximum_key_transaction_gap =
+                        std::max(maximum_key_transaction_gap, gap);
+                }
+                last_key_transaction_cycle = cycles;
+                ++key_transactions;
+            }
             if (dut.io_computeDone &&
                 compute_done_edge ==
                     std::numeric_limits<std::uint64_t>::max())
@@ -174,5 +192,9 @@ int main(int argc, char **argv)
               << drain_tail_cycles << '\n'
               << "fpt_input_coefficients=" << input_coefficients << '\n'
               << "fpt_key_transactions=" << key_transactions << '\n'
+              << "fpt_minimum_key_transaction_gap="
+              << minimum_key_transaction_gap << '\n'
+              << "fpt_maximum_key_transaction_gap="
+              << maximum_key_transaction_gap << '\n'
               << "fpt_output_beats=" << output_beats << '\n';
 }
