@@ -96,11 +96,24 @@ bram=$(jq -r '
     [(.design.num_cells_by_type // {} | to_entries[])
       | select(.key | test("^RAMB")) | .value] | add // 0
 ' "$stat_file")
+distributed_ram=$(jq -r '
+    [(.design.num_cells_by_type // {} | to_entries[])
+      | select(.key | test("^RAM(16|32|64|128|256|512)"))
+      | .value] | add // 0
+' "$stat_file")
+carry=$(jq -r '
+    [(.design.num_cells_by_type // {} | to_entries[])
+      | select(.key | test("^CARRY")) | .value] | add // 0
+' "$stat_file")
+muxf=$(jq -r '
+    [(.design.num_cells_by_type // {} | to_entries[])
+      | select(.key | test("^MUXF")) | .value] | add // 0
+' "$stat_file")
 elapsed=$(sed -n 's/^elapsed_seconds=//p' "$timing_file")
 max_rss=$(sed -n 's/^max_rss_kib=//p' "$timing_file")
 {
-    printf 'logic-cells\tluts\tffs\tbram\tdsp\telapsed-s\tmax-rss-kib\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$logic_cells" "$luts" "$ffs" "$bram" "$expected_dsps" \
-        "$elapsed" "$max_rss"
+    printf 'logic-cells\tluts\tffs\tbram\tdist-ram\tdsp\tcarry\tmuxf\telapsed-s\tmax-rss-kib\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$logic_cells" "$luts" "$ffs" "$bram" "$distributed_ram" \
+        "$expected_dsps" "$carry" "$muxf" "$elapsed" "$max_rss"
 } | tee "$build_root/summary.tsv"

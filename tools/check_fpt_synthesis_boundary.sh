@@ -46,6 +46,7 @@ fi
 for pattern in \
     '^module BatchedBlindRotateSampleExtractEngine\(' \
     '^module mem_128x128\(' \
+    '^module accumulatorMemories_4x15360\(' \
     '^module exponentMemory_10080x11\(' \
     '^module maskMemory_16x2048\('; do
     if ! rg -q "$pattern" "$source_file"; then
@@ -62,7 +63,16 @@ if [[ $accumulator_memories != 128 ]]; then
     echo "Expected 128 replicated accumulator memories, found $accumulator_memories" >&2
     exit 1
 fi
+external_product_memories=$(awk '
+    /^  accumulatorMemories_4x15360 / { count++ }
+    END { print count + 0 }
+' "$source_file")
+if [[ $external_product_memories != 2 ]]; then
+    echo "Expected 2 External Product memories, found $external_product_memories" >&2
+    exit 1
+fi
 if ! rg -q 'reg \[127:0\] Memory\[0:127\];' "$source_file" || \
+   ! rg -q 'reg \[15359:0\] Memory\[0:3\];' "$source_file" || \
    ! rg -q 'reg \[10:0\] Memory\[0:10079\];' "$source_file" || \
    ! rg -q 'reg \[2047:0\] Memory\[0:15\];' "$source_file"; then
     echo "An expected Chisel memory shape changed in $source_file" >&2
@@ -267,6 +277,9 @@ done
     printf 'formal_check_cells\t0\n'
     printf 'accumulator_memories_128x128\t%s\n' "$accumulator_memories"
     printf 'accumulator_memory_bits\t2097152\n'
+    printf 'external_product_memories_4x15360\t%s\n' \
+        "$external_product_memories"
+    printf 'external_product_memory_bits\t122880\n'
     printf 'exponent_memory_bits\t110880\n'
     printf 'sample_extract_memory_bits\t32768\n'
     printf 'hierarchy_port_bits\t%s\n' "$hierarchy_port_bits"

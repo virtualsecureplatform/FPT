@@ -147,6 +147,7 @@ fi
 fpt_yosys_boundary_status=unavailable
 fpt_yosys_version=unavailable
 fpt_yosys_accumulator_memories=unmeasured
+fpt_yosys_external_product_memories=unmeasured
 fpt_yosys_hierarchy_port_bits=unmeasured
 fpt_yosys_hierarchy_memory_bits=unmeasured
 fpt_yosys_hierarchy_cells=unmeasured
@@ -166,6 +167,9 @@ elif command -v yosys >/dev/null; then
         '$1 == "yosys_version" { print $2 }' "$fpt_yosys_metrics")
     fpt_yosys_accumulator_memories=$(awk -F '\t' \
         '$1 == "accumulator_memories_128x128" { print $2 }' \
+        "$fpt_yosys_metrics")
+    fpt_yosys_external_product_memories=$(awk -F '\t' \
+        '$1 == "external_product_memories_4x15360" { print $2 }' \
         "$fpt_yosys_metrics")
     fpt_yosys_hierarchy_port_bits=$(awk -F '\t' \
         '$1 == "hierarchy_port_bits" { print $2 }' "$fpt_yosys_metrics")
@@ -188,6 +192,7 @@ elif command -v yosys >/dev/null; then
     if [[ $fpt_yosys_boundary_status != passed || \
           $fpt_yosys_ultrascale_mapping_status != passed || \
           $fpt_yosys_accumulator_memories != 128 || \
+          $fpt_yosys_external_product_memories != 2 || \
           $fpt_yosys_ultrascale_accumulator_ramb36e2 != 256 || \
           $fpt_yosys_ultrascale_exponent_ramb18e2 != 9 || \
           $fpt_yosys_ultrascale_sample_extract_distributed_ram != 150 || \
@@ -360,6 +365,8 @@ composed_flow_sha=$(hash_lines \
     printf 'fpt_yosys_version\t%s\n' "$fpt_yosys_version"
     printf 'fpt_yosys_accumulator_memories_128x128\t%s\n' \
         "$fpt_yosys_accumulator_memories"
+    printf 'fpt_yosys_external_product_memories_4x15360\t%s\n' \
+        "$fpt_yosys_external_product_memories"
     printf 'fpt_yosys_hierarchy_port_bits\t%s\n' \
         "$fpt_yosys_hierarchy_port_bits"
     printf 'fpt_yosys_hierarchy_memory_bits\t%s\n' \
