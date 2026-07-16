@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+forward=${1:-$repo_root/build/sgen-fpt/forward.v}
+inverse=${2:-$repo_root/build/sgen-fpt/inverse.v}
+output_dir=${3:-$repo_root/build/chisel-paper-buffered-blind-rotate-accelerator}
+domain_dimension=${FPT_BLIND_ROTATE_DIMENSION:-630}
+
+forward=$(realpath "$forward")
+inverse=$(realpath "$inverse")
+output_dir=$(realpath -m "$output_dir")
+output_file=$output_dir/BufferedBlindRotateAccelerator.sv
+heap_size=${FPT_CHISEL_HEAP:-12G}
+top=BufferedBlindRotateAccelerator
+
+if [[ ! $domain_dimension =~ ^[1-9][0-9]*$ ]]; then
+    echo "FPT_BLIND_ROTATE_DIMENSION must be a positive integer" >&2
+    exit 1
+fi
+if ! rg -q '^module FptSGenForward\(' "$forward"; then
+    echo "FptSGenForward not found in $forward" >&2
+    exit 1
+fi
+if ! rg -q '^module FptSGenInverse\(' "$inverse"; then
+    echo "FptSGenInverse not found in $inverse" >&2
+    exit 1
+fi
+
+rm -f "$output_file"
+(cd "$repo_root/chisel" &&
+    sbt -J-Xmx"$heap_size" \
+        "runMain fpt.EmitPaperBufferedBlindRotateAccelerator $output_dir $forward $inverse $domain_dimension")
+
+if [[ ! -s $output_file ]]; then
+    echo "Chisel did not emit $output_file" >&2
+    exit 1
+fi
+for module in BufferedBlindRotateAccelerator \
+    BufferedBatchedBlindRotateSampleExtractEngine \
+    BootstrappingKeyPingPongBuffer memory_32x13824 \
+    BatchedBlindRotateSampleExtractEngine SampleExtractIndexZero; do
+    if ! rg -q "^module $module\\(" "$output_file"; then
+        echo "Emitted source is missing $module" >&2
+        exit 1
+    fi
+done
+if [[ $(rg -c 'ram_style = "block"' "$output_file") != 1 ]]; then
+    echo "Emitted source does not tag exactly one key memory as block RAM" >&2
+    exit 1
+fi
+if rg -q 'firrtl_black_box_resource_files[.]f' "$output_file"; then
+    echo "Emitted source retains CIRCT's non-Verilog resource trailer" >&2
+    exit 1
+fi
+
+top_ports=$(sed -n "/^module $top(/,/^);/p" "$output_file")
+for removed_port in forwardTwist inverseUntwist keyPoint keyBank; do
+    if rg -q "$removed_port" <<<"$top_ports"; then
+        echo "Physical top unexpectedly exposes $removed_port" >&2
+        exit 1
+    fi
+done
+
+if command -v verilator >/dev/null && [[ ${FPT_SKIP_LINT:-0} != 1 ]]; then
+    verilator --lint-only -Wno-fatal \
+        --top-module "$top" \
+        "$output_file" "$forward" "$inverse"
+fi
+
+echo "Emitted physical buffered Blind Rotate in $output_file"

@@ -7,11 +7,18 @@
 
 #include <verilated.h>
 
+#if __has_include("VBufferedBlindRotateAccelerator.h")
+#include "VBufferedBlindRotateAccelerator.h"
+using FptBufferedTop = VBufferedBlindRotateAccelerator;
+#define FPT_NO_KEY_DIAGNOSTICS
+#else
 #include "VBufferedBatchedBlindRotateSampleExtractEngine.h"
+using FptBufferedTop = VBufferedBatchedBlindRotateSampleExtractEngine;
+#endif
 
 namespace {
 
-void clear_inputs(VBufferedBatchedBlindRotateSampleExtractEngine &dut)
+void clear_inputs(FptBufferedTop &dut)
 {
 #include "fpt_buffered_zero_inputs.inc"
 }
@@ -21,7 +28,7 @@ void clear_inputs(VBufferedBatchedBlindRotateSampleExtractEngine &dut)
 int main(int argc, char **argv)
 {
     Verilated::commandArgs(argc, argv);
-    VBufferedBatchedBlindRotateSampleExtractEngine dut;
+    FptBufferedTop dut;
     clear_inputs(dut);
     dut.io_resultReady = 1;
 
@@ -33,7 +40,6 @@ int main(int argc, char **argv)
     constexpr std::uint64_t key_load_beats_per_coefficient = 256;
     constexpr std::uint64_t expected_inputs =
         contexts * coefficients_per_input;
-    constexpr std::uint64_t expected_commands = contexts * dimension;
     constexpr std::uint64_t expected_key_load_beats =
         dimension * key_load_beats_per_coefficient;
     constexpr std::uint64_t expected_outputs =
@@ -42,7 +48,6 @@ int main(int argc, char **argv)
 
     std::uint64_t cycles = 0;
     std::uint64_t input_coefficients = 0;
-    std::uint64_t key_transactions = 0;
     std::uint64_t key_load_starts = 0;
     std::uint64_t key_load_beats = 0;
     std::uint64_t key_load_completions = 0;
@@ -50,11 +55,15 @@ int main(int argc, char **argv)
     std::uint64_t output_last_count = 0;
     std::uint64_t compute_done_edge =
         std::numeric_limits<std::uint64_t>::max();
+#ifndef FPT_NO_KEY_DIAGNOSTICS
+    constexpr std::uint64_t expected_commands = contexts * dimension;
+    std::uint64_t key_transactions = 0;
     std::uint64_t last_key_transaction_cycle =
         std::numeric_limits<std::uint64_t>::max();
     std::uint64_t minimum_key_transaction_gap =
         std::numeric_limits<std::uint64_t>::max();
     std::uint64_t maximum_key_transaction_gap = 0;
+#endif
 
     bool key_load_active = false;
     std::uint64_t next_key_load_index = 0;
@@ -104,6 +113,7 @@ int main(int argc, char **argv)
                         "FPT completed bootstrapping-key loads out of order");
                 ++key_load_completions;
             }
+#ifndef FPT_NO_KEY_DIAGNOSTICS
             if (dut.io_keyValid && dut.io_keyFirst) {
                 const std::uint64_t expected_index =
                     key_transactions / contexts;
@@ -125,6 +135,7 @@ int main(int argc, char **argv)
                 last_key_transaction_cycle = cycles;
                 ++key_transactions;
             }
+#endif
             if (dut.io_computeDone &&
                 compute_done_edge ==
                     std::numeric_limits<std::uint64_t>::max())
@@ -235,6 +246,7 @@ int main(int argc, char **argv)
         key_load_beats != expected_key_load_beats)
         throw std::runtime_error(
             "FPT consumed an unexpected bootstrapping-key load length");
+#ifndef FPT_NO_KEY_DIAGNOSTICS
     if (key_transactions != expected_commands)
         throw std::runtime_error(
             "FPT issued an unexpected bootstrapping-key transaction count");
@@ -248,6 +260,7 @@ int main(int argc, char **argv)
             "FPT key cache added a CMUX issue interruption: " +
             std::to_string(minimum_key_transaction_gap) + ".." +
             std::to_string(maximum_key_transaction_gap));
+#endif
     if (output_beats != expected_outputs || output_last_count != 1)
         throw std::runtime_error("FPT returned an unexpected TLWE batch");
     if (compute_done_edge == std::numeric_limits<std::uint64_t>::max())
@@ -276,10 +289,12 @@ int main(int argc, char **argv)
               << "fpt_input_coefficients=" << input_coefficients << '\n'
               << "fpt_key_load_coefficients=" << key_load_completions << '\n'
               << "fpt_key_load_beats=" << key_load_beats << '\n'
+#ifndef FPT_NO_KEY_DIAGNOSTICS
               << "fpt_key_transactions=" << key_transactions << '\n'
               << "fpt_minimum_key_transaction_gap="
               << minimum_key_transaction_gap << '\n'
               << "fpt_maximum_key_transaction_gap="
               << maximum_key_transaction_gap << '\n'
+#endif
               << "fpt_output_beats=" << output_beats << '\n';
 }

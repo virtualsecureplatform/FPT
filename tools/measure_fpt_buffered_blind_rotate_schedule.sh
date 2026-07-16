@@ -3,13 +3,32 @@ set -euo pipefail
 
 script_path=$(realpath "${BASH_SOURCE[0]}")
 repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
-source_dir=${1:-$repo_root/build/chisel-paper-buffered-blind-rotate-sample-extract}
+accelerator=${FPT_BUFFERED_ACCELERATOR:-0}
+case "$accelerator" in
+    0)
+        default_source_dir=$repo_root/build/chisel-paper-buffered-blind-rotate-sample-extract
+        default_build_dir=$repo_root/build/fpt-buffered-blind-rotate-sim
+        source_name=BufferedBatchedBlindRotateSampleExtractEngine.sv
+        top=BufferedBatchedBlindRotateSampleExtractEngine
+        ;;
+    1)
+        default_source_dir=$repo_root/build/chisel-paper-buffered-blind-rotate-accelerator
+        default_build_dir=$repo_root/build/fpt-buffered-blind-rotate-accelerator-sim
+        source_name=BufferedBlindRotateAccelerator.sv
+        top=BufferedBlindRotateAccelerator
+        ;;
+    *)
+        echo "FPT_BUFFERED_ACCELERATOR must be 0 or 1" >&2
+        exit 1
+        ;;
+esac
+
+source_dir=${1:-$default_source_dir}
 sgen_dir=${2:-$repo_root/build/sgen-fpt}
-build_dir=${3:-$repo_root/build/fpt-buffered-blind-rotate-sim}
-source_file=$source_dir/BufferedBatchedBlindRotateSampleExtractEngine.sv
+build_dir=${3:-$default_build_dir}
+source_file=$source_dir/$source_name
 forward=$sgen_dir/forward.v
 inverse=$sgen_dir/inverse.v
-top=BufferedBatchedBlindRotateSampleExtractEngine
 jobs=${FPT_VERILATOR_JOBS:-2}
 split=${FPT_VERILATOR_SPLIT:-20000}
 
@@ -71,7 +90,7 @@ sed -n \
     's/.*VL_IN[^&]*&\([A-Za-z0-9_]*\).*/    dut.\1 = 0;/p' \
     "$header" > "$zero_include"
 input_ports=$(wc -l < "$zero_include")
-if (( input_ports < 40 )); then
+if (( input_ports < 30 )); then
     echo "Parsed only $input_ports buffered FPT input ports from $header" >&2
     exit 1
 fi
