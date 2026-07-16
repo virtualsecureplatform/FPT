@@ -115,6 +115,17 @@ under output backpressure. It returns all 231 words of seven index-zero TLWEs
 in order; context zero is exact and the maximum wrapped error is the existing
 guarded-format bound of `2^19` Torus units.
 
+`BootstrappingKeyPingPongBuffer` adds the paper-shaped two-coefficient key
+cache. A narrow ordered stream loads 16 complex Q8.19 values per cycle while a
+synchronous wide read supplies all 256 operands consumed by one External
+Product beat. Loading coefficient `i + 1` overlaps all 16 contexts' use of
+coefficient `i`, including chained load descriptors and same-cycle bank
+retirement/reuse. `BufferedBlindRotateAccelerator` is the corresponding
+host-facing top. Because the generated `fptdft` and `fptidft` cores integrate
+their tangent twist and untwist, it removes those unused legacy ports and all
+internal key/transform diagnostics. Only the raw-TLWE load, 864-bit key load,
+run control, and sample-extracted result streams remain.
+
 ## RTL source policy
 
 All handwritten synthesizable FPT RTL is Chisel under `chisel/src/main`.
@@ -123,6 +134,8 @@ checked-in small regression fixtures, and for one Chisel-inline generated
 width-control BlackBox around the DSP-sized signed External Product
 multipliers. Chisel-emitted SystemVerilog and paper-sized SGen output remain
 generated build artifacts rather than a second handwritten implementation.
+The key-cache emitter adds only a guarded block-RAM style attribute to the
+generated memory declaration; it does not add handwritten RTL behavior.
 `tools/check_rtl_source_policy.sh` enforces this boundary over tracked HDL
 files and runs with the CTest reference suite.
 
@@ -187,6 +200,8 @@ tools/emit_paper_bitwise_batched_blind_rotate.sh \
 tools/emit_paper_bitwise_batched_blind_rotate_sample_extract.sh \
   build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
   build/chisel-paper-bitwise-blind-rotate-sample-extract
+tools/emit_paper_buffered_bitwise_batched_blind_rotate_sample_extract.sh
+tools/emit_paper_buffered_blind_rotate_accelerator.sh
 ```
 
 The Blind Rotate tops load raw TLWE mask coefficients and body, implement
@@ -197,7 +212,27 @@ point, switched exponent, and first-beat tags. The default input dimension is
 TFHEpp `lvl0param::n=630`; set `FPT_BLIND_ROTATE_DIMENSION` to elaborate a
 different parameter without changing the Chisel source. The
 `sample_extract` variant automatically returns index-zero TLWEs and is the top
-used for the complete FPT-versus-HOGE route comparison.
+used for the historical complete FPT-versus-HOGE route comparison. The
+buffered accelerator is the physical-boundary successor: its complete
+16-result zero schedule is 190,646 cycles (11,915.4 cycles/result), including
+all 630 key coefficients and 16,400 output beats. Reproduce that schedule and
+the cache and complete physical maps with:
+
+```sh
+tools/measure_fpt_buffered_blind_rotate_accelerator_schedule.sh
+tools/synthesize_fpt_bootstrapping_key_buffer.sh
+tools/synthesize_fpt_buffered_blind_rotate_accelerator.sh
+```
+
+The physical top has 1,012 port bits, compared with 18,956 on the buffered
+verification top and 31,869 on the original direct-key top. Its two cache
+banks hold 442,368 logical bits and map standalone to 192 `RAMB36E2`, 14,065
+LUTs, 965 FFs, and no DSP or distributed RAM in the local UltraScale+ flow.
+The flattened accelerator maps to 620,387 estimated logic cells, 1,013,285
+LUTs, 1,348,958 FFs, 457 BRAMs, 5,100 distributed-RAM primitives, and 5,408
+DSP48E2s. Relative to the direct-key map, this adds exactly the cache's 192
+BRAMs and no DSP or distributed RAM; whole-design packing adds only 457 LUTs
+and 8,461 FFs.
 
 SGen remains a separate Verilog BlackBox in synthesis; CIRCT does not append
 the generated sources or its resource file list to `CmuxEngine.sv`.  The

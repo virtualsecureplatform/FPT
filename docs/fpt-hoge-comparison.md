@@ -205,15 +205,33 @@ tools/emit_paper_buffered_blind_rotate_accelerator.sh
 FPT_VERILATOR_JOBS=8 \
   tools/measure_fpt_buffered_blind_rotate_accelerator_schedule.sh
 tools/synthesize_fpt_bootstrapping_key_buffer.sh
+tools/synthesize_fpt_buffered_blind_rotate_accelerator.sh
 ```
 
 The full generated hierarchy, including both real SGen transforms, passes
-Yosys hierarchy and memory-structure checks. A new flat complete-wrapper map
-is intentionally still pending: the previous direct wrapper required
-6,218.61 seconds and 35,010,708 KiB peak RSS locally. The standalone cache map
-therefore must not be added to the older complete-wrapper totals or used for a
-new resource-efficiency claim. Placement, routing, and clock measurement also
-remain work for the Vivado machine.
+Yosys hierarchy and memory-structure checks. The flat physical wrapper also
+passes the same UltraScale+ map and its exact 457-BRAM/5,408-DSP contract:
+
+| FPT wrapper | Cycles/result | Estimated logic cells | LUT1--6 | FF | BRAM | Distributed RAM | DSP48E2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Direct external key | 11,915.3 | 600,388 | 1,012,828 | 1,340,497 | 265 | 5,100 | 5,408 |
+| Physical two-bank cache | 11,915.4 | 620,387 | 1,013,285 | 1,348,958 | 457 | 5,100 | 5,408 |
+
+The complete physical map adds exactly 192 BRAMs and no distributed RAM or
+DSPs. Whole-design packing adds only 457 LUTs and 8,461 FFs, rather than the
+standalone cache's raw totals; it also removes 1,285 MUXF cells and adds four
+carry cells. Yosys's packing heuristic raises estimated logic cells by 19,999
+(3.3%), so the primitive counts are the clearer delta. This again shows why
+standalone resource estimates must not simply be added to the complete map.
+
+Against the unchanged HOGE map at an equal clock, the physical FPT result-rate
+ratio is 13.287x and its logic-cell, LUT, FF, and DSP throughput efficiencies
+are 3.361x, 3.693x, 7.641x, and 4.992x respectively. These remain pre-route
+estimates with intentionally different FHE parameters and key boundaries.
+The physical map took 6,178.76 seconds and 32,879,380 KiB peak RSS, 0.6% less
+time and 6.1% less memory than the direct wrapper run. Placement, routing,
+clock measurement, and a comparable buffered HOGE boundary remain work for
+the Vivado machine.
 
 ## Local UltraScale+ complete-wrapper mapping
 
