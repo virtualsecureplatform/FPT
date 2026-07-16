@@ -505,5 +505,8 @@ controlled arithmetic microbenchmark. The transform-only pairs remain the
 controlled evidence for the fixed-point FTT datapath itself. Exact Set II is
 also not decrypt-reliable under TFHEpp's default decomposition; the
 deterministic format results and synthesis interpretation are recorded in
-[`u280-handoff.md`](u280-handoff.md#numerical-scope-before-synthesis). Vivado
-vectorless power is an estimate, not board power.
+[`u280-handoff.md`](u280-handoff.md#numerical-scope-before-synthesis). The
+TFHEpp-stable Q8.21/Q18.28/Q27.24 alternative passes its RTL numerical checks,
+but its inverse FTT plus External Product already exceed the U280 DSP capacity;
+the first route therefore remains the paper-width architectural experiment.
+Vivado vectorless power is an estimate, not board power.

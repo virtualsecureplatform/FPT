@@ -6,6 +6,12 @@ source_root=${FPT_YOSYS_TRANSFORM_SOURCES:-\
 $repo_root/build/vivado-u280-fpt-hoge-prepared/sources}
 build_root=${FPT_YOSYS_TRANSFORM_BUILD:-\
 $repo_root/build/yosys-fpt-hoge-transforms}
+fpt_dsps_per_product=${FPT_YOSYS_FPT_DSPS_PER_PRODUCT:-1}
+
+if [[ ! $fpt_dsps_per_product =~ ^[1-9][0-9]*$ ]]; then
+    echo "FPT_YOSYS_FPT_DSPS_PER_PRODUCT must be a positive integer" >&2
+    exit 1
+fi
 
 if (( $# > 0 )); then
     designs=("$@")
@@ -58,6 +64,7 @@ validate_fpt_dsp_contract() {
     local stat_file=$3
     local multiply_expressions
     local mapped_dsps
+    local expected_dsps
 
     case "$design" in
         fpt-forward|fpt-inverse) ;;
@@ -72,12 +79,16 @@ validate_fpt_dsp_contract() {
           | .value]
         | add // 0
     ' "$stat_file")
-    if [[ ! $multiply_expressions =~ ^[1-9][0-9]*$ || \
-          $mapped_dsps != "$multiply_expressions" ]]; then
-        echo "$design violates the one-DSP-per-split-product contract: expressions=$multiply_expressions DSPs=$mapped_dsps" >&2
+    if [[ ! $multiply_expressions =~ ^[1-9][0-9]*$ ]]; then
+        echo "$design has no explicit signed multiply expressions" >&2
         exit 1
     fi
-    echo "Validated $design DSP mapping: $multiply_expressions expressions -> $mapped_dsps DSPs"
+    expected_dsps=$((multiply_expressions * fpt_dsps_per_product))
+    if [[ $mapped_dsps != "$expected_dsps" ]]; then
+        echo "$design violates the DSP-per-product contract: expressions=$multiply_expressions expected_per_product=$fpt_dsps_per_product expected_DSPs=$expected_dsps actual_DSPs=$mapped_dsps" >&2
+        exit 1
+    fi
+    echo "Validated $design DSP mapping: $multiply_expressions expressions x $fpt_dsps_per_product -> $mapped_dsps DSPs"
 }
 
 yosys_version=$(yosys -V)

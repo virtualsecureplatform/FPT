@@ -463,6 +463,12 @@ DSP, reproducing the intended pre-route multiplier-efficiency advantage. Raw
 counts, bit-exact validation, and the remaining placement/timing caveats are
 in `docs/fpt-hoge-comparison.md`.
 
+The numerically stable `tfhepp-hardware` profile is intentionally not in the
+first U280 bundle. Its Q27.24 inverse FTT alone maps to 6,687 DSP48E2s, and the
+wide External Product adds 3,072, exceeding the card's 9,024 DSPs before the
+forward FTT is included. The first route therefore uses paper Set-II widths;
+see `docs/u280-handoff.md` for the numerical and resource fit gate.
+
 Map the complete raw-TLWE-through-sample-extraction wrappers with:
 
 ```sh

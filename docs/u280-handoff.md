@@ -60,6 +60,55 @@ cryptographic failure-rate estimate. Until the parameters or formats are
 retuned, report the U280 result as a paper-width architectural implementation,
 not as an end-to-end validated TFHEpp parameter set.
 
+### TFHEpp-stable profile fit gate
+
+The separate `tfhepp-hardware` profile uses BK Q8.21, forward FTT Q18.28,
+and inverse FTT Q27.24. It is numerically suitable as a reference candidate:
+ten independently generated TFHEpp keys and forty total Blind Rotates passed,
+with maximum phase error 0.0214878 and no recorded transform, pointwise, or
+inverse overflow. The generated RTL also passes both 512-point SGen
+regressions and the complete nonzero physical Blind Rotate regression. Across
+16,400 sample-extracted outputs, the latter has a maximum error of seven
+inverse raw units, 5,660 exact outputs, and 12,107 outputs within one inverse
+raw unit.
+
+That profile is not currently a U280 route candidate at the existing full
+parallelism. A local `synth_xilinx -family xcup` map of just its 51-by-47-bit
+inverse core gives:
+
+| Core | II | Estimated logic cells | LUT1--6 | FF | DSP48E2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Q27.24 inverse FTT | 8 | 263,438 | 526,822 | 458,772 | 6,687 |
+
+The 743 real multiply expressions each map to nine DSP48E2s. The validated
+wide-profile 256-lane External Product needs another 3,072 DSP48E2s, so those
+two blocks alone require at least 9,759 DSPs before adding the forward FTT or
+wrapper glue. The U280 has 9,024 DSP slices according to
+[AMD DS963](https://docs.amd.com/r/en-US/ds963-u280/Alveo-Product-Details).
+Consequently, the full-parallel stable profile cannot fit even though its
+numerical regression passes.
+
+Reproduce the RTL numerical checks and inverse resource gate with:
+
+```sh
+FPT_ARITHMETIC_PROFILE=tfhepp-hardware \
+  tools/test_paper_sgen_numerics.sh ../SGen \
+  build/tfhepp-hardware-sgen-numerics
+FPT_ARITHMETIC_PROFILE=tfhepp-hardware \
+  tools/test_paper_buffered_blind_rotate_numerics.sh ../SGen \
+  build/tfhepp-hardware-blind-rotate-numerics
+
+FPT_YOSYS_TRANSFORM_SOURCES=build/tfhepp-hardware-sgen-numerics \
+FPT_YOSYS_TRANSFORM_BUILD=build/yosys-tfhepp-hardware-transforms \
+FPT_YOSYS_FPT_DSPS_PER_PRODUCT=9 \
+  tools/synthesize_fpt_hoge_transforms.sh fpt-inverse
+```
+
+The next stable-profile hardware step must reduce parallelism or lower only
+the required high product bits with a validated wide fixed-point multiplier.
+Until then, use the prepared paper Set-II bundle for the first U280 route and
+label it as the architectural-width experiment described above.
+
 ## Prerequisites
 
 Use the `fpt` branch of
