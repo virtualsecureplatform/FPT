@@ -127,55 +127,51 @@ final class BootstrappingKeyBufferSpec
       expectResponse(0, config.loadBeatsPerCoefficient - 1)
       dut.io.loadDone.expect(true.B)
       dut.io.loadDoneIndex.expect(1.U)
-      dut.clock.step()
 
-      dut.io.bankValid(0).expect(false.B)
-      dut.io.bankValid(1).expect(true.B)
-      dut.io.bankIndex(1).expect(1.U)
-      dut.io.readIndex.poke(0.U)
-      dut.io.readRequestValid.poke(true.B)
-      dut.io.readRequestReady.expect(false.B)
-      dut.io.readRequestValid.poke(false.B)
-
-      startLoad(2)
-      dut.io.loadValid.poke(true.B)
-      dut.io.readRequestValid.poke(true.B)
+      // Consume the final response, start reusing its retired bank, and issue
+      // the first request from the other bank on the same clock edge.
+      dut.io.loadIndex.poke(2.U)
+      dut.io.loadStartReady.expect(true.B)
+      dut.io.loadStart.poke(true.B)
       dut.io.readIndex.poke(1.U)
-      previousRequest = None
-      val observed = ArrayBuffer.empty[Int]
-      for (operation <- 0 until config.loadBeatsPerCoefficient) {
-        if (dut.io.readResponseValid.peek().litToBoolean) {
-          val request = previousRequest.get
-          expectResponse(1, request)
-          observed += request
-        }
-        pokeLoad(2, operation)
-        val word = operation % config.wordsPerCoefficient
-        dut.io.readRow.poke((word / external.inputFrameBeats).U)
-        dut.io.readBeat.poke((word % external.inputFrameBeats).U)
-        dut.io.loadReady.expect(true.B)
-        dut.io.readRequestReady.expect(true.B)
-        dut.clock.step()
-        previousRequest = Some(operation)
-      }
-      dut.io.loadValid.poke(false.B)
-      dut.io.readRequestValid.poke(false.B)
-      expectResponse(1, config.loadBeatsPerCoefficient - 1)
-      observed += config.loadBeatsPerCoefficient - 1
-      observed.toSeq should be(0 until config.loadBeatsPerCoefficient)
-      dut.clock.step()
-
-      dut.io.bankValid(0).expect(true.B)
-      dut.io.bankIndex(0).expect(2.U)
-      dut.io.bankValid(1).expect(false.B)
-
-      dut.io.readIndex.poke(2.U)
       dut.io.readRow.poke(0.U)
       dut.io.readBeat.poke(0.U)
       dut.io.readRequestValid.poke(true.B)
       dut.io.readRequestReady.expect(true.B)
       dut.clock.step()
+      dut.io.loadStart.poke(false.B)
+
+      // The final key-2 load beat makes key 2 readable on the same edge. The
+      // last key-1 response and first key-2 request therefore overlap without
+      // inserting a coefficient-boundary bubble.
+      dut.io.loadValid.poke(true.B)
+      val observed = ArrayBuffer.empty[Int]
+      for (operation <- 0 until config.loadBeatsPerCoefficient) {
+        expectResponse(1, operation)
+        observed += operation
+        pokeLoad(2, operation)
+        val nextIndex = if (
+          operation == config.loadBeatsPerCoefficient - 1
+        ) 2 else 1
+        val nextRequest = if (nextIndex == 2) 0 else operation + 1
+        val nextWord = nextRequest % config.wordsPerCoefficient
+        dut.io.readIndex.poke(nextIndex.U)
+        dut.io.readRow.poke((nextWord / external.inputFrameBeats).U)
+        dut.io.readBeat.poke((nextWord % external.inputFrameBeats).U)
+        dut.io.loadReady.expect(true.B)
+        dut.io.readRequestReady.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.loadValid.poke(false.B)
       dut.io.readRequestValid.poke(false.B)
+      observed.toSeq should be(0 until config.loadBeatsPerCoefficient)
+      dut.io.loadDone.expect(true.B)
+      dut.io.loadDoneIndex.expect(2.U)
+
+      dut.io.bankValid(0).expect(true.B)
+      dut.io.bankIndex(0).expect(2.U)
+      dut.io.bankValid(1).expect(false.B)
+
       dut.io.readResponseReady.poke(false.B)
       expectResponse(2, 0)
       val heldReal = dut.io.readResponse(0)(0).real.peek().litValue

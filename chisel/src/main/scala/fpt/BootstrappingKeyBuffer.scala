@@ -135,7 +135,7 @@ final class BootstrappingKeyPingPongBuffer(
   val bankFree = Wire(Vec(2, Bool()))
   for (bank <- 0 until 2) {
     bankFree(bank) := !bankValid(bank) &&
-      !(responseValid && responseBank === bank.U)
+      !(responseValid && responseBank === bank.U && !responseFire)
   }
   val duplicateLoad = bankValid.zip(bankIndex).map {
     case (valid, index) => valid && index === io.loadIndex
@@ -197,10 +197,18 @@ final class BootstrappingKeyPingPongBuffer(
     }
   }
 
+  val readWord = (
+    io.readRow * external.inputFrameBeats.U + io.readBeat
+  )(wordWidth - 1, 0)
+  val completingLoad = loadFire &&
+    loadGroup === (config.loadGroupsPerRead - 1).U &&
+    loadWord === (config.wordsPerCoefficient - 1).U
   val matchingBank = Wire(Vec(2, Bool()))
   for (bank <- 0 until 2) {
-    matchingBank(bank) := bankValid(bank) &&
-      bankIndex(bank) === io.readIndex
+    val resident = bankValid(bank) && bankIndex(bank) === io.readIndex
+    val completing = completingLoad && loadBank === bank.U &&
+      loadIndex === io.readIndex && loadWord =/= readWord
+    matchingBank(bank) := resident || completing
   }
   val responseSlotReady = !responseValid || io.readResponseReady
   io.readRequestReady := matchingBank.asUInt.orR && responseSlotReady &&
@@ -209,9 +217,6 @@ final class BootstrappingKeyPingPongBuffer(
     io.readBeat < external.inputFrameBeats.U
   val readFire = io.readRequestValid && io.readRequestReady
   val selectedReadBank = Mux(matchingBank(0), 0.U, 1.U)
-  val readWord = (
-    io.readRow * external.inputFrameBeats.U + io.readBeat
-  )(wordWidth - 1, 0)
   val readAddress = (
     selectedReadBank * config.wordsPerCoefficient.U + readWord
   )(memoryAddressWidth - 1, 0)
