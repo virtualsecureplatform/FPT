@@ -90,13 +90,13 @@ throughput/resource comparison is generated separately.
 `BatchedCmuxEngine` supports register, barrel-prefetched, and bitwise-prefetched
 coefficient storage. Its throughput-oriented configurations serialize the two
 External Product components through one inverse FTT. With the integrated
-transforms, the register schedule is 215 cycles and needs 14 contexts for
+transforms, the register schedule is 211 cycles and needs 14 contexts for
 sustained 16-cycle reuse. The emitted physical top instead uses replicated
 synchronous memory banks and two polynomial prefetch buffers. Its eight-cycle
 prefetch overlaps the prior 16-cycle decomposition stream, retaining the
-16-cycle interval with a 224-cycle latency and 14 contexts. In the bitwise
+16-cycle interval with a 220-cycle latency and 14 contexts. In the bitwise
 variant, two transposed working sets replace those buffers and the barrel. The
-Set-II schedule is 241 cycles with a 16-cycle completion interval; 16 contexts
+Set-II schedule is 237 cycles with a 16-cycle completion interval; 16 contexts
 sustain reuse at that rate. The double-buffered External Product PISO drains
 the two component frames sequentially at the 64-lane inverse width while the
 next transaction accumulates at the 128-lane forward width. `CmuxEngine`
@@ -243,7 +243,7 @@ sets over the replicated accumulator banks and shares one inverse FTT between
 both output components. Its paper shape uses 16 contexts, emits as 11.36 MB,
 lints with the real SGen sources across 39.17 MB in 34 modules, preserves the
 `128 x 128` memory arrays, and contains no full-width barrel module. The
-executable accepts and completes 17 commands at II=16, has 241-cycle
+executable accepts and completes 17 commands at II=16, has 237-cycle
 first-command latency, reuses context zero, and exactly preserves all 32,768
 nonzero accumulator words. Thus 16 contexts cover sustained 16-cycle reuse.
 Reproduce the standalone blocks with:
@@ -315,13 +315,15 @@ apply.
 
 With Verilator available, preparation also validates and measures both full
 Blind Rotate wrappers. The current FPT batch completes 16 raw-TLWE inputs and
-sample-extracted outputs in 190,644 cycles, or 11,915.2 cycles/result. The
+sample-extracted outputs in 190,645 cycles, or 11,915.3 cycles/result. The
 compiled schedule models use content signatures, so
 `FPT_SCHEDULE_BUILD_DIR` and `HOGE_SCHEDULE_BUILD_DIR` caches remain reusable
 when the same RTL is regenerated in a different handoff directory.
 When Yosys is installed, the same preparation independently checks the full
-Chisel/SGen synthesis hierarchy and the expected accumulator, exponent, and
-sample-extraction memory shapes. It also maps those memories through their
+Chisel/SGen synthesis hierarchy and the expected coefficient-accumulator,
+External Product, exponent, and sample-extraction memory shapes. The External
+Product contributes two `4 x 15,360` synchronous arrays (122,880 logical
+bits). The audit also maps the other memories through their
 real single-clock parent contexts to the UltraScale+ primitive library. The
 current result is 256 `RAMB36E2` for the replicated accumulators, 9
 `RAMB18E2` for the exponent store, and 150 `RAM32M16` distributed-RAM
@@ -374,7 +376,7 @@ Chisel tests, complete-design Verilator lint, mocked acceptance-flow tests,
 source-only handoff generation, and open-source UltraScale+ mapping;
 placed-and-routed hardware benefit claims must wait for those U280 reports.
 
-See `docs/hardware-comparison.md` for the reproduced 215/224-cycle Set-II CMUX
+See `docs/hardware-comparison.md` for the reproduced 211/220-cycle Set-II CMUX
 schedule, generated multiplier-expression comparison, and the remaining
 U280 measurement checklist.
 
@@ -394,16 +396,18 @@ tools/synthesize_fpt_hoge_blind_rotate.sh
 ```
 
 At an equal clock, the current measured wrapper schedule gives FPT 13.287x the
-HOGE result rate. The current `0cd4e7b` map gives 2.712x/3.008x/7.118x/4.992x
-throughput per logic cell/LUT/FF/DSP. The older `66c8dc1` map used 14,574 DSPs,
-exposing CIRCT's widened External Product
-multiplications and two parallel inverse cores. The new exact Gauss MAC maps
-the standalone 256-lane External Product to 1,536 DSPs instead of 9,216, and
-the throughput top now serializes both components through one inverse FTT. Its
-complete-wrapper map confirms 5,408 DSPs, 1,243,985 LUTs, and 1,448,004 FFs.
-Run `tools/synthesize_fpt_external_product.sh` to isolate the MAC reduction.
-These are local technology maps without timing or routing, so the U280 bundle
-remains the final comparison. The raw counts and normalization are in
+HOGE result rate. The current `346deff` map gives
+3.473x/3.694x/7.689x/4.992x throughput per logic cell/LUT/FF/DSP. The older
+`66c8dc1` map used 14,574 DSPs, exposing CIRCT's widened External Product
+multiplications and two parallel inverse cores. The exact Gauss MAC maps the
+standalone 256-lane External Product to 1,536 DSPs instead of 9,216, and the
+throughput top serializes both components through one inverse FTT. Inferred
+accumulator memory then reduces the complete-wrapper map to 600,388 estimated
+logic cells, 1,012,828 LUTs, and 1,340,497 FFs while retaining exactly 5,408
+DSPs. Run `tools/synthesize_fpt_external_product.sh` to isolate the MAC and
+storage changes. These are local technology maps without timing or routing,
+so the U280 bundle remains the final comparison. The raw counts and
+normalization are in
 [the FPT/HOGE comparison guide](docs/fpt-hoge-comparison.md).
 
 The integration currently supports native 32-bit Torus parameters.  Its

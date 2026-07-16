@@ -10,16 +10,16 @@ inverse instances and observes `done` 207 cycles after command acceptance, or
 208 cycles when the launch cycle is included.
 
 The throughput-oriented batch tops serialize both output components through
-one inverse FTT. The register-backed version has a 215-cycle latency and needs
+one inverse FTT. The register-backed version has a 211-cycle latency and needs
 fourteen contexts for continuous II=16 reuse. The synthesis-oriented variant
 uses replicated synchronous memory banks and two prefetch buffers. It has a
-224-cycle latency, so fourteen contexts are
+220-cycle latency, so fourteen contexts are
 needed for continuous reuse, but its acceptance and completion interval
 remains 16 cycles. The paper-size regression issues fourteen distinct
 contexts and then wraps immediately to context zero.
 
 The bitwise-prefetched variant uses sixteen contexts and two transposed
-2-bit working sets. Its Set-II schedule is 241 cycles with the same 16-cycle
+2-bit working sets. Its Set-II schedule is 237 cycles with the same 16-cycle
 acceptance and completion interval, then drains
 every context to verify exact preservation under a zero external product.
 
@@ -71,8 +71,8 @@ Measured executable schedules on this host are:
 | --- | --- | --- | --- | --- |
 | Barrel single CMUX | `0` | `207` | `207 / -` | Dense nonzero key; 1,495/2,048 outputs within one Q27.3 raw unit of C++ |
 | Bitwise single CMUX | `0` | `224` | `224 / -` | Dense nonzero key; same Q27.3 histogram as barrel |
-| 14-context barrel batch | `0,16,...,224` | `224,240,...,448` | `224 / 16` | 28,672 nonzero Torus words |
-| 16-context bitwise batch | `0,16,...,256` | `241,257,...,497` | `241 / 16` | 32,768 nonzero Torus words |
+| 14-context barrel batch | `0,16,...,224` | `220,236,...,444` | `220 / 16` | 28,672 nonzero Torus words |
+| 16-context bitwise batch | `0,16,...,256` | `237,253,...,493` | `237 / 16` | 32,768 nonzero Torus words |
 
 These paper-size simulations are intentionally opt-in because generated-model
 compile time and host memory are substantial; those host costs are not FPGA
@@ -175,7 +175,7 @@ alternates two transposed working sets: one streams buffered digits while the
 other rotates the next command, and the first can prefetch its following
 context after decomposition releases the coefficient banks. A complete small
 model checks exact digits, updates, drains, and a no-bubble row interval. The
-Set-II top uses sixteen contexts and has a 241-cycle latency at II=16. It
+Set-II top uses sixteen contexts and has a 237-cycle latency at II=16. It
 emits as 11.36 MB and lints with the generated transforms across 39.17 MB in
 34 modules. CIRCT emits 128 instances of a `128 x 128` synchronous array, and
 the module list contains no `NegacyclicBarrelRotator`. Placement is still
@@ -296,6 +296,13 @@ maps together with the exact full-hierarchy check using:
 tools/check_fpt_synthesis_boundary.sh
 ```
 
+The same hierarchy audit now also requires two `4 x 15,360` synchronous
+External Product arrays (122,880 logical bits). Their real parent includes the
+complete 256-lane MAC, so that storage is mapped by the standalone External
+Product flow instead of this three-context memory audit. Natural UltraScale+
+inference uses 2,196 `RAM32M16` primitives and 15,400 FFs; the former register
+array used no RAM primitives and 122,906 FFs.
+
 These results confirm synthesizable storage behavior but do not predict
 placed utilization, routing, clock rate, DSP packing, or board power.
 
@@ -341,11 +348,17 @@ External Product to the paper's 1,536 DSPs instead of CIRCT's former 9,216,
 while also reducing LUT, MUXF, and carry counts. The throughput wrapper now
 serializes the two inverse component frames through one inverse core and has
 passed distinct-data, backpressure, paper-size II=16, and complete-wrapper
-schedule tests. The `0cd4e7b` complete map confirms 5,408 DSPs and, at an equal
-clock, 13.287x HOGE result rate plus 4.992x throughput per DSP. It also reduces
-LUTs by 7.3% and FFs by 23.0% versus `66c8dc1`; the Yosys estimated logic-cell
-figure remains effectively unchanged. See `docs/fpt-hoge-comparison.md` for
-the exact decomposition, full counts, and caveats.
+schedule tests. The `0cd4e7b` register-backed complete map first confirmed
+5,408 DSPs and, at an equal clock, 13.287x HOGE result rate plus 4.992x
+throughput per DSP. The current `346deff` map retains those values while the
+inferred External Product memories reduce the complete wrapper to 600,388
+estimated logic cells,
+1,012,828 LUTs, and 1,340,497 FFs. That is 21.9% fewer logic cells, 18.6% fewer
+LUTs, and 7.4% fewer FFs than `0cd4e7b`; distributed RAM rises by 2,196
+primitives. At the same equal-clock schedule, throughput per logic cell/LUT/FF
+improves to 3.473x/3.694x/7.689x over HOGE. See
+`docs/fpt-hoge-comparison.md` for the exact decomposition, full counts, and
+caveats.
 
 The first apples-to-apples transform route is automated as:
 
@@ -380,7 +393,7 @@ INTT, 32 in the inverse NTT, and 127 in its Blind Rotate path. Each multiplier
 contains a 64-by-64 product and modular reduction. The direct common-U280 flow
 now routes those exact HOGE cores beside the FPT FTT cores and reports frame
 rate per LUT/DSP instead of comparing source-level multiplier counts. Its
-full-wrapper schedule harness measures 11,915.2 cycles/result for the
+full-wrapper schedule harness measures 11,915.3 cycles/result for the
 16-context FPT batch and 158,318.5 cycles/result for HOGE's two-context batch:
 
 ```sh

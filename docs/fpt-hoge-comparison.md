@@ -11,7 +11,7 @@ efficiency over HOGE's 64-bit modular NTT.
 | --- | --- | --- |
 | Forward transform | 512 complex tangent points, 128 lanes, frame II 4 | 1024 modular coefficients, 32 lanes, frame II 32 |
 | Inverse transform | 512 complex tangent points, 64 lanes, frame II 8 | 1024 modular coefficients, 32 lanes, frame II 32 |
-| Blind Rotate | `n=630`, 16 contexts, base-10 level 2, one shared inverse FTT, index-zero sample extraction, 11,915.2 measured wrapper cycles/result | `n=636`, 2 contexts, base-6 level 3, index-zero sample extraction, 158,318.5 measured wrapper cycles/result |
+| Blind Rotate | `n=630`, 16 contexts, base-10 level 2, one shared inverse FTT, index-zero sample extraction, 11,915.3 measured wrapper cycles/result | `n=636`, 2 contexts, base-6 level 3, index-zero sample extraction, 158,318.5 measured wrapper cycles/result |
 
 Both transform frames represent one 1024-coefficient negacyclic polynomial.
 The FPT transforms come from the tracked SGen `fpt` branch. The HOGE wrappers
@@ -110,8 +110,8 @@ both complete Blind Rotate schedules with zero data and continuously
 available bootstrapping keys.
 
 FPT loads 10,096 raw TLWE coefficients, issues 10,080 key transactions, and
-returns 16,400 sample-extracted TLWE beats. The full batch takes 190,644
-cycles (11,915.2 cycles/result): 10,400 input cycles, 163,395 cycles from run
+returns 16,400 sample-extracted TLWE beats. The full batch takes 190,645
+cycles (11,915.3 cycles/result): 10,400 input cycles, 163,396 cycles from run
 launch through the end of CMUX computation, and a 16,849-cycle drain tail.
 Sample extraction of earlier contexts overlaps the computation. HOGE's final
 `TLAST` occurs after 316,637 cycles (158,318.5 cycles/result). Each of its
@@ -209,43 +209,82 @@ DSPs, down from 9,216. LUT1--6 also fall from 402,802 to 327,168, MUXF cells
 from 233,119 to 89,560, and carry cells from 60,929 to 33,665; FFs remain
 122,906. Yosys's packing heuristic raises its estimated logic-cell figure
 from 216,504 to 253,102 despite the lower primitive counts, so the raw LUT
-and mux counts are the safer local comparison. The throughput-oriented wrapper
-now serializes both External Product component frames through one inverse FTT.
-Distinct-component/backpressure tests and paper-size register, banked, and
-bitwise schedules confirm that the shared inverse preserves II=16. The bitwise
-latency rises from 234 to 241 cycles, requiring 16 contexts; its measured full
-wrapper schedule improves from 12,217.1 to 11,915.2 cycles/result because the
-extra resident context amortizes batch fill and drain. The new complete-wrapper
-DSP contract is 5,408 (`2,384 + 1,486 + 1,536 + 2`).
+and mux counts are the safer local comparison. That result used the original
+register-array accumulator storage and remains the arithmetic baseline.
 
-At checkpoint `0cd4e7b`, the same complete-wrapper flow confirms that contract:
+The paper emitter now selects a Chisel `SyncReadMem` implementation that packs
+each accumulator depth into one 15,360-bit lane word. Two `4 x 15,360` arrays
+replace the double register array while retaining the same 1,536-DSP Gauss
+MAC and one-result-per-16-cycle schedule:
+
+| External Product storage | Estimated logic cells | LUT1--6 | FF | BRAM | Distributed RAM | DSP48E2 | CARRY | MUXF |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Register array | 253,102 | 327,168 | 122,906 | 0 | 0 | 1,536 | 33,665 | 89,560 |
+| Inferred synchronous memory | 222,726 | 300,406 | 15,400 | 0 | 2,196 | 1,536 | 29,569 | 106,925 |
+
+The inferred-memory version reduces estimated logic cells by 12.0%, LUTs by
+8.2%, FFs by 87.5%, and carry cells by 12.2%. Its cost is 2,196 shallow
+distributed-RAM primitives and 19.4% more MUXF cells. An exploratory forced-
+block-RAM map used 428 `RAMB36E2` and was worse than natural inference in
+logic cells, LUTs, and FFs; depth four is too shallow to use block RAM well.
+This is still a technology map without placement or timing.
+
+The throughput-oriented wrapper serializes both External Product component
+frames through one inverse FTT. Distinct-component/backpressure tests and
+paper-size register, banked, and bitwise schedules confirm that the shared
+inverse preserves II=16. The bitwise
+inferred-memory schedule has 237-cycle latency and still requires 16 contexts;
+its measured full wrapper takes 11,915.3 cycles/result. The complete-wrapper
+DSP contract remains 5,408 (`2,384 + 1,486 + 1,536 + 2`).
+
+At checkpoint `0cd4e7b`, the register-backed complete-wrapper flow first
+confirmed that contract:
 
 | Wrapper | Cycles/result | Estimated logic cells | LUT1--6 | FF | BRAM | Distributed RAM | DSP48E2 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | FPT, 16 contexts | 11,915.2 | 768,755 | 1,243,985 | 1,448,004 | 265 | 2,904 | 5,408 |
 | HOGE, 2 contexts | 158,318.5 | 156,913 | 281,598 | 775,713 | 202 | 3,341 | 2,032 |
 
-At an equal clock, the measured schedules and current mapped resources give:
+At an equal clock, those measured schedules and mapped resources gave:
 
 | Result-rate ratio | Logic-cell efficiency | LUT efficiency | FF efficiency | DSP efficiency |
 | ---: | ---: | ---: | ---: | ---: |
 | 13.287x | 2.712x | 3.008x | 7.118x | 4.992x |
 
-Relative to `66c8dc1`, the FPT map uses 62.9% fewer DSPs, 23.0% fewer FFs,
-7.3% fewer LUTs, and 29.5% fewer distributed-RAM primitives. The estimated
-logic-cell figure is effectively unchanged (-0.008%) because Yosys's packing
-heuristic does not track the raw primitive reductions monotonically. BRAM
-remains 265 even with the sixteenth context. The 1,216 distributed-RAM
-reduction exactly matches the removed standalone inverse core's mapped
-distributed-RAM count.
+Checkpoint `346deff` adds the inferred External Product memories and produces
+the current complete map:
 
-The complete flow retains `stat.json`, synthesis logs, host timing
-and peak RSS, and source/tool/flow signatures under
-`build/yosys-fpt-hoge-blind-rotate/`. The current FPT map took 6,237.72 seconds
-and 39,613,916 KiB peak RSS on the development host, 13.4% less time and 11.6%
-less peak memory than the `66c8dc1` map. HOGE took 1,919.05 seconds and
-16,443,268 KiB. `summary.tsv` records the raw counts and `comparison.tsv`
-records the throughput-normalized ratios.
+| Wrapper | Cycles/result | Estimated logic cells | LUT1--6 | FF | BRAM | Distributed RAM | DSP48E2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| FPT, 16 contexts | 11,915.3 | 600,388 | 1,012,828 | 1,340,497 | 265 | 5,100 | 5,408 |
+| HOGE, 2 contexts | 158,318.5 | 156,913 | 281,598 | 775,713 | 202 | 3,341 | 2,032 |
+
+At an equal clock, the current schedules and mapped resources give:
+
+| Result-rate ratio | Logic-cell efficiency | LUT efficiency | FF efficiency | DSP efficiency |
+| ---: | ---: | ---: | ---: | ---: |
+| 13.287x | 3.473x | 3.694x | 7.689x | 4.992x |
+
+Relative to the `0cd4e7b` register-backed map, inferred accumulator memory
+reduces estimated logic cells by 21.9%, LUTs by 18.6%, FFs by 7.4%, carry
+cells by 3.2%, and MUXF cells by 30.5%. BRAM and DSP counts are unchanged.
+Distributed RAM rises by exactly 2,196 primitives, from 2,904 to 5,100,
+matching the standalone map of the two new arrays. This whole-wrapper packing
+result is better than merely subtracting the standalone storage delta.
+
+Relative to `66c8dc1`, the current FPT map uses 62.9% fewer DSPs, 28.7% fewer
+FFs, 24.5% fewer LUTs, and 21.9% fewer estimated logic cells. Distributed RAM
+is 23.8% higher because the inferred External Product storage more than
+offsets the 1,216 primitives removed with the second inverse core. BRAM
+remains 265 even with the sixteenth context.
+
+The complete flow retains `stat.json`, synthesis logs, host timing and peak
+RSS, and source/tool/flow signatures under
+`build/yosys-fpt-hoge-blind-rotate-memory/`. The current FPT map took 6,218.61
+seconds and 35,010,708 KiB peak RSS on the development host: 0.3% less time
+and 11.6% less peak memory than the `0cd4e7b` map. The unchanged HOGE map took
+1,919.05 seconds and 16,443,268 KiB. `summary.tsv` records the raw counts and
+`comparison.tsv` records the throughput-normalized ratios.
 
 ## Route on the Vivado machine
 
