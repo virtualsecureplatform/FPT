@@ -11,7 +11,7 @@ efficiency over HOGE's 64-bit modular NTT.
 | --- | --- | --- |
 | Forward transform | 512 complex tangent points, 128 lanes, frame II 4 | 1024 modular coefficients, 32 lanes, frame II 32 |
 | Inverse transform | 512 complex tangent points, 64 lanes, frame II 8 | 1024 modular coefficients, 32 lanes, frame II 32 |
-| Blind Rotate | `n=630`, 15 contexts, base-10 level 2, index-zero sample extraction, 12,217.1 measured wrapper cycles/result | `n=636`, 2 contexts, base-6 level 3, index-zero sample extraction, 158,318.5 measured wrapper cycles/result |
+| Blind Rotate | `n=630`, 16 contexts, base-10 level 2, one shared inverse FTT, index-zero sample extraction, 11,915.2 measured wrapper cycles/result | `n=636`, 2 contexts, base-6 level 3, index-zero sample extraction, 158,318.5 measured wrapper cycles/result |
 
 Both transform frames represent one 1024-coefficient negacyclic polynomial.
 The FPT transforms come from the tracked SGen `fpt` branch. The HOGE wrappers
@@ -23,7 +23,7 @@ Blind Rotate path.
 The Blind Rotate tops exclude IKS, Vitis DataMover IP, and on-chip
 bootstrapping-key storage. Both receive bootstrapping-key data externally.
 Both now retain index-zero sample extraction: HOGE returns two TLWEs and FPT
-returns fifteen TLWEs. FPT's Chisel wrapper drains each completed TRLWE into
+returns sixteen TLWEs. FPT's Chisel wrapper drains each completed TRLWE into
 synchronous mask memory, emits `a(0), -a(N-1), ..., -a(1), b(0)`, and marks
 only the last coefficient of the full batch. Complete-top resource totals
 must still be reported with batch size and throughput. The transform-only
@@ -109,14 +109,14 @@ synthesis source and Tcl flow. When Verilator is available it also measures
 both complete Blind Rotate schedules with zero data and continuously
 available bootstrapping keys.
 
-FPT loads 9,465 raw TLWE coefficients, issues 9,450 key transactions, and
-returns 15,375 sample-extracted TLWE beats. The full batch takes 183,257
-cycles (12,217.1 cycles/result): 9,750 input cycles, 157,711 cycles from run
-launch through the end of CMUX computation, and a 15,796-cycle drain tail.
+FPT loads 10,096 raw TLWE coefficients, issues 10,080 key transactions, and
+returns 16,400 sample-extracted TLWE beats. The full batch takes 190,644
+cycles (11,915.2 cycles/result): 10,400 input cycles, 163,395 cycles from run
+launch through the end of CMUX computation, and a 16,849-cycle drain tail.
 Sample extraction of earlier contexts overlaps the computation. HOGE's final
 `TLAST` occurs after 316,637 cycles (158,318.5 cycles/result). Each of its
 eight BK streams consumes 122,512 beats, with a maximum inter-port skew of
-eight beats. At an equal clock, these wrapper schedules imply 12.96 times
+eight beats. At an equal clock, these wrapper schedules imply 13.287 times
 the result rate for FPT, before accounting for routed frequency or resources.
 
 The first FPT Verilator build is large. Both schedule models use
@@ -130,8 +130,8 @@ throughput fields are then recorded as `unmeasured`.
 When Yosys is installed, preparation also independently elaborates the exact
 paper-sized Chisel top together with both generated SGen transforms. This
 check rejects missing hierarchy, unexpected synthesis warnings, CIRCT
-block-local declarations, or changes to the 128 replicated `120 x 128`
-accumulator memories, the `9450 x 11` exponent memory, and the `16 x 2048`
+block-local declarations, or changes to the 128 replicated `128 x 128`
+accumulator memories, the `10080 x 11` exponent memory, and the `16 x 2048`
 sample-extraction memory. It then maps the real single-clock memory contexts
 to 256 `RAMB36E2`, 9 `RAMB18E2`, and 150 `RAM32M16` primitives,
 respectively. The exponent-memory context black-boxes the unrelated CMUX
@@ -209,17 +209,15 @@ DSPs, down from 9,216. LUT1--6 also fall from 402,802 to 327,168, MUXF cells
 from 233,119 to 89,560, and carry cells from 60,929 to 33,665; FFs remain
 122,906. Yosys's packing heuristic raises its estimated logic-cell figure
 from 216,504 to 253,102 despite the lower primitive counts, so the raw LUT
-and mux counts are the safer local comparison. The new full-wrapper DSP
-contract is 6,894 before inverse-core sharing; a complete remap is still
-needed to measure its combined logic and confirm synthesis sharing in the
-parent design.
-
-There is a second likely reduction to verify. The current wrapper instantiates
-two inverse cores, while one inverse core has frame II 8 and the CMUX accepts
-a new transaction every 16 cycles. Serializing the two output components
-through one inverse core should therefore preserve the sustained CMUX II and
-remove another 1,486 DSPs, provided ordering and backpressure tests confirm
-the schedule. This is a follow-up design hypothesis, not a measured result.
+and mux counts are the safer local comparison. The throughput-oriented wrapper
+now serializes both External Product component frames through one inverse FTT.
+Distinct-component/backpressure tests and paper-size register, banked, and
+bitwise schedules confirm that the shared inverse preserves II=16. The bitwise
+latency rises from 234 to 241 cycles, requiring 16 contexts; its measured full
+wrapper schedule improves from 12,217.1 to 11,915.2 cycles/result because the
+extra resident context amortizes batch fill and drain. The new complete-wrapper
+DSP contract is 5,408 (`2,384 + 1,486 + 1,536 + 2`); a complete remap is still
+needed to measure combined logic and confirm that contract in the parent.
 
 The complete baseline flow retains `stat.json`, synthesis logs, host timing
 and peak RSS, and source/tool/flow signatures under

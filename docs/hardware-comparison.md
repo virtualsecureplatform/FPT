@@ -1,21 +1,25 @@
 # Fixed-point FTT hardware comparison status
 
 The paper-shaped implementation uses `N=1024`, four decomposition rows, a
-512-point/128-lane forward tangent transform, and two parallel
-512-point/64-lane inverse tangent transforms. The twist and untwist constants
+512-point/128-lane forward tangent transform, and a 512-point/64-lane inverse
+tangent transform. The twist and untwist constants
 are now generated inside SGen instead of arriving through runtime Chisel
 ports. The validated mixed-radix baseline uses radix 8 forward and radix 2
-inverse. The single-command regression observes `done` 207 cycles after
-command acceptance, or 208 cycles when the launch cycle is included.
+inverse. The simpler single-command correctness top retains two parallel
+inverse instances and observes `done` 207 cycles after command acceptance, or
+208 cycles when the launch cycle is included.
 
-The synthesis-oriented variant uses replicated synchronous memory banks and
-two prefetch buffers. It has a 217-cycle latency, so fourteen contexts are
+The throughput-oriented batch tops serialize both output components through
+one inverse FTT. The register-backed version has a 215-cycle latency and needs
+fourteen contexts for continuous II=16 reuse. The synthesis-oriented variant
+uses replicated synchronous memory banks and two prefetch buffers. It has a
+224-cycle latency, so fourteen contexts are
 needed for continuous reuse, but its acceptance and completion interval
 remains 16 cycles. The paper-size regression issues fourteen distinct
 contexts and then wraps immediately to context zero.
 
-The bitwise-prefetched variant uses fifteen contexts and two transposed
-2-bit working sets. Its Set-II schedule is 234 cycles with the same 16-cycle
+The bitwise-prefetched variant uses sixteen contexts and two transposed
+2-bit working sets. Its Set-II schedule is 241 cycles with the same 16-cycle
 acceptance and completion interval, then drains
 every context to verify exact preservation under a zero external product.
 
@@ -67,12 +71,12 @@ Measured executable schedules on this host are:
 | --- | --- | --- | --- | --- |
 | Barrel single CMUX | `0` | `207` | `207 / -` | Dense nonzero key; 1,495/2,048 outputs within one Q27.3 raw unit of C++ |
 | Bitwise single CMUX | `0` | `224` | `224 / -` | Dense nonzero key; same Q27.3 histogram as barrel |
-| 14-context barrel batch | `0,16,...,224` | `217,233,...,441` | `217 / 16` | 28,672 nonzero Torus words |
-| 15-context bitwise batch | `0,16,...,240` | `234,250,...,474` | `234 / 16` | 30,720 nonzero Torus words |
+| 14-context barrel batch | `0,16,...,224` | `224,240,...,448` | `224 / 16` | 28,672 nonzero Torus words |
+| 16-context bitwise batch | `0,16,...,256` | `241,257,...,497` | `241 / 16` | 32,768 nonzero Torus words |
 
-The single bitwise run took 2:15 and 8.37 GiB peak RSS. The barrel batch took
-0:41 and 3.39 GiB; the bitwise batch took 1:58 and 14.42 GiB. These are
-simulation host costs, not FPGA costs.
+These paper-size simulations are intentionally opt-in because generated-model
+compile time and host memory are substantial; those host costs are not FPGA
+costs.
 
 The nonzero barrel run has a cyclic Q27.3 error histogram of
 `[731,764,386,138,29]` for zero through four inverse raw units versus the
@@ -112,9 +116,11 @@ same multipliers previously sat outside SGen in Chisel, so moving them is not
 itself an arithmetic-count reduction. The benefit is faithful specialization:
 the constants are generated in ROMs, their pipelines are included in SGen's
 schedule, and they are no longer runtime top-level inputs. Frame throughput
-remains unchanged. CMUX launches all four forward decomposition rows at the
-four-cycle interval and runs both inverse components concurrently, producing
-the 208-cycle launch-inclusive schedule.
+remains unchanged. The single-command CMUX launches all four forward
+decomposition rows at the four-cycle interval and runs both inverse components
+concurrently, producing the 208-cycle launch-inclusive schedule. The batch
+tops instead send the two eight-cycle component frames sequentially through
+one inverse instance while retaining their 16-cycle command interval.
 
 The physical batch top combines a tagged, double-buffered External Product
 accumulator with fourteen memory-backed coefficient contexts. A lane word
@@ -169,9 +175,9 @@ alternates two transposed working sets: one streams buffered digits while the
 other rotates the next command, and the first can prefetch its following
 context after decomposition releases the coefficient banks. A complete small
 model checks exact digits, updates, drains, and a no-bubble row interval. The
-Set-II top uses fifteen contexts and has a 234-cycle latency at II=16. It
-emits as 11.09 MB and lints with the generated transforms across 35.97 MB in
-25 modules. CIRCT emits 128 instances of a `120 x 128` synchronous array, and
+Set-II top uses sixteen contexts and has a 241-cycle latency at II=16. It
+emits as 11.36 MB and lints with the generated transforms across 39.17 MB in
+34 modules. CIRCT emits 128 instances of a `128 x 128` synchronous array, and
 the module list contains no `NegacyclicBarrelRotator`. Placement is still
 required to determine whether the extra transposed working set costs less
 LUT/route pressure than the removed 1024-way 32-bit barrel.
@@ -222,10 +228,11 @@ transposed bitwise state and ping-pong digit buffers, plus the already tested
 map, versus 15:19 and 21.3 GiB for the bitwise map; those host costs do not
 represent FPGA area.
 
-The memory-backed comparison is the more relevant sustained-throughput point.
-The barrel design has fourteen contexts and a 217-cycle latency; the bitwise
-design has fifteen contexts, two complete working cores, and a 234-cycle
-latency. Both accept a command every 16 cycles:
+The last standalone memory-backed frontend map predates inverse serialization
+and remains useful for isolating the coefficient-path tradeoff. That barrel
+design has fourteen contexts and a 217-cycle latency; the bitwise design has
+fifteen contexts, two complete working cores, and a 234-cycle latency. Both
+accept a command every 16 cycles:
 
 | Metric | 14-context barrel | 15-context bitwise | Change |
 | --- | ---: | ---: | ---: |
@@ -272,8 +279,8 @@ actual exponent-memory instance.
 
 | Context | Logical storage | UltraScale+ mapping | Context cells |
 | --- | ---: | ---: | ---: |
-| Replicated accumulators | 128 x 120 x 128 bits | 256 `RAMB36E2` | 20,301 |
-| Blind Rotate exponents | 9,450 x 11 bits | 9 `RAMB18E2` | 4,224 |
+| Replicated accumulators | 128 x 128 x 128 bits | 256 `RAMB36E2` | 20,312 |
+| Blind Rotate exponents | 10,080 x 11 bits | 9 `RAMB18E2` | 4,827 |
 | Index-zero sample extraction | 16 x 2,048-bit mask plus result queue | 150 `RAM32M16` | 1,254 |
 
 The sample-extraction total consists of 147 distributed-RAM primitives for
@@ -331,10 +338,11 @@ result-rate ratio and 1.807x throughput per DSP relative to HOGE, but its
 14,574 DSPs exposed two implementation gaps before route. The first is now
 fixed: the width-preserving exact Gauss MAC maps the standalone 256-lane
 External Product to the paper's 1,536 DSPs instead of CIRCT's former 9,216,
-while also reducing LUT, MUXF, and carry counts. The wrapper still
-instantiates two inverse cores; a single serialized inverse path is the next
-RTL reduction to validate. See `docs/fpt-hoge-comparison.md` for the exact
-decomposition and caveats.
+while also reducing LUT, MUXF, and carry counts. The throughput wrapper now
+serializes the two inverse component frames through one inverse core and has
+passed distinct-data, backpressure, paper-size II=16, and complete-wrapper
+schedule tests. Its projected DSP contract is 5,408 pending the new complete
+map. See `docs/fpt-hoge-comparison.md` for the exact decomposition and caveats.
 
 The first apples-to-apples transform route is automated as:
 
@@ -352,7 +360,7 @@ tools/run_u280_blind_rotate_comparison.sh ../SGen \
 ```
 
 It regenerates the transforms and both batched tops, then routes the
-14-context barrel and 15-context/two-core bitwise designs at the same II=16,
+14-context barrel and 16-context/two-core bitwise designs at the same II=16,
 part, periods, and implementation settings. It records source hashes and
 writes routed resource/timing/power summaries plus pairwise differences.
 Vivado is not installed on this host, but the complete preparation-only path
@@ -369,8 +377,8 @@ INTT, 32 in the inverse NTT, and 127 in its Blind Rotate path. Each multiplier
 contains a 64-by-64 product and modular reduction. The direct common-U280 flow
 now routes those exact HOGE cores beside the FPT FTT cores and reports frame
 rate per LUT/DSP instead of comparing source-level multiplier counts. Its
-full-wrapper schedule harness measures 12,217.1 cycles/result for the
-15-context FPT batch and 158,318.5 cycles/result for HOGE's two-context batch:
+full-wrapper schedule harness measures 11,915.2 cycles/result for the
+16-context FPT batch and 158,318.5 cycles/result for HOGE's two-context batch:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \

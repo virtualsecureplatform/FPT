@@ -28,7 +28,7 @@ checked-out HOGE commit.
 
 The full Blind Rotate comparison is architectural rather than
 parameter-identical. HOGE returns sample-extracted TLWEs for two contexts,
-whereas the current FPT top drains TRLWE accumulators for 14 or 15 contexts.
+whereas the current FPT top drains TRLWE accumulators for 14 or 16 contexts.
 Transform-only results isolate the arithmetic representation; complete-top
 results must also report throughput and batch size instead of comparing raw
 resource totals alone.

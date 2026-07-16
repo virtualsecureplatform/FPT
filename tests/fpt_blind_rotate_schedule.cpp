@@ -32,7 +32,7 @@ int main(int argc, char **argv)
     std::uint64_t compute_done_edge =
         std::numeric_limits<std::uint64_t>::max();
 
-    constexpr std::uint64_t contexts = 15;
+    constexpr std::uint64_t contexts = 16;
     constexpr std::uint64_t dimension = 630;
     constexpr std::uint64_t polynomial_size = 1024;
     constexpr std::uint64_t coefficients_per_input = dimension + 1;

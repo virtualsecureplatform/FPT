@@ -90,11 +90,13 @@ fpt_split_modules=$(rg -c '^module FptSignedSplitMultiply ' \
     "$fpt_br" || true)
 fpt_split_instances=$(rg -c '^  FptSignedSplitMultiply #' \
     "$fpt_br" || true)
+fpt_inverse_instances=$(rg -c '^  FptSGenInverse generated ' \
+    "$fpt_br" || true)
 if [[ ! $fpt_forward_products =~ ^[1-9][0-9]*$ || \
       ! $fpt_inverse_products =~ ^[1-9][0-9]*$ || \
       $fpt_gauss_modules != 1 || $fpt_split_modules != 1 || \
-      $fpt_split_instances != 3 ]]; then
-    echo "Unexpected FPT split-product structure: forward=$fpt_forward_products inverse=$fpt_inverse_products gauss_modules=$fpt_gauss_modules split_modules=$fpt_split_modules split_instances=$fpt_split_instances" \
+      $fpt_split_instances != 3 || $fpt_inverse_instances != 1 ]]; then
+    echo "Unexpected FPT split-product structure: forward=$fpt_forward_products inverse=$fpt_inverse_products gauss_modules=$fpt_gauss_modules split_modules=$fpt_split_modules split_instances=$fpt_split_instances inverse_instances=$fpt_inverse_instances" \
         >&2
     exit 1
 fi
@@ -118,10 +120,11 @@ fi
 # The exact Gauss MAC maps three real products per complex lane. Each explicit
 # 30x27-bit product is split into two signed DSP48E2-sized products. Yosys
 # merges the mutually exclusive accumulator-buffer branches, giving
-# 256 * 3 * 2 = 1536 DSPs. Two additional DSPs remain in wrapper glue.
+# 256 * 3 * 2 = 1536 DSPs. The serialized component path instantiates one
+# inverse transform, and two additional DSPs remain in wrapper glue.
 fpt_wrapper_glue_dsps=2
 fpt_expected_dsps=$((
-    fpt_forward_products + 2 * fpt_inverse_products +
+    fpt_forward_products + fpt_inverse_products +
     fpt_external_product_dsps + fpt_wrapper_glue_dsps
 ))
 hoge_multipliers=$(manifest_value hoge_blind_rotate_intorus_mul_instances)

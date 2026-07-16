@@ -10,8 +10,8 @@ import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
 
 /** Opt-in Set-II batch-throughput regression using the generated 512-point
-  * tangent transforms. Thirteen contexts cover the 208-cycle pipeline while
-  * retaining the paper's 16-cycle initiation interval.
+  * tangent transforms. Fourteen contexts cover the shared-inverse pipeline
+  * while retaining the paper's 16-cycle initiation interval.
   */
 final class PaperBatchedScheduleSpec
     extends AnyFlatSpec
@@ -40,7 +40,11 @@ final class PaperBatchedScheduleSpec
       inversePath.toString,
       includeVerilogSource = true
     )
-    val config = BatchedCmuxEngineConfig(engine, batchContexts = 13)
+    val config = BatchedCmuxEngineConfig(
+      engine,
+      batchContexts = 14,
+      serializeInverseComponents = true
+    )
     val issuedContexts = (0 until config.batchContexts) :+ 0
 
     test(new BatchedCmuxEngine(config))
@@ -138,7 +142,7 @@ final class PaperBatchedScheduleSpec
         doneCycles.sliding(2).foreach { pair =>
           pair(1) - pair(0) should be(config.commandInterval)
         }
-        doneCycles.head - acceptCycles.head should be(208)
+        doneCycles.head - acceptCycles.head should be(215)
         info(
           s"Set-II batch interval ${config.commandInterval}, " +
             s"latency ${doneCycles.head - acceptCycles.head} launch-inclusive cycles"

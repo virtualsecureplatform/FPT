@@ -279,14 +279,17 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
   */
 final class DoubleBufferedExternalProductAccumulator(
     val config: ExternalProductConfig,
-    val tagWidth: Int
+    val tagWidth: Int,
+    val serializeComponents: Boolean = false
 ) extends Module {
   import TransformUtil._
   require(tagWidth >= 1)
+  require(!serializeComponents || config.outputComponents >= 2)
 
   private val rowWidth = counterWidth(config.rows)
   private val inputBeatWidth = counterWidth(config.inputFrameBeats)
   private val outputBeatWidth = counterWidth(config.outputFrameBeats)
+  private val outputComponentWidth = counterWidth(config.outputComponents)
   private val pointWidth = counterWidth(config.points)
   private val bufferCount = 2
 
@@ -312,7 +315,10 @@ final class DoubleBufferedExternalProductAccumulator(
 
     val outputValid = Output(Bool())
     val outputReady = Input(Bool())
+    val outputStart = Output(Bool())
     val outputFirst = Output(Bool())
+    val outputLast = Output(Bool())
+    val outputComponent = Output(UInt(outputComponentWidth.W))
     val outputTag = Output(UInt(tagWidth.W))
     val output = Output(
       Vec(
@@ -351,6 +357,7 @@ final class DoubleBufferedExternalProductAccumulator(
   val inputBeat = RegInit(0.U(inputBeatWidth.W))
   val outputActive = RegInit(false.B)
   val outputBank = RegInit(0.U(1.W))
+  val outputComponent = RegInit(0.U(outputComponentWidth.W))
   val outputBeat = RegInit(0.U(outputBeatWidth.W))
   val doneReg = RegInit(false.B)
   val doneTagReg = RegInit(0.U(tagWidth.W))
@@ -398,7 +405,13 @@ final class DoubleBufferedExternalProductAccumulator(
   }
 
   io.outputValid := outputActive
-  io.outputFirst := outputActive && outputBeat === 0.U
+  io.outputFirst := outputActive && outputComponent === 0.U &&
+    outputBeat === 0.U
+  val outputFrameLast = outputActive &&
+    outputBeat === (config.outputFrameBeats - 1).U
+  io.outputLast := outputFrameLast &&
+    outputComponent === (config.outputComponents - 1).U
+  io.outputComponent := outputComponent
   io.outputTag := bankTags(outputBank)
   io.done := doneReg
   io.doneTag := doneTagReg
@@ -489,7 +502,7 @@ final class DoubleBufferedExternalProductAccumulator(
 
   val outputFire = io.outputValid && io.outputReady
   val finalOutputBeat = outputFire &&
-    outputBeat === (config.outputFrameBeats - 1).U
+    (if (serializeComponents) io.outputLast else outputFrameLast)
   val readyNext = Wire(Vec(bufferCount, Bool()))
   readyNext := bankReady
   for (buffer <- 0 until bufferCount) {
@@ -501,18 +514,24 @@ final class DoubleBufferedExternalProductAccumulator(
     }
   }
   bankReady := readyNext
+  io.outputStart := (!outputActive && readyNext.asUInt.orR) ||
+    (serializeComponents.B && outputFire && outputFrameLast &&
+      (!io.outputLast || readyNext.asUInt.orR))
 
   def startReadyOutput(): Unit = {
     when(readyNext(0)) {
       outputActive := true.B
       outputBank := 0.U
+      outputComponent := 0.U
       outputBeat := 0.U
     }.elsewhen(readyNext(1)) {
       outputActive := true.B
       outputBank := 1.U
+      outputComponent := 0.U
       outputBeat := 0.U
     }.otherwise {
       outputActive := false.B
+      outputComponent := 0.U
       outputBeat := 0.U
     }
   }
@@ -524,6 +543,11 @@ final class DoubleBufferedExternalProductAccumulator(
       doneReg := true.B
       doneTagReg := bankTags(outputBank)
       startReadyOutput()
+    }.elsewhen(
+      serializeComponents.B && outputFrameLast
+    ) {
+      outputComponent := outputComponent + 1.U
+      outputBeat := 0.U
     }.otherwise {
       outputBeat := outputBeat + 1.U
     }

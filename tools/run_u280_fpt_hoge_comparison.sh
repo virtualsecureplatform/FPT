@@ -121,9 +121,11 @@ fpt_split_modules=$(rg -c '^module FptSignedSplitMultiply ' \
     "$fpt_br" || true)
 fpt_split_instances=$(rg -c '^  FptSignedSplitMultiply #' \
     "$fpt_br" || true)
+fpt_inverse_instances=$(rg -c '^  FptSGenInverse generated ' \
+    "$fpt_br" || true)
 if [[ $fpt_gauss_modules != 1 || $fpt_split_modules != 1 || \
-      $fpt_split_instances != 3 ]]; then
-    echo "Unexpected FPT Gauss multiplier structure: gauss_modules=$fpt_gauss_modules split_modules=$fpt_split_modules split_instances=$fpt_split_instances" \
+      $fpt_split_instances != 3 || $fpt_inverse_instances != 1 ]]; then
+    echo "Unexpected FPT datapath structure: gauss_modules=$fpt_gauss_modules split_modules=$fpt_split_modules split_instances=$fpt_split_instances inverse_instances=$fpt_inverse_instances" \
         >&2
     exit 1
 fi
@@ -163,7 +165,7 @@ elif command -v yosys >/dev/null; then
     fpt_yosys_version=$(awk -F '\t' \
         '$1 == "yosys_version" { print $2 }' "$fpt_yosys_metrics")
     fpt_yosys_accumulator_memories=$(awk -F '\t' \
-        '$1 == "accumulator_memories_120x128" { print $2 }' \
+        '$1 == "accumulator_memories_128x128" { print $2 }' \
         "$fpt_yosys_metrics")
     fpt_yosys_hierarchy_port_bits=$(awk -F '\t' \
         '$1 == "hierarchy_port_bits" { print $2 }' "$fpt_yosys_metrics")
@@ -356,7 +358,7 @@ composed_flow_sha=$(hash_lines \
     printf 'fpt_yosys_boundary_status\t%s\n' \
         "$fpt_yosys_boundary_status"
     printf 'fpt_yosys_version\t%s\n' "$fpt_yosys_version"
-    printf 'fpt_yosys_accumulator_memories_120x128\t%s\n' \
+    printf 'fpt_yosys_accumulator_memories_128x128\t%s\n' \
         "$fpt_yosys_accumulator_memories"
     printf 'fpt_yosys_hierarchy_port_bits\t%s\n' \
         "$fpt_yosys_hierarchy_port_bits"
@@ -387,7 +389,7 @@ composed_flow_sha=$(hash_lines \
     printf 'hoge_forward_frame_ii_cycles\t32\n'
     printf 'hoge_inverse_frame_ii_cycles\t32\n'
     printf 'fpt_blind_rotate_dimension\t630\n'
-    printf 'fpt_blind_rotate_contexts\t15\n'
+    printf 'fpt_blind_rotate_contexts\t16\n'
     printf 'fpt_blind_rotate_top\tBatchedBlindRotateSampleExtractEngine\n'
     printf 'fpt_blind_rotate_cmux_schedule_cycles\t10080\n'
     printf 'fpt_blind_rotate_batch_cycles\t%s\n' "$fpt_br_batch_cycles"
@@ -406,7 +408,7 @@ composed_flow_sha=$(hash_lines \
     printf 'fpt_blind_rotate_schedule_output_beats\t%s\n' \
         "$fpt_br_schedule_output_beats"
     printf 'fpt_blind_rotate_output\tsample-extracted-tlwe\n'
-    printf 'fpt_blind_rotate_output_beats\t15375\n'
+    printf 'fpt_blind_rotate_output_beats\t16400\n'
     printf 'hoge_blind_rotate_dimension\t636\n'
     printf 'hoge_blind_rotate_contexts\t2\n'
     printf 'hoge_blind_rotate_top\tHOGEBlindRotateBaseline\n'

@@ -45,8 +45,8 @@ if rg -q ':[[:space:]]+assert\(' "$source_file"; then
 fi
 for pattern in \
     '^module BatchedBlindRotateSampleExtractEngine\(' \
-    '^module mem_120x128\(' \
-    '^module exponentMemory_9450x11\(' \
+    '^module mem_128x128\(' \
+    '^module exponentMemory_10080x11\(' \
     '^module maskMemory_16x2048\('; do
     if ! rg -q "$pattern" "$source_file"; then
         echo "Missing expected synthesis structure $pattern in $source_file" >&2
@@ -55,15 +55,15 @@ for pattern in \
 done
 
 accumulator_memories=$(awk '
-    /^  mem_120x128 / { count++ }
+    /^  mem_128x128 / { count++ }
     END { print count + 0 }
 ' "$source_file")
 if [[ $accumulator_memories != 128 ]]; then
     echo "Expected 128 replicated accumulator memories, found $accumulator_memories" >&2
     exit 1
 fi
-if ! rg -q 'reg \[127:0\] Memory\[0:119\];' "$source_file" || \
-   ! rg -q 'reg \[10:0\] Memory\[0:9449\];' "$source_file" || \
+if ! rg -q 'reg \[127:0\] Memory\[0:127\];' "$source_file" || \
+   ! rg -q 'reg \[10:0\] Memory\[0:10079\];' "$source_file" || \
    ! rg -q 'reg \[2047:0\] Memory\[0:15\];' "$source_file"; then
     echo "An expected Chisel memory shape changed in $source_file" >&2
     exit 1
@@ -265,9 +265,9 @@ done
     printf 'yosys_version\t%s\n' "$yosys_version"
     printf 'automatic_declarations\t0\n'
     printf 'formal_check_cells\t0\n'
-    printf 'accumulator_memories_120x128\t%s\n' "$accumulator_memories"
-    printf 'accumulator_memory_bits\t1966080\n'
-    printf 'exponent_memory_bits\t103950\n'
+    printf 'accumulator_memories_128x128\t%s\n' "$accumulator_memories"
+    printf 'accumulator_memory_bits\t2097152\n'
+    printf 'exponent_memory_bits\t110880\n'
     printf 'sample_extract_memory_bits\t32768\n'
     printf 'hierarchy_port_bits\t%s\n' "$hierarchy_port_bits"
     printf 'hierarchy_memory_bits\t%s\n' "$hierarchy_memory_bits"

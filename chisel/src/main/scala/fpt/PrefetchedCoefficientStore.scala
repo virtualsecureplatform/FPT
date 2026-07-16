@@ -95,7 +95,9 @@ final class PrefetchedBatchedCmuxCoefficientStore(
   // an unnecessarily early burst.
   val commandCooldown = RegInit(0.U(cooldownWidth.W))
   val commandAvailable = memory.io.contextLoaded(io.commandContext) &&
-    !busy(io.commandContext)
+    (!busy(io.commandContext) ||
+      (memory.io.updateDone &&
+        memory.io.updateDoneContext === io.commandContext))
   io.commandReady := commandCooldown === 0.U &&
     memory.io.prefetchReady && !fillOutstanding && hasFreeBuffer &&
     commandAvailable
@@ -144,7 +146,6 @@ final class PrefetchedBatchedCmuxCoefficientStore(
     bufferOccupied(freeBuffer) := true.B
     when(commandFire) {
       bufferExponent(freeBuffer) := io.exponent
-      busy(io.commandContext) := true.B
     }.otherwise {
       drainContextReg := io.drainContext
     }
@@ -310,6 +311,11 @@ final class PrefetchedBatchedCmuxCoefficientStore(
     when(memory.io.updateDone &&
         memory.io.updateDoneContext === context.U) {
       busy(context) := false.B
+    }
+    // A context may be relaunched on the cycle its prior update commits.
+    // Keep it busy for the newly accepted command in that case.
+    when(commandFire && io.commandContext === context.U) {
+      busy(context) := true.B
     }
   }
   when(io.loadStart) {

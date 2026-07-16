@@ -10,9 +10,9 @@ import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
 
 /** Opt-in Set-II throughput regression for the synthesis-oriented accumulator
-  * banks. Fourteen barrel contexts cover its 217-cycle pipeline; fifteen
-  * bitwise contexts cover its 234-cycle pipeline. Both wrap to context zero
-  * to prove sustained 16-cycle reuse.
+  * banks. Fourteen barrel contexts cover its shared-inverse pipeline; sixteen
+  * bitwise contexts cover the folded variant. Both wrap to context zero to
+  * prove sustained 16-cycle reuse.
   */
 final class PaperBankedBatchScheduleSpec
     extends AnyFlatSpec
@@ -48,13 +48,14 @@ final class PaperBankedBatchScheduleSpec
       includeVerilogSource = true,
       bitwiseBitsPerCycle = if (bitwise) Some(2) else None
     )
-    val expectedLatency = if (bitwise) 234 else 217
+    val expectedLatency = if (bitwise) 241 else 224
     val config = BatchedCmuxEngineConfig(
       engine,
-      batchContexts = if (bitwise) 15 else 14,
+      batchContexts = if (bitwise) 16 else 14,
       coefficientStorage =
         if (bitwise) BatchedCoefficientStorage.BitwiseReplicatedBanks
-        else BatchedCoefficientStorage.ReplicatedBanks
+        else BatchedCoefficientStorage.ReplicatedBanks,
+      serializeInverseComponents = true
     )
     val issuedContexts = (0 until config.batchContexts) :+ 0
 

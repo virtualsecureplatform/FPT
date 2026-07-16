@@ -15,13 +15,22 @@ final case class BatchedCmuxEngineConfig(
     engine: CmuxEngineConfig,
     batchContexts: Int,
     coefficientStorage: BatchedCoefficientStorage =
-      BatchedCoefficientStorage.RegisterArray
+      BatchedCoefficientStorage.RegisterArray,
+    serializeInverseComponents: Boolean = false
 ) {
   require(batchContexts >= 2)
   require(
     engine.forwardSGen.isDefined && engine.inverseSGen.isDefined,
     "the batched engine requires continuous-flow SGen transforms"
   )
+  if (serializeInverseComponents) {
+    require(engine.coefficient.components == 2)
+    require(engine.externalProduct.outputComponents == 2)
+    require(
+      engine.inverseSGen.exists(_.inputLeadCycles == 1),
+      "serialized inverse components require a one-cycle SGen input lead"
+    )
+  }
   val rows: Int = engine.externalProduct.rows
   val commandInterval: Int = rows * engine.forwardTransform.frameBeats
   val contextWidth: Int = TransformUtil.counterWidth(batchContexts)
@@ -172,18 +181,10 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
   val external = Module(
     new DoubleBufferedExternalProductAccumulator(
       externalConfig,
-      contextWidth
+      contextWidth,
+      serializeComponents = config.serializeInverseComponents
     )
   )
-  val inverses = Seq.fill(coefficientConfig.components) {
-    Module(
-      new SGenInverseTangentBackend(
-        base.inverseTransform,
-        base.inverseNormalizeShift,
-        base.inverseSGen.get
-      )
-    )
-  }
 
   coefficients.io.loadStart := io.loadStart
   coefficients.io.loadContext := io.loadContext
@@ -244,69 +245,140 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
     0.U
   )
 
-  // Pulse inverse start once when a PISO transaction reaches its first beat;
-  // the beat itself remains held until SGen's input lead has elapsed.
-  val inverseStartIssued = RegInit(false.B)
-  val inverseStart = external.io.outputValid && external.io.outputFirst &&
-    !inverseStartIssued
-  when(inverseStart) { inverseStartIssued := true.B }
+  if (config.serializeInverseComponents) {
+    val inverse = Module(
+      new SGenInverseTangentBackend(
+        base.inverseTransform,
+        base.inverseNormalizeShift,
+        base.inverseSGen.get
+      )
+    )
+    val inverseTags = Module(
+      new Queue(UInt(contextWidth.W), config.batchContexts + 2)
+    )
 
-  val inverseTags = Module(
-    new Queue(UInt(contextWidth.W), config.batchContexts + 2)
-  )
-  inverseTags.io.enq.valid := inverseStart
-  inverseTags.io.enq.bits := external.io.outputTag
-  when(inverseStart) {
-    assert(inverseTags.io.enq.ready, "inverse tag queue overflow")
-  }
-
-  val allInverseInputReady = inverses.map(_.io.inputReady).reduce(_ && _)
-  external.io.outputReady := allInverseInputReady
-  val externalOutputFire = external.io.outputValid && external.io.outputReady
-  val externalOutputBeat = RegInit(0.U(inverseBeatWidth.W))
-  val externalOutputLast = externalOutputBeat ===
-    (base.inverseTransform.frameBeats - 1).U
-  when(externalOutputFire) {
-    when(externalOutputLast) {
-      externalOutputBeat := 0.U
-      inverseStartIssued := false.B
-    }.otherwise {
-      externalOutputBeat := externalOutputBeat + 1.U
-    }
-  }
-  for ((inverse, component) <- inverses.zipWithIndex) {
-    inverse.io.start := inverseStart
-    inverse.io.inputValid := external.io.outputValid && allInverseInputReady
-    inverse.io.input := external.io.output(component)
+    // The External Product announces a frame on the cycle before its first
+    // beat, or on the prior frame's final beat for continuous traffic. This
+    // is exactly SGen's one-cycle input-lead contract.
+    external.io.outputReady := inverse.io.inputReady
+    val externalOutputFire = external.io.outputValid &&
+      external.io.outputReady
+    inverse.io.start := external.io.outputStart
+    inverse.io.inputValid := external.io.outputValid &&
+      inverse.io.inputReady
+    inverse.io.input := external.io.output(external.io.outputComponent)
     inverse.io.fftTwiddle := 0.U.asTypeOf(inverse.io.fftTwiddle)
     inverse.io.untwist := io.inverseUntwist
-  }
-  io.inverseUntwistIndex := inverses.head.io.untwistIndex
+    io.inverseUntwistIndex := inverse.io.untwistIndex
 
-  val inverseOutputBeat = RegInit(0.U(inverseBeatWidth.W))
-  val inverseOutputFirst = inverseOutputBeat === 0.U
-  val inverseOutputLast = inverseOutputBeat ===
-    (base.inverseTransform.frameBeats - 1).U
-  val allInverseOutputValid = inverses.map(_.io.outputValid).reduce(_ && _)
-  coefficients.io.updateValid := allInverseOutputValid &&
-    inverseTags.io.deq.valid
-  coefficients.io.updateFirst := coefficients.io.updateValid &&
-    inverseOutputFirst
-  coefficients.io.updateContext := inverseTags.io.deq.bits
-  for ((inverse, component) <- inverses.zipWithIndex) {
-    coefficients.io.updateLow(component) := inverse.io.coefficientLow
-    coefficients.io.updateHigh(component) := inverse.io.coefficientHigh
-    inverse.io.outputReady := coefficients.io.updateReady &&
-      allInverseOutputValid && inverseTags.io.deq.valid
-  }
-  val inverseOutputFire = coefficients.io.updateValid &&
-    coefficients.io.updateReady
-  inverseTags.io.deq.ready := inverseOutputFire && inverseOutputLast
-  when(inverseOutputFire) {
-    when(inverseOutputLast) {
-      inverseOutputBeat := 0.U
-    }.otherwise {
-      inverseOutputBeat := inverseOutputBeat + 1.U
+    inverseTags.io.enq.valid := externalOutputFire &&
+      external.io.outputFirst
+    inverseTags.io.enq.bits := external.io.outputTag
+    when(inverseTags.io.enq.valid) {
+      assert(inverseTags.io.enq.ready, "inverse tag queue overflow")
+    }
+
+    val componentJoin = Module(
+      new InverseComponentJoin(
+        base.inverseTransform.frameBeats,
+        base.inverseTransform.lanes,
+        base.inverseTransform.dataWidth
+      )
+    )
+    componentJoin.io.inputValid := inverse.io.outputValid
+    inverse.io.outputReady := componentJoin.io.inputReady
+    componentJoin.io.inputLow := inverse.io.coefficientLow
+    componentJoin.io.inputHigh := inverse.io.coefficientHigh
+    componentJoin.io.outputReady := coefficients.io.updateReady &&
+      inverseTags.io.deq.valid
+
+    coefficients.io.updateValid := componentJoin.io.outputValid &&
+      inverseTags.io.deq.valid
+    coefficients.io.updateFirst := coefficients.io.updateValid &&
+      componentJoin.io.outputFirst
+    coefficients.io.updateContext := inverseTags.io.deq.bits
+    coefficients.io.updateLow := componentJoin.io.outputLow
+    coefficients.io.updateHigh := componentJoin.io.outputHigh
+    when(componentJoin.io.outputValid) {
+      assert(inverseTags.io.deq.valid, "missing serialized inverse tag")
+    }
+    inverseTags.io.deq.ready := componentJoin.io.outputValid &&
+      componentJoin.io.outputReady && componentJoin.io.outputLast
+  } else {
+    val inverses = Seq.fill(coefficientConfig.components) {
+      Module(
+        new SGenInverseTangentBackend(
+          base.inverseTransform,
+          base.inverseNormalizeShift,
+          base.inverseSGen.get
+        )
+      )
+    }
+
+    // Pulse inverse start once when a PISO transaction reaches its first beat;
+    // the beat itself remains held until SGen's input lead has elapsed.
+    val inverseStartIssued = RegInit(false.B)
+    val inverseStart = external.io.outputValid && external.io.outputFirst &&
+      !inverseStartIssued
+    when(inverseStart) { inverseStartIssued := true.B }
+
+    val inverseTags = Module(
+      new Queue(UInt(contextWidth.W), config.batchContexts + 2)
+    )
+    inverseTags.io.enq.valid := inverseStart
+    inverseTags.io.enq.bits := external.io.outputTag
+    when(inverseStart) {
+      assert(inverseTags.io.enq.ready, "inverse tag queue overflow")
+    }
+
+    val allInverseInputReady = inverses.map(_.io.inputReady).reduce(_ && _)
+    external.io.outputReady := allInverseInputReady
+    val externalOutputFire = external.io.outputValid && external.io.outputReady
+    val externalOutputBeat = RegInit(0.U(inverseBeatWidth.W))
+    val externalOutputLast = externalOutputBeat ===
+      (base.inverseTransform.frameBeats - 1).U
+    when(externalOutputFire) {
+      when(externalOutputLast) {
+        externalOutputBeat := 0.U
+        inverseStartIssued := false.B
+      }.otherwise {
+        externalOutputBeat := externalOutputBeat + 1.U
+      }
+    }
+    for ((inverse, component) <- inverses.zipWithIndex) {
+      inverse.io.start := inverseStart
+      inverse.io.inputValid := external.io.outputValid && allInverseInputReady
+      inverse.io.input := external.io.output(component)
+      inverse.io.fftTwiddle := 0.U.asTypeOf(inverse.io.fftTwiddle)
+      inverse.io.untwist := io.inverseUntwist
+    }
+    io.inverseUntwistIndex := inverses.head.io.untwistIndex
+
+    val inverseOutputBeat = RegInit(0.U(inverseBeatWidth.W))
+    val inverseOutputFirst = inverseOutputBeat === 0.U
+    val inverseOutputLast = inverseOutputBeat ===
+      (base.inverseTransform.frameBeats - 1).U
+    val allInverseOutputValid = inverses.map(_.io.outputValid).reduce(_ && _)
+    coefficients.io.updateValid := allInverseOutputValid &&
+      inverseTags.io.deq.valid
+    coefficients.io.updateFirst := coefficients.io.updateValid &&
+      inverseOutputFirst
+    coefficients.io.updateContext := inverseTags.io.deq.bits
+    for ((inverse, component) <- inverses.zipWithIndex) {
+      coefficients.io.updateLow(component) := inverse.io.coefficientLow
+      coefficients.io.updateHigh(component) := inverse.io.coefficientHigh
+      inverse.io.outputReady := coefficients.io.updateReady &&
+        allInverseOutputValid && inverseTags.io.deq.valid
+    }
+    val inverseOutputFire = coefficients.io.updateValid &&
+      coefficients.io.updateReady
+    inverseTags.io.deq.ready := inverseOutputFire && inverseOutputLast
+    when(inverseOutputFire) {
+      when(inverseOutputLast) {
+        inverseOutputBeat := 0.U
+      }.otherwise {
+        inverseOutputBeat := inverseOutputBeat + 1.U
+      }
     }
   }
 

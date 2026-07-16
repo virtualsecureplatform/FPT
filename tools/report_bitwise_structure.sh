@@ -42,5 +42,5 @@ printf 'bitwise-single\t%s\t%s\t0\t%s\n' \
 printf 'bitwise-batched\t%s\t%s\t%s\t%s\n' \
     "$(stat -c %s "$batched")" \
     "$(count_pattern "$batched" 'BitwiseCmuxForwardFrontend cores_[0-9]+ \\(')" \
-    "$(count_pattern "$batched" '^  mem_120x128 ')" \
+    "$(count_pattern "$batched" '^  mem_128x128 ')" \
     "$batched_bits"

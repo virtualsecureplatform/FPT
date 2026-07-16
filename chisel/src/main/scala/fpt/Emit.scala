@@ -34,7 +34,7 @@ private object SynthesisEmitter {
 object PaperSetII {
   val blindRotateDomainDimension = 630
   val barrelBatchContexts = 14
-  val bitwiseBatchContexts = 15
+  val bitwiseBatchContexts = 16
 
   val coefficient = CmuxCoefficientConfig(
     polynomialSize = 1024,
@@ -186,7 +186,11 @@ object EmitPaperBatchedCmux extends App {
     inversePath.toString,
     includeVerilogSource = false
   )
-  val config = BatchedCmuxEngineConfig(engine, batchContexts = 13)
+  val config = BatchedCmuxEngineConfig(
+    engine,
+    batchContexts = 14,
+    serializeInverseComponents = true
+  )
 
   ChiselStage.emitSystemVerilogFile(
     new BatchedCmuxEngine(config),
@@ -215,7 +219,8 @@ object EmitPaperBankedBatchedCmux extends App {
   val config = BatchedCmuxEngineConfig(
     engine,
     batchContexts = PaperSetII.barrelBatchContexts,
-    coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks
+    coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks,
+    serializeInverseComponents = true
   )
 
   ChiselStage.emitSystemVerilogFile(
@@ -246,7 +251,8 @@ object EmitPaperBitwiseBatchedCmux extends App {
   val config = BatchedCmuxEngineConfig(
     engine,
     batchContexts = PaperSetII.bitwiseBatchContexts,
-    coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks
+    coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
+    serializeInverseComponents = true
   )
 
   ChiselStage.emitSystemVerilogFile(
@@ -282,7 +288,8 @@ object EmitPaperBatchedBlindRotate extends App {
     BatchedCmuxEngineConfig(
       engine,
       batchContexts = PaperSetII.barrelBatchContexts,
-      coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks
+      coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks,
+      serializeInverseComponents = true
     ),
     domainDimension
   )
@@ -321,7 +328,8 @@ object EmitPaperBitwiseBatchedBlindRotate extends App {
     BatchedCmuxEngineConfig(
       engine,
       batchContexts = PaperSetII.bitwiseBatchContexts,
-      coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks
+      coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
+      serializeInverseComponents = true
     ),
     domainDimension
   )
@@ -360,7 +368,8 @@ object EmitPaperBitwiseBatchedBlindRotateSampleExtract extends App {
     BatchedCmuxEngineConfig(
       engine,
       batchContexts = PaperSetII.bitwiseBatchContexts,
-      coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks
+      coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
+      serializeInverseComponents = true
     ),
     domainDimension
   )
