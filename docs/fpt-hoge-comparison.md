@@ -160,16 +160,26 @@ An apples-to-apples Verilator run with the current split-DSP SGen sources gives:
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Direct spectral key | 13,824 | 31,869 | 190,644 | 11,915.2 | 163,395 | 16--19 |
 | Two-bank buffered load | 864 | 18,956 | 190,646 | 11,915.4 | 163,397 | 16--19 |
+| Physical buffered accelerator | 864 | 1,012 | 190,646 | 11,915.4 | 163,397 | internal 16--19 |
 
-Thus the external key datapath is 16 times narrower and the complete top has
-40.5% fewer port bits. The synchronous cache costs two startup cycles per
-16-result batch, or 0.001%, and introduces no transaction gap beyond the
-current SGen core's existing three-cycle frame restart. Input initialization
-remains 10,400 cycles and the overlapped sample-extraction tail remains 16,849
-cycles. The test streams all 630 key coefficients through 161,280 narrow load
-beats, checks all 10,080 wide key transactions in dimension/context order, and
-checks all 16,400 output beats. At an equal clock, the buffered schedule still
-has 13.287 times HOGE's measured result rate.
+Thus the external key datapath is 16 times narrower and the buffered
+verification top has 40.5% fewer port bits. The physical Chisel wrapper also
+removes the unused legacy twist/untwist ports--the selected SGen `fptdft` and
+`fptidft` cores already integrate those operations--plus internal key and
+transform diagnostics. This leaves 60 ports and 1,012 port bits: 94.7% fewer
+bits than the buffered verification top and 96.8% fewer than the direct-key
+top. The functional input, key-load, control, and result streams remain.
+
+The synchronous cache costs two startup cycles per 16-result batch, or
+0.001%, and introduces no transaction gap beyond the current SGen core's
+existing three-cycle frame restart. Input initialization remains 10,400 cycles
+and the overlapped sample-extraction tail remains 16,849 cycles. The
+verification-boundary test streams all 630 key coefficients through 161,280
+narrow load beats, checks all 10,080 wide key transactions in
+dimension/context order, and checks all 16,400 output beats. A second full
+Verilator run through the 1,012-bit physical boundary reproduces the same
+190,646-cycle batch and all load/output counts. At an equal clock, the
+buffered schedule still has 13.287 times HOGE's measured result rate.
 
 The two banks store 442,368 logical bits (54 KiB). A standalone UltraScale+
 Yosys map of the exact emitted cache is:
@@ -191,6 +201,9 @@ Reproduce the buffered source, schedule, and standalone cache map with:
 tools/generate_sgen_fpt.sh ../SGen build/sgen-fpt
 tools/emit_paper_buffered_bitwise_batched_blind_rotate_sample_extract.sh
 tools/measure_fpt_buffered_blind_rotate_schedule.sh
+tools/emit_paper_buffered_blind_rotate_accelerator.sh
+FPT_VERILATOR_JOBS=8 \
+  tools/measure_fpt_buffered_blind_rotate_accelerator_schedule.sh
 tools/synthesize_fpt_bootstrapping_key_buffer.sh
 ```
 
