@@ -385,6 +385,21 @@ DSP, reproducing the intended pre-route multiplier-efficiency advantage. Raw
 counts, bit-exact validation, and the remaining placement/timing caveats are
 in `docs/fpt-hoge-comparison.md`.
 
+Map the complete raw-TLWE-through-sample-extraction wrappers with:
+
+```sh
+tools/synthesize_fpt_hoge_blind_rotate.sh
+```
+
+At an equal clock, the measured wrapper schedules give FPT 12.959x the HOGE
+result rate and 1.807x the throughput per mapped DSP. The complete map also
+exposes the next implementation work: CIRCT's widened External Product
+multiplications and the two parallel inverse cores raise the current FPT
+total to 14,574 DSPs. This is a local technology map without timing or
+routing, so the U280 bundle remains the final comparison. The raw counts,
+normalization, and planned reductions are in
+[the FPT/HOGE comparison guide](docs/fpt-hoge-comparison.md).
+
 The integration currently supports native 32-bit Torus parameters.  Its
 bootstrapping key is normalized to real Torus units before being quantized to
 the paper's BK format; this is why it is a distinct key type rather than a

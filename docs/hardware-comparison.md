@@ -324,8 +324,17 @@ The local Yosys UltraScale+ map now places each DSP-sized signed product in
 exactly one DSP48E2 and reproduces a pre-route throughput-per-DSP advantage
 over HOGE: 1.664x forward and 1.378x inverse. The exact U280 result must still
 come from Vivado because only placement and routing determine achieved clock,
-congestion, routed resources, and power. The first apples-to-apples route is
-automated as:
+congestion, routed resources, and power.
+
+The complete-wrapper local map also shows a 12.959x equal-clock result-rate
+ratio and 1.807x throughput per DSP relative to HOGE, but its current 14,574
+DSPs expose two implementation gaps before route: CIRCT widens the External
+Product's signed products to 57-by-57-bit unsigned multipliers, and the
+wrapper instantiates two inverse cores. The width-preserving Gauss MAC and a
+single serialized inverse path are the next RTL reductions to validate. See
+`docs/fpt-hoge-comparison.md` for the exact decomposition and caveats.
+
+The first apples-to-apples transform route is automated as:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \

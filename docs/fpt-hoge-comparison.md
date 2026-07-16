@@ -143,6 +143,69 @@ the three technology-mapped memory counts separately. These are independent
 synthesis checks; only the Vivado runs provide placed and routed U280
 resource and timing results.
 
+## Local UltraScale+ complete-wrapper mapping
+
+After preparing the source-only handoff, map both complete Blind Rotate
+wrappers through the same open-source UltraScale+ flow with:
+
+```sh
+tools/synthesize_fpt_hoge_blind_rotate.sh
+```
+
+The script verifies the prepared-source hashes before synthesis and uses an
+opt-in content-signature cache. It flattens the raw-TLWE-through-sample-
+extraction wrappers with `synth_xilinx -family xcup`, disables SRL inference,
+and leaves wide-mux lowering disabled for both designs. An exploratory FPT
+run with `-widemux 5` expanded its large multiplexers into `$shiftx` cells
+and exceeded 53 GiB before technology mapping, so that pass is not a useful
+common local baseline.
+
+Yosys 0.45+139 produces the following complete maps. These remain
+technology-mapped estimates: there is no placement, routing, clock result, or
+power estimate.
+
+| Wrapper | Cycles/result | Estimated logic cells | LUT1--6 | FF | BRAM | Distributed RAM | DSP48E2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| FPT, 15 contexts | 12,217.1 | 768,816 | 1,341,749 | 1,880,600 | 265 | 4,120 | 14,574 |
+| HOGE, 2 contexts | 158,318.5 | 156,913 | 281,598 | 775,713 | 202 | 3,341 | 2,032 |
+
+At an equal clock, the measured schedules and mapped resources give:
+
+| Result-rate ratio | Logic-cell efficiency | LUT efficiency | FF efficiency | DSP efficiency |
+| ---: | ---: | ---: | ---: | ---: |
+| 12.959x | 2.645x | 2.720x | 5.345x | 1.807x |
+
+Thus the current FPT wrapper produces more results per mapped resource than
+HOGE at equal clock even before its main arithmetic inefficiencies are fixed.
+This is encouraging but is not yet a hardware-speed result: congestion may
+reduce FPT's achieved clock, and the 14,574-DSP implementation is far beyond
+the paper's 5,980-DSP full-design target.
+
+The exact FPT DSP contract also identifies why the total is high. The map is
+`2,384` forward-transform DSPs, two inverse transforms at `1,486` DSPs each,
+`9,216` External Product DSPs, and two wrapper-glue DSPs. CIRCT currently
+emits each nominal signed 30-by-27-bit External Product multiplication as a
+57-by-57-bit unsigned modular multiplication over sign-extended operands.
+After synthesis merges the two accumulator-buffer copies, each of the 1,024
+remaining real multiplications occupies nine DSP48E2s. In contrast, an
+explicit width-preserving schoolbook complex MAC would require two DSPs for
+each of four real products per lane (`2,048` total), and a three-product Gauss
+MAC would require `1,536`, matching the paper's MAC count.
+
+There is a second likely reduction to verify. The current wrapper instantiates
+two inverse cores, while one inverse core has frame II 8 and the CMUX accepts
+a new transaction every 16 cycles. Serializing the two output components
+through one inverse core should therefore preserve the sustained CMUX II and
+remove another 1,486 DSPs, provided ordering and backpressure tests confirm
+the schedule. This is a follow-up design hypothesis, not a measured result.
+
+The local flow retains `stat.json`, synthesis logs, host timing and peak RSS,
+and source/tool/flow signatures under
+`build/yosys-fpt-hoge-blind-rotate/`. The FPT map took 7,206 seconds and
+44,803,252 KiB peak RSS on the development host; HOGE took 1,919 seconds and
+16,443,268 KiB. `summary.tsv` records the raw counts and `comparison.tsv`
+records the throughput-normalized ratios.
+
 ## Route on the Vivado machine
 
 For the lowest-drift route, package the already validated prepared sources
