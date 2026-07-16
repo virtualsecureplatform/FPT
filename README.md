@@ -321,8 +321,10 @@ tools/run_u280_blind_rotate_comparison.sh ../SGen \
   build/vivado-u280-blind-rotate-comparison
 ```
 
-The direct fixed-point FTT versus HOGE modular-NTT comparison uses both
-checkouts and routes matched forward, inverse, and Blind Rotate boundaries:
+The fixed-point FTT versus HOGE modular-NTT comparison uses both checkouts and
+routes matched forward, inverse, and Blind Rotate boundaries. Its default FPT
+Blind Rotate top includes the physical two-coefficient key cache and 864-bit
+load port:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
@@ -343,17 +345,21 @@ FPT_PREPARED_VERIFY_ONLY=1 \
   build/u280-fpt-hoge-portable
 ```
 
-The portable bundle checks clean Git provenance plus every RTL/flow checksum
-before Vivado can start. Remove `FPT_PREPARED_VERIFY_ONLY=1` on the route
-machine; the standard period, job, design-selection, and reuse controls still
-apply.
+The portable bundle checks clean Git provenance plus all seven RTL inputs and
+every flow checksum before Vivado can start. Remove
+`FPT_PREPARED_VERIFY_ONLY=1` on the route machine; the standard period, job,
+design-selection, and reuse controls still apply. The former direct-key FPT
+top remains available as the explicit `fpt-blind-rotate` design.
 
-With Verilator available, preparation also validates and measures both full
-Blind Rotate wrappers. The current FPT batch completes 16 raw-TLWE inputs and
-sample-extracted outputs in 190,645 cycles, or 11,915.3 cycles/result. The
-compiled schedule models use content signatures, so
-`FPT_SCHEDULE_BUILD_DIR` and `HOGE_SCHEDULE_BUILD_DIR` caches remain reusable
-when the same RTL is regenerated in a different handoff directory.
+With Verilator available, preparation validates and measures the direct-key
+FPT, physical buffered FPT, and HOGE full Blind Rotate wrappers. The physical
+FPT batch completes 16 raw-TLWE inputs and sample-extracted outputs in 190,646
+cycles, or 11,915.4 cycles/result, including all 630 narrow key-coefficient
+loads. The compiled schedule models use content signatures, so
+`FPT_SCHEDULE_BUILD_DIR`, `FPT_BUFFERED_SCHEDULE_BUILD_DIR`, and
+`HOGE_SCHEDULE_BUILD_DIR` caches remain reusable when the same RTL is
+regenerated in a different handoff directory.
+
 When Yosys is installed, the same preparation independently checks the full
 Chisel/SGen synthesis hierarchy and the expected coefficient-accumulator,
 External Product, exponent, and sample-extraction memory shapes. The External
@@ -430,19 +436,20 @@ Map the complete raw-TLWE-through-sample-extraction wrappers with:
 tools/synthesize_fpt_hoge_blind_rotate.sh
 ```
 
-At an equal clock, the current measured wrapper schedule gives FPT 13.287x the
-HOGE result rate. The current `346deff` map gives
-3.473x/3.694x/7.689x/4.992x throughput per logic cell/LUT/FF/DSP. The older
+At an equal clock, the current measured physical-wrapper schedule gives FPT
+13.287x the HOGE result rate. Its cache-inclusive map gives
+3.361x/3.693x/7.641x/4.992x throughput per logic cell/LUT/FF/DSP. The older
 `66c8dc1` map used 14,574 DSPs, exposing CIRCT's widened External Product
 multiplications and two parallel inverse cores. The exact Gauss MAC maps the
 standalone 256-lane External Product to 1,536 DSPs instead of 9,216, and the
 throughput top serializes both components through one inverse FTT. Inferred
-accumulator memory then reduces the complete-wrapper map to 600,388 estimated
-logic cells, 1,012,828 LUTs, and 1,340,497 FFs while retaining exactly 5,408
-DSPs. Run `tools/synthesize_fpt_external_product.sh` to isolate the MAC and
-storage changes. These are local technology maps without timing or routing,
-so the U280 bundle remains the final comparison. The raw counts and
-normalization are in
+accumulator memory and the physical key cache produce a complete-wrapper map
+of 620,387 estimated logic cells, 1,013,285 LUTs, 1,348,958 FFs, and 457 BRAMs
+while retaining exactly 5,408 DSPs. Run
+`tools/synthesize_fpt_external_product.sh` to isolate the MAC and storage
+changes. These are local technology maps without timing or routing, so the
+U280 bundle remains the final comparison. The raw counts and normalization
+are in
 [the FPT/HOGE comparison guide](docs/fpt-hoge-comparison.md).
 
 The integration currently supports native 32-bit Torus parameters.  Its

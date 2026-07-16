@@ -11,7 +11,7 @@ efficiency over HOGE's 64-bit modular NTT.
 | --- | --- | --- |
 | Forward transform | 512 complex tangent points, 128 lanes, frame II 4 | 1024 modular coefficients, 32 lanes, frame II 32 |
 | Inverse transform | 512 complex tangent points, 64 lanes, frame II 8 | 1024 modular coefficients, 32 lanes, frame II 32 |
-| Blind Rotate | `n=630`, 16 contexts, base-10 level 2, one shared inverse FTT, index-zero sample extraction, 11,915.3 measured wrapper cycles/result | `n=636`, 2 contexts, base-6 level 3, index-zero sample extraction, 158,318.5 measured wrapper cycles/result |
+| Blind Rotate | `n=630`, 16 contexts, base-10 level 2, one shared inverse FTT, two-coefficient key cache, index-zero sample extraction, 11,915.4 measured wrapper cycles/result | `n=636`, 2 contexts, base-6 level 3, index-zero sample extraction, 158,318.5 measured wrapper cycles/result |
 
 Both transform frames represent one 1024-coefficient negacyclic polynomial.
 The FPT transforms come from the tracked SGen `fpt` branch. The HOGE wrappers
@@ -20,15 +20,17 @@ HOGE checkout is not patched. Structural guards require 31 modular
 multipliers in HOGE's forward INTT, 32 in its inverse NTT, and 127 in its
 Blind Rotate path.
 
-The baseline Blind Rotate tops exclude IKS, Vitis DataMover IP, and on-chip
-bootstrapping-key storage. Both receive bootstrapping-key data externally.
-Both now retain index-zero sample extraction: HOGE returns two TLWEs and FPT
-returns sixteen TLWEs. FPT's Chisel wrapper drains each completed TRLWE into
-synchronous mask memory, emits `a(0), -a(N-1), ..., -a(1), b(0)`, and marks
-only the last coefficient of the full batch. Complete-top resource totals
-must still be reported with batch size and throughput. The transform-only
-pairs remain the cleaner measurement of the FTT-versus-NTT arithmetic
-representation.
+The baseline Blind Rotate tops exclude IKS, Vitis DataMover IP, and full
+on-chip bootstrapping-key storage. HOGE receives key data externally. The
+default FPT top loads it through an 864-bit port into a two-coefficient
+ping-pong cache; the former 13,824-bit direct-key top remains an opt-in
+diagnostic design. Both retain index-zero sample extraction: HOGE returns two
+TLWEs and FPT returns sixteen TLWEs. FPT's Chisel wrapper drains each completed
+TRLWE into synchronous mask memory, emits
+`a(0), -a(N-1), ..., -a(1), b(0)`, and marks only the last coefficient of the
+full batch. Complete-top resource totals must still be reported with batch
+size and throughput. The transform-only pairs remain the cleaner measurement
+of the FTT-versus-NTT arithmetic representation.
 
 The parameters are intentionally not identical at this stage, as requested.
 They are recorded in `manifest.tsv` so a later parameter-alignment experiment
@@ -103,29 +105,32 @@ tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
   build/vivado-u280-fpt-hoge-prepared
 ```
 
-This regenerates and lints all six RTL inputs, records all three Git commits
+This regenerates and lints all seven RTL inputs, records all three Git commits
 and worktree states, checks HOGE's multiplier structure, and hashes every
 synthesis source and Tcl flow. When Verilator is available it also measures
-both complete Blind Rotate schedules with zero data and continuously
-available bootstrapping keys.
+the direct-key FPT, physical buffered FPT, and HOGE complete Blind Rotate
+schedules with zero data.
 
-FPT loads 10,096 raw TLWE coefficients, issues 10,080 key transactions, and
-returns 16,400 sample-extracted TLWE beats. The full batch takes 190,645
-cycles (11,915.3 cycles/result): 10,400 input cycles, 163,396 cycles from run
-launch through the end of CMUX computation, and a 16,849-cycle drain tail.
-Sample extraction of earlier contexts overlaps the computation. HOGE's final
-`TLAST` occurs after 316,637 cycles (158,318.5 cycles/result). Each of its
-eight BK streams consumes 122,512 beats, with a maximum inter-port skew of
-eight beats. At an equal clock, these wrapper schedules imply 13.287 times
-the result rate for FPT, before accounting for routed frequency or resources.
+The physical FPT top loads 10,096 raw TLWE coefficients and 630 spectral-key
+coefficients, consumes 161,280 narrow key beats, and returns 16,400
+sample-extracted TLWE beats. The full batch takes 190,646 cycles (11,915.4
+cycles/result): 10,400 input cycles, 163,397 cycles from run launch through
+the end of CMUX computation, and a 16,849-cycle drain tail. The direct-key
+diagnostic source takes 190,645 cycles (11,915.3 cycles/result). Sample
+extraction of earlier contexts overlaps the computation. HOGE's final `TLAST`
+occurs after 316,637 cycles (158,318.5 cycles/result). Each of its eight BK
+streams consumes 122,512 beats, with a maximum inter-port skew of eight beats.
+At an equal clock, these wrapper schedules imply 13.287 times the result rate
+for physical FPT, before accounting for routed frequency or resources.
 
-The first FPT Verilator build is large. Both schedule models use
+The first FPT Verilator build is large. All three schedule models use
 content-based source, harness, flow, and tool signatures, so identical RTL is
 reused even when it is regenerated under a different handoff directory. Set
-`FPT_SCHEDULE_BUILD_DIR` or `HOGE_SCHEDULE_BUILD_DIR` to keep the caches
-outside that directory. Set `FPT_SKIP_FPT_SCHEDULE=1` or
-`FPT_SKIP_HOGE_SCHEDULE=1` to omit the corresponding measurement; its
-throughput fields are then recorded as `unmeasured`.
+`FPT_SCHEDULE_BUILD_DIR`, `FPT_BUFFERED_SCHEDULE_BUILD_DIR`, or
+`HOGE_SCHEDULE_BUILD_DIR` to keep the caches outside that directory. Set
+`FPT_SKIP_FPT_SCHEDULE=1` or `FPT_SKIP_HOGE_SCHEDULE=1` to omit the
+corresponding measurement; its throughput fields are then recorded as
+`unmeasured`.
 
 When Yosys is installed, preparation also independently elaborates the exact
 paper-sized Chisel top together with both generated SGen transforms. This
@@ -158,7 +163,7 @@ An apples-to-apples Verilator run with the current split-DSP SGen sources gives:
 
 | FPT key boundary | Key data bits | Top-level port bits | Batch cycles | Cycles/result | Compute cycles | Key-transaction gap |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Direct spectral key | 13,824 | 31,869 | 190,644 | 11,915.2 | 163,395 | 16--19 |
+| Direct spectral key | 13,824 | 31,869 | 190,645 | 11,915.3 | 163,396 | 16--19 |
 | Two-bank buffered load | 864 | 18,956 | 190,646 | 11,915.4 | 163,397 | 16--19 |
 | Physical buffered accelerator | 864 | 1,012 | 190,646 | 11,915.4 | 163,397 | internal 16--19 |
 
@@ -391,7 +396,7 @@ FPT_PREPARED_VERIFY_ONLY=1 \
   build/u280-fpt-hoge-portable
 ```
 
-The copied runner verifies the clean Git provenance, all six manifest source
+The copied runner verifies the clean Git provenance, all seven manifest source
 hashes, all three route-flow hashes, and the complete bundle checksum before
 Vivado starts. It does not require the SGen or HOGE checkouts, JDK, sbt,
 Verilator, or Yosys. On the route machine, remove the verification-only
@@ -418,7 +423,7 @@ The default design list is:
 
 ```text
 fpt-forward hoge-forward fpt-inverse hoge-inverse
-fpt-blind-rotate hoge-blind-rotate
+fpt-buffered-blind-rotate hoge-blind-rotate
 ```
 
 Set `FPT_HOGE_DESIGNS` to a space-separated subset for a shorter run. For
@@ -429,6 +434,10 @@ FPT_HOGE_DESIGNS='fpt-forward hoge-forward fpt-inverse hoge-inverse' \
 tools/run_u280_fpt_hoge_comparison.sh ../HOGE ../SGen \
   build/vivado-u280-fpt-hoge-transforms
 ```
+
+Select `fpt-blind-rotate` explicitly to route the historical direct-key top.
+When HOGE metrics are present, `comparison.tsv` labels that pair
+`blind-rotate`; the default physical pair is labeled `buffered-blind-rotate`.
 
 Runs are sequential. `FPT_VIVADO_REUSE=1` reuses a completed result only when
 its source, flow, top, part, clock, tool version, and job-count signature still
@@ -451,9 +460,10 @@ benefit indicators:
   usable.
 
 For Blind Rotate, both throughput values now cover wrapper input through the
-final sample-extracted TLWE. The comparison still includes intentionally
-different parameter sets, batch sizes, and host-side input/key interfaces, so
-it is an architectural upper-level view rather than a controlled arithmetic
-microbenchmark. The transform-only pairs remain the controlled evidence for
-the fixed-point FTT datapath itself. Vivado vectorless power is an estimate,
-not board power.
+final sample-extracted TLWE. The default FPT route includes the BRAM-backed
+two-coefficient cache and its physical 864-bit load port. The comparison still
+includes intentionally different parameter sets, batch sizes, and key-stream
+organizations, so it is an architectural upper-level view rather than a
+controlled arithmetic microbenchmark. The transform-only pairs remain the
+controlled evidence for the fixed-point FTT datapath itself. Vivado vectorless
+power is an estimate, not board power.

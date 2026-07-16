@@ -27,9 +27,9 @@ Use the `fpt` branch of
 [`virtualsecureplatform/SGen`](https://github.com/virtualsecureplatform/SGen)
 as a sibling of this checkout. The runner assembles `sgen.bat` from that
 checkout on every invocation and removes the generated binary afterward when
-it was not already present. It then regenerates both transforms and both
-Chisel tops, so files left in an older `build/` directory are never synthesis
-inputs.
+it was not already present. It then regenerates both transforms, the direct
+and physical FPT tops, and the HOGE baselines, so files left in an older
+`build/` directory are never synthesis inputs.
 
 The route machine needs:
 
@@ -53,7 +53,7 @@ tools/package_u280_fpt_hoge_handoff.sh \
   build/u280-fpt-hoge-portable
 ```
 
-The approximately 21 MB directory contains only the six synthesis RTL files,
+The approximately 31 MB directory contains only the seven synthesis RTL files,
 the exact three route Tcl files, the route-acceptance/report tools, provenance
 manifest, documentation, and `bundle.sha256`. It excludes generated C++
 schedule objects, Scala build products, and unrelated HOGE FIRRTL artifacts.
@@ -106,7 +106,10 @@ FPT_VIVADO_JOBS=8 \
 ```
 
 The part, periods, job count, and six-design selection default to the prepared
-manifest and accept the same environment overrides as the direct runner.
+manifest and accept the same environment overrides as the direct runner. The
+default Blind Rotate pair is `fpt-buffered-blind-rotate` and
+`hoge-blind-rotate`; `fpt-blind-rotate` selects the historical wide direct-key
+FPT boundary explicitly.
 Routes and reports are written back under the bundle. `route-manifest.tsv`
 records the actual Vivado version and route-time selections, while each run's
 content signature includes the source, flow, part, period, job count, top,
@@ -134,10 +137,11 @@ recorded as hierarchy-wide values, while the accumulator, exponent, and
 sample-extraction primitive counts come from smaller real-clock mapping
 contexts. Neither is a substitute for routed U280 utilization.
 
-`FPT_SCHEDULE_BUILD_DIR=...` and `HOGE_SCHEDULE_BUILD_DIR=...` keep the two
-Verilator schedule models outside a handoff directory. Their signatures are
-content-based, so an identical regenerated source tree reuses the compiled
-model even when its absolute path changes.
+`FPT_SCHEDULE_BUILD_DIR=...`, `FPT_BUFFERED_SCHEDULE_BUILD_DIR=...`, and
+`HOGE_SCHEDULE_BUILD_DIR=...` keep the three Verilator schedule models outside
+a handoff directory. Their signatures are content-based, so an identical
+regenerated source tree reuses the compiled model even when its absolute path
+changes.
 
 The preparation path can be checked on a machine without Vivado:
 
@@ -154,7 +158,7 @@ tests/prepared_u280_handoff_test.sh
 
 ## Outputs
 
-`manifest.tsv` records both Git commits and tracked-worktree states, the
+`manifest.tsv` records all three Git commits and tracked-worktree states, the
 Vivado version, the part and clocks, and SHA-256 hashes of every synthesis
 input and both the top-level and shared acceptance-flow Tcl. Each run
 directory contains pre- and post-route utilization/timing reports, route
