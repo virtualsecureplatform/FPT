@@ -143,6 +143,32 @@ object PaperSetII {
       ),
       bitwiseBitsPerCycle = bitwiseBitsPerCycle
     )
+
+  def bufferedBlindRotate(
+      forwardPath: String,
+      inversePath: String,
+      domainDimension: Int
+  ): BufferedBlindRotateConfig = {
+    val engine = cmuxEngine(
+      forwardPath,
+      inversePath,
+      includeVerilogSource = false,
+      bitwiseBitsPerCycle = Some(2)
+    )
+    val blindRotate = BatchedBlindRotateEngineConfig(
+      BatchedCmuxEngineConfig(
+        engine,
+        batchContexts = bitwiseBatchContexts,
+        coefficientStorage =
+          BatchedCoefficientStorage.BitwiseReplicatedBanks,
+        serializeInverseComponents = true,
+        useSynchronousExternalProductMemory = true,
+        decoupledBootstrappingKey = true
+      ),
+      domainDimension
+    )
+    BufferedBlindRotateConfig(blindRotate, keyLoadLanes)
+  }
 }
 
 object EmitPaperExternalProduct extends App {
@@ -470,26 +496,10 @@ object EmitPaperBufferedBitwiseBatchedBlindRotateSampleExtract extends App {
     if (args.length == 4) args(3).toInt
     else PaperSetII.blindRotateDomainDimension
   require(domainDimension >= 1, "DOMAIN_DIMENSION must be positive")
-  val engine = PaperSetII.cmuxEngine(
+  val config = PaperSetII.bufferedBlindRotate(
     forwardPath.toString,
     inversePath.toString,
-    includeVerilogSource = false,
-    bitwiseBitsPerCycle = Some(2)
-  )
-  val blindRotate = BatchedBlindRotateEngineConfig(
-    BatchedCmuxEngineConfig(
-      engine,
-      batchContexts = PaperSetII.bitwiseBatchContexts,
-      coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
-      serializeInverseComponents = true,
-      useSynchronousExternalProductMemory = true,
-      decoupledBootstrappingKey = true
-    ),
     domainDimension
-  )
-  val config = BufferedBlindRotateConfig(
-    blindRotate,
-    keyLoadLanes = PaperSetII.keyLoadLanes
   )
 
   ChiselStage.emitSystemVerilogFile(
@@ -499,6 +509,38 @@ object EmitPaperBufferedBitwiseBatchedBlindRotateSampleExtract extends App {
   )
   val systemVerilog = outputDirectory.resolve(
     "BufferedBatchedBlindRotateSampleExtractEngine.sv"
+  )
+  SynthesisEmitter.removeInlineFileList(systemVerilog)
+  SynthesisEmitter.addBlockRamStyle(systemVerilog, "memory_32x13824")
+}
+
+object EmitPaperBufferedBlindRotateAccelerator extends App {
+  require(
+    args.length == 3 || args.length == 4,
+    "usage: EmitPaperBufferedBlindRotateAccelerator " +
+      "OUTPUT_DIR SGEN_FORWARD_V SGEN_INVERSE_V [DOMAIN_DIMENSION]"
+  )
+
+  val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
+  val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
+  val inversePath = Path.of(args(2)).toAbsolutePath.normalize
+  val domainDimension =
+    if (args.length == 4) args(3).toInt
+    else PaperSetII.blindRotateDomainDimension
+  require(domainDimension >= 1, "DOMAIN_DIMENSION must be positive")
+  val config = PaperSetII.bufferedBlindRotate(
+    forwardPath.toString,
+    inversePath.toString,
+    domainDimension
+  )
+
+  ChiselStage.emitSystemVerilogFile(
+    new BufferedBlindRotateAccelerator(config),
+    args = Array("--target-dir", outputDirectory.toString),
+    firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  val systemVerilog = outputDirectory.resolve(
+    "BufferedBlindRotateAccelerator.sv"
   )
   SynthesisEmitter.removeInlineFileList(systemVerilog)
   SynthesisEmitter.addBlockRamStyle(systemVerilog, "memory_32x13824")
