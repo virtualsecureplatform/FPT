@@ -20,7 +20,7 @@ HOGE checkout is not patched. Structural guards require 31 modular
 multipliers in HOGE's forward INTT, 32 in its inverse NTT, and 127 in its
 Blind Rotate path.
 
-The Blind Rotate tops exclude IKS, Vitis DataMover IP, and on-chip
+The baseline Blind Rotate tops exclude IKS, Vitis DataMover IP, and on-chip
 bootstrapping-key storage. Both receive bootstrapping-key data externally.
 Both now retain index-zero sample extraction: HOGE returns two TLWEs and FPT
 returns sixteen TLWEs. FPT's Chisel wrapper drains each completed TRLWE into
@@ -142,6 +142,65 @@ explicitly. The manifest labels generic totals as hierarchy-wide and records
 the three technology-mapped memory counts separately. These are independent
 synthesis checks; only the Vivado runs provide placed and routed U280
 resource and timing results.
+
+## Buffered bootstrapping-key boundary
+
+The direct-key FPT wrapper above is useful for measuring the arithmetic
+schedule, but its 13,824-bit spectral-key input is not a realistic accelerator
+boundary. The buffered wrapper adds a Chisel two-coefficient ping-pong cache.
+It accepts 16 complex Q8.19 values, or 864 bits, per load beat and presents the
+External Product's 256 complex operands through a synchronous 13,824-bit
+internal read. While one coefficient serves all 16 Blind Rotate contexts, the
+other bank loads the next coefficient. The first two coefficients load in
+parallel with accumulator initialization.
+
+An apples-to-apples Verilator run with the current split-DSP SGen sources gives:
+
+| FPT key boundary | Key data bits | Top-level port bits | Batch cycles | Cycles/result | Compute cycles | Key-transaction gap |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Direct spectral key | 13,824 | 31,869 | 190,644 | 11,915.2 | 163,395 | 16--19 |
+| Two-bank buffered load | 864 | 18,956 | 190,646 | 11,915.4 | 163,397 | 16--19 |
+
+Thus the external key datapath is 16 times narrower and the complete top has
+40.5% fewer port bits. The synchronous cache costs two startup cycles per
+16-result batch, or 0.001%, and introduces no transaction gap beyond the
+current SGen core's existing three-cycle frame restart. Input initialization
+remains 10,400 cycles and the overlapped sample-extraction tail remains 16,849
+cycles. The test streams all 630 key coefficients through 161,280 narrow load
+beats, checks all 10,080 wide key transactions in dimension/context order, and
+checks all 16,400 output beats. At an equal clock, the buffered schedule still
+has 13.287 times HOGE's measured result rate.
+
+The two banks store 442,368 logical bits (54 KiB). A standalone UltraScale+
+Yosys map of the exact emitted cache is:
+
+| Estimated logic cells | LUT1--6 | FF | RAMB36E2 | Distributed RAM | DSP48E2 | CARRY | MUXF |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 14,012 | 14,065 | 965 | 192 | 0 | 0 | 4 | 156 |
+
+The BRAM count is governed by the 13,824-bit one-cycle read width rather than
+logical bit capacity: 192 parallel 72-bit slices implement each depth-32
+memory word. This is a throughput-shaped cache, not full bootstrapping-key
+storage. The RTL is Chisel; the emitter only attaches a `ram_style = "block"`
+attribute to the generated memory declaration because the current CIRCT path
+does not preserve the legacy Chisel/FIRRTL memory attribute.
+
+Reproduce the buffered source, schedule, and standalone cache map with:
+
+```sh
+tools/generate_sgen_fpt.sh ../SGen build/sgen-fpt
+tools/emit_paper_buffered_bitwise_batched_blind_rotate_sample_extract.sh
+tools/measure_fpt_buffered_blind_rotate_schedule.sh
+tools/synthesize_fpt_bootstrapping_key_buffer.sh
+```
+
+The full generated hierarchy, including both real SGen transforms, passes
+Yosys hierarchy and memory-structure checks. A new flat complete-wrapper map
+is intentionally still pending: the previous direct wrapper required
+6,218.61 seconds and 35,010,708 KiB peak RSS locally. The standalone cache map
+therefore must not be added to the older complete-wrapper totals or used for a
+new resource-efficiency claim. Placement, routing, and clock measurement also
+remain work for the Vivado machine.
 
 ## Local UltraScale+ complete-wrapper mapping
 
