@@ -1,7 +1,7 @@
 # FPT FTT versus HOGE NTT U280 comparison
 
 This flow prepares and routes source-faithful arithmetic baselines from this
-FPT checkout and the sibling HOGE checkout. It is the direct hardware test of
+FPT checkout and its pinned HOGE submodule. It is the direct hardware test of
 whether the narrower fixed-point tangent FTT buys useful throughput/resource
 efficiency over HOGE's 64-bit modular NTT.
 
@@ -102,7 +102,8 @@ timing, and source/tool/flow signatures under
 
 ```sh
 FPT_VIVADO_PREPARE_ONLY=1 \
-tools/run_u280_fpt_hoge_comparison.sh third_party/HOGE ../SGen \
+tools/run_u280_fpt_hoge_comparison.sh \
+  third_party/HOGE third_party/SGen \
   build/vivado-u280-fpt-hoge-prepared
 ```
 
@@ -220,7 +221,7 @@ zero-key identity. Reproduce it with:
 
 ```sh
 tools/test_paper_buffered_blind_rotate_numerics.sh \
-  ../SGen build/paper-buffered-blind-rotate-numerics
+  third_party/SGen build/paper-buffered-blind-rotate-numerics
 ```
 
 The two banks store 442,368 logical bits (54 KiB). A standalone UltraScale+
@@ -240,7 +241,7 @@ does not preserve the legacy Chisel/FIRRTL memory attribute.
 Reproduce the buffered source, schedule, and standalone cache map with:
 
 ```sh
-tools/generate_sgen_fpt.sh ../SGen build/sgen-fpt
+tools/generate_sgen_fpt.sh third_party/SGen build/sgen-fpt
 tools/emit_paper_buffered_bitwise_batched_blind_rotate_sample_extract.sh
 tools/measure_fpt_buffered_blind_rotate_schedule.sh
 tools/emit_paper_buffered_blind_rotate_accelerator.sh
@@ -452,7 +453,8 @@ and generator dependencies are intentionally present:
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
 FPT_VIVADO_JOBS=8 \
-tools/run_u280_fpt_hoge_comparison.sh third_party/HOGE ../SGen \
+tools/run_u280_fpt_hoge_comparison.sh \
+  third_party/HOGE third_party/SGen \
   build/vivado-u280-fpt-hoge-comparison
 ```
 
@@ -468,7 +470,8 @@ example, route only the arithmetic kernels first:
 
 ```sh
 FPT_HOGE_DESIGNS='fpt-forward hoge-forward fpt-inverse hoge-inverse' \
-tools/run_u280_fpt_hoge_comparison.sh third_party/HOGE ../SGen \
+tools/run_u280_fpt_hoge_comparison.sh \
+  third_party/HOGE third_party/SGen \
   build/vivado-u280-fpt-hoge-transforms
 ```
 

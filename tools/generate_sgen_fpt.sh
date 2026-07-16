@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sgen_dir=${1:-../SGen}
-output_dir=${2:-build/sgen-fpt}
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+sgen_dir=${1:-$repo_root/third_party/SGen}
+output_dir=${2:-$repo_root/build/sgen-fpt}
 # shellcheck source=tools/fpt_arithmetic_profile_contract.sh
 source "$repo_root/tools/fpt_arithmetic_profile_contract.sh"
 forward_module=${FORWARD_MODULE:-FptSGenForward}

@@ -174,7 +174,9 @@ endif()
 
 if(FPT_BUILD_TFHEPP_TESTS)
     if(NOT EXISTS "${FPT_TFHEPP_SOURCE_DIR}/include/params.hpp")
-        message(FATAL_ERROR "FPT_TFHEPP_SOURCE_DIR does not contain TFHEpp")
+        message(FATAL_ERROR
+            "FPT_TFHEPP_SOURCE_DIR does not contain TFHEpp; run "
+            "'git submodule update --init --recursive'")
     endif()
 
     add_executable(fpt_tfhepp_blind_rotate_test

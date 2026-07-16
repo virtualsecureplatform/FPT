@@ -94,7 +94,7 @@ The host-facing physical top now has a separate nonzero paper-size regression:
 
 ```sh
 tools/test_paper_buffered_blind_rotate_numerics.sh \
-  ../SGen build/paper-buffered-blind-rotate-numerics
+  third_party/SGen build/paper-buffered-blind-rotate-numerics
 ```
 
 It keeps the 16-context Set-II datapath and sets the domain dimension to one,
@@ -336,7 +336,8 @@ Blind Rotate bound.
 Regenerate the cyclic comparison and table from local SGen outputs with:
 
 ```sh
-INTEGRATED_TANGENT=0 tools/generate_sgen_fpt.sh ../SGen build/sgen-cyclic
+INTEGRATED_TANGENT=0 tools/generate_sgen_fpt.sh \
+  third_party/SGen build/sgen-cyclic
 tools/report_sgen_structure.sh
 ```
 
@@ -383,14 +384,15 @@ The first apples-to-apples transform route is automated as:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
-tools/run_u280_comparison.sh ../SGen build/vivado-u280-comparison
+tools/run_u280_comparison.sh \
+  third_party/SGen build/vivado-u280-comparison
 ```
 
 The complete raw-TLWE-to-TRLWE Blind Rotate scope uses the same constraints:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
-tools/run_u280_blind_rotate_comparison.sh ../SGen \
+tools/run_u280_blind_rotate_comparison.sh third_party/SGen \
   build/vivado-u280-blind-rotate-comparison
 ```
 
@@ -417,7 +419,8 @@ full-wrapper schedule harness measures 11,915.3 cycles/result for the
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
-tools/run_u280_fpt_hoge_comparison.sh third_party/HOGE ../SGen \
+tools/run_u280_fpt_hoge_comparison.sh \
+  third_party/HOGE third_party/SGen \
   build/vivado-u280-fpt-hoge-comparison
 ```
 

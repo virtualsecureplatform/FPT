@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-sgen_dir=${1:-$repo_root/../SGen}
+sgen_dir=${1:-$repo_root/third_party/SGen}
 output_root=${2:-$repo_root/build/vivado-u280-comparison}
 part=${FPT_U280_PART:-xcu280-fsvh2892-2L-e}
 period_list=${FPT_VIVADO_CLOCK_PERIODS:-5.0 3.425}

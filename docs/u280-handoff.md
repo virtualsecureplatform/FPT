@@ -92,10 +92,10 @@ Reproduce the RTL numerical checks and inverse resource gate with:
 
 ```sh
 FPT_ARITHMETIC_PROFILE=tfhepp-hardware \
-  tools/test_paper_sgen_numerics.sh ../SGen \
+  tools/test_paper_sgen_numerics.sh third_party/SGen \
   build/tfhepp-hardware-sgen-numerics
 FPT_ARITHMETIC_PROFILE=tfhepp-hardware \
-  tools/test_paper_buffered_blind_rotate_numerics.sh ../SGen \
+  tools/test_paper_buffered_blind_rotate_numerics.sh third_party/SGen \
   build/tfhepp-hardware-blind-rotate-numerics
 
 FPT_YOSYS_TRANSFORM_SOURCES=build/tfhepp-hardware-sgen-numerics \
@@ -168,7 +168,8 @@ From the FPT checkout:
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
 FPT_VIVADO_JOBS=8 \
-tools/run_u280_comparison.sh ../SGen build/vivado-u280-comparison
+tools/run_u280_comparison.sh \
+  third_party/SGen build/vivado-u280-comparison
 ```
 
 For the complete Blind Rotate scope:
@@ -176,7 +177,7 @@ For the complete Blind Rotate scope:
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
 FPT_VIVADO_JOBS=8 \
-tools/run_u280_blind_rotate_comparison.sh ../SGen \
+tools/run_u280_blind_rotate_comparison.sh third_party/SGen \
   build/vivado-u280-blind-rotate-comparison
 ```
 
@@ -235,7 +236,7 @@ The preparation path can be checked on a machine without Vivado:
 
 ```sh
 FPT_VIVADO_PREPARE_ONLY=1 FPT_SKIP_LINT=1 \
-tools/run_u280_comparison.sh ../SGen build/vivado-u280-prepared
+tools/run_u280_comparison.sh third_party/SGen build/vivado-u280-prepared
 
 # Exercise the clock, route, DRC, reuse, and report acceptance contract.
 tests/u280_route_contract_test.sh

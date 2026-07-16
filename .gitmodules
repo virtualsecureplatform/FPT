@@ -4,3 +4,6 @@
 [submodule "third_party/HOGE"]
 	path = third_party/HOGE
 	url = https://github.com/virtualsecureplatform/HOGE.git
+[submodule "third_party/SGen"]
+	path = third_party/SGen
+	url = https://github.com/virtualsecureplatform/SGen.git

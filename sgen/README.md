@@ -10,23 +10,22 @@ carries the reproducible FPT transform changes:
 - Q2 twiddles whose total width is four bits shorter than the data path;
 - fixed forward-twist and inverse-untwist operators for the tangent FFT.
 
-The workspace also requires two local SGen commits:
+The pinned SGen submodule also includes two FPT arithmetic fixes:
 
 - `5c0680a` sign-extends fractional power-of-two stage scaling;
 - `4d930ae` splits FPT's 30-by-26-bit fixed-point product into two exact signed
   products that each fit one DSP48E2 multiplier.
 
-These commits are local until the FPT SGen fork is published;
 `tools/generate_sgen_fpt.sh` rejects a checkout without either change. The
 wide-product split changes only RTL structure: an exhaustive boundary test and
 10,000 deterministic random products show it is bit-for-bit equivalent to the
 original full signed product, and the complete 3,485-test SGen suite passes.
 
-Clone or switch to that branch and build it:
+Initialize the pinned checkout and build it:
 
 ```sh
-git clone -b fpt https://github.com/virtualsecureplatform/SGen.git ../SGen
-(cd ../SGen && sbt assembly)
+git submodule update --init third_party/SGen
+(cd third_party/SGen && sbt assembly)
 ```
 
 Then run `tools/generate_sgen_fpt.sh`. Its defaults generate 512-point tangent
@@ -40,7 +39,8 @@ generated designs stable module names for Chisel BlackBox elaboration.
 Run the full-size nonzero numerical regression with:
 
 ```sh
-tools/test_paper_sgen_numerics.sh ../SGen build/paper-sgen-numerics
+tools/test_paper_sgen_numerics.sh \
+  third_party/SGen build/paper-sgen-numerics
 ```
 
 Prefix the command with `FPT_PAPER_BITWISE_CMUX_NUMERICS=1` to run the same
@@ -70,7 +70,7 @@ regenerated with:
 INTEGRATED_TANGENT=0 \
 FFT_LOG_POINTS=4 FFT_LOG_LANES=2 IFFT_LOG_LANES=2 \
 RADIX_LOG=2 IFFT_RADIX_LOG=2 \
-  tools/generate_sgen_fpt.sh ../SGen build/sgen-blackbox
+  tools/generate_sgen_fpt.sh third_party/SGen build/sgen-blackbox
 ```
 
 The guarded-format asymmetric fixtures used by the end-to-end CMUX regression
@@ -83,7 +83,7 @@ FFT_INTEGER_BITS=18 FFT_FRACTIONAL_BITS=20 \
 IFFT_INTEGER_BITS=27 IFFT_FRACTIONAL_BITS=14 IFFT_STAGE_SCALE=1.0 \
 FORWARD_MODULE=FptSGenForwardGuarded16x4 \
 INVERSE_MODULE=FptSGenInverseGuarded16x2 \
-  tools/generate_sgen_fpt.sh ../SGen build/sgen-cmux
+  tools/generate_sgen_fpt.sh third_party/SGen build/sgen-cmux
 ```
 
 SGen reports the required `next`-to-input lead in each generated header.  The

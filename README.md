@@ -27,6 +27,25 @@ generated radix-2^4 streaming structures; this changes the order of rounding
 events but not the transform.  Keeping this difference explicit is preferable
 to claiming bit-exact compatibility with RTL that has not been published.
 
+## Clone the pinned dependencies
+
+TFHEpp, HOGE, and the FPT branch of SGen are pinned as Git submodules under
+`third_party/`. Clone them with the repository:
+
+```sh
+git clone --recurse-submodules \
+  https://github.com/virtualsecureplatform/FPT.git
+```
+
+For an existing clone, initialize the same dependency graph with:
+
+```sh
+git submodule update --init --recursive
+```
+
+The scripts use these pinned checkouts by default. Their optional path
+arguments remain available when comparing another dependency revision.
+
 ## Build the standalone tests
 
 ```sh
@@ -166,7 +185,8 @@ The opt-in full-size numerical check regenerates both cores, four nonzero
 frames per direction, and a dense nonzero Set-II CMUX vector:
 
 ```sh
-tools/test_paper_sgen_numerics.sh ../SGen build/paper-sgen-numerics
+tools/test_paper_sgen_numerics.sh \
+  third_party/SGen build/paper-sgen-numerics
 ```
 
 Set `FPT_PAPER_BITWISE_CMUX_NUMERICS=1` on the same command to validate the
@@ -192,7 +212,7 @@ all 16,400 sample-extracted TLWE words under result backpressure:
 
 ```sh
 tools/test_paper_buffered_blind_rotate_numerics.sh \
-  ../SGen build/paper-buffered-blind-rotate-numerics
+  third_party/SGen build/paper-buffered-blind-rotate-numerics
 ```
 
 The deterministic C++ oracle changes 14,341 output words. The RTL has 5,551
@@ -210,7 +230,7 @@ decomposition levels, 128 forward lanes, and 64 inverse lanes.  Generate the
 SGen sources and emit/lint the composed design with:
 
 ```sh
-tools/generate_sgen_fpt.sh ../SGen build/sgen-fpt
+tools/generate_sgen_fpt.sh third_party/SGen build/sgen-fpt
 tools/emit_paper_cmux.sh build/sgen-fpt/forward.v \
   build/sgen-fpt/inverse.v build/chisel-paper
 tools/emit_paper_bitwise_cmux.sh build/sgen-fpt/forward.v \
@@ -337,14 +357,15 @@ identical constraints:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
-tools/run_u280_comparison.sh ../SGen build/vivado-u280-comparison
+tools/run_u280_comparison.sh \
+  third_party/SGen build/vivado-u280-comparison
 ```
 
 Use the same flow on the complete Blind Rotate wrapper with:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
-tools/run_u280_blind_rotate_comparison.sh ../SGen \
+tools/run_u280_blind_rotate_comparison.sh third_party/SGen \
   build/vivado-u280-blind-rotate-comparison
 ```
 
@@ -355,7 +376,8 @@ load port:
 
 ```sh
 FPT_VIVADO_CLOCK_PERIODS='5.0 3.425' \
-tools/run_u280_fpt_hoge_comparison.sh third_party/HOGE ../SGen \
+tools/run_u280_fpt_hoge_comparison.sh \
+  third_party/HOGE third_party/SGen \
   build/vivado-u280-fpt-hoge-comparison
 ```
 
