@@ -125,7 +125,13 @@ final class ExternalProductSpec
     val rows = vectors("rtl_external_product_vectors.txt")
     val transactionCount = 2
 
-    test(new DoubleBufferedExternalProductAccumulator(config, tagWidth = 2)) {
+    test(
+      new DoubleBufferedExternalProductAccumulator(
+        config,
+        tagWidth = 2,
+        useSynchronousMemory = true
+      )
+    ) {
       dut =>
         dut.io.inputValid.poke(false.B)
         dut.io.inputFirst.poke(false.B)
@@ -137,9 +143,14 @@ final class ExternalProductSpec
 
         var outputTransaction = 0
         var outputBeat = 0
+        var stalledCycles = 0
 
         def checkOutput(): Unit = {
           if (dut.io.outputValid.peek().litToBoolean) {
+            val stall = outputTransaction == 0 && outputBeat == 1 &&
+              stalledCycles < 2
+            dut.io.outputReady.poke((!stall).B)
+            if (stall) stalledCycles += 1
             dut.io.outputTag.expect(outputTransaction.U)
             dut.io.outputFirst.expect((outputBeat == 0).B)
             for (lane <- 0 until config.outputLanes) {
@@ -153,11 +164,15 @@ final class ExternalProductSpec
                 )
               }
             }
-            outputBeat += 1
-            if (outputBeat == config.outputFrameBeats) {
-              outputBeat = 0
-              outputTransaction += 1
+            if (!stall) {
+              outputBeat += 1
+              if (outputBeat == config.outputFrameBeats) {
+                outputBeat = 0
+                outputTransaction += 1
+              }
             }
+          } else {
+            dut.io.outputReady.poke(true.B)
           }
         }
 
@@ -201,7 +216,109 @@ final class ExternalProductSpec
           tailCycles += 1
           tailCycles should be < 2 * config.outputFrameBeats
         }
+        stalledCycles should be(2)
         dut.io.busy.expect(false.B)
       }
+  }
+
+  it should "release a synchronous bank at serialized line rate" in {
+    val lineRateConfig = config.copy(rows = 4)
+    val rows = vectors("rtl_external_product_vectors.txt")
+    val transactionCount = 3
+
+    test(
+      new DoubleBufferedExternalProductAccumulator(
+        lineRateConfig,
+        tagWidth = 2,
+        serializeComponents = true,
+        useSynchronousMemory = true
+      )
+    ) { dut =>
+      dut.io.inputValid.poke(false.B)
+      dut.io.inputFirst.poke(false.B)
+      dut.io.inputTag.poke(0.U)
+      dut.io.outputReady.poke(true.B)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+
+      var outputTransaction = 0
+      var outputComponent = 0
+      var outputBeat = 0
+      var previousOutputStart = false
+
+      def checkOutput(): Unit = {
+        if (dut.io.outputValid.peek().litToBoolean) {
+          dut.io.outputTag.expect(outputTransaction.U)
+          dut.io.outputComponent.expect(outputComponent.U)
+          dut.io.outputFirst.expect(
+            (outputComponent == 0 && outputBeat == 0).B
+          )
+          dut.io.outputLast.expect(
+            (outputComponent == lineRateConfig.outputComponents - 1 &&
+              outputBeat == lineRateConfig.outputFrameBeats - 1).B
+          )
+          if (outputBeat == 0) previousOutputStart should be(true)
+          for (lane <- 0 until lineRateConfig.outputLanes) {
+            val point = outputBeat * lineRateConfig.outputLanes + lane
+            val vector = rows((lineRateConfig.rows - 1) * config.points + point)
+            val offset = 2 + 2 * config.outputComponents + 2 * outputComponent
+            dut.io.output(outputComponent)(lane).real.expect(vector(offset).S)
+            dut.io.output(outputComponent)(lane).imag.expect(
+              vector(offset + 1).S
+            )
+          }
+          outputBeat += 1
+          if (outputBeat == lineRateConfig.outputFrameBeats) {
+            outputBeat = 0
+            outputComponent += 1
+            if (outputComponent == lineRateConfig.outputComponents) {
+              outputComponent = 0
+              outputTransaction += 1
+            }
+          }
+        }
+        previousOutputStart = dut.io.outputStart.peek().litToBoolean
+      }
+
+      for (transaction <- 0 until transactionCount) {
+        for (row <- 0 until lineRateConfig.rows) {
+          for (beat <- 0 until lineRateConfig.inputFrameBeats) {
+            dut.io.inputFirst.poke((row == 0 && beat == 0).B)
+            dut.io.inputTag.poke(transaction.U)
+            dut.io.inputReady.expect(true.B)
+            for (lane <- 0 until lineRateConfig.inputLanes) {
+              val point = beat * lineRateConfig.inputLanes + lane
+              val vector = rows(row * config.points + point)
+              dut.io.decomposition(lane).real.poke(vector(0).S)
+              dut.io.decomposition(lane).imag.poke(vector(1).S)
+              for (component <- 0 until lineRateConfig.outputComponents) {
+                val offset = 2 + 2 * component
+                dut.io.bootstrappingKey(component)(lane).real.poke(
+                  vector(offset).S
+                )
+                dut.io.bootstrappingKey(component)(lane).imag.poke(
+                  vector(offset + 1).S
+                )
+              }
+            }
+            dut.io.inputValid.poke(true.B)
+            checkOutput()
+            dut.clock.step()
+          }
+        }
+      }
+      dut.io.inputValid.poke(false.B)
+      dut.io.inputFirst.poke(false.B)
+
+      var tailCycles = 0
+      while (outputTransaction < transactionCount) {
+        checkOutput()
+        dut.clock.step()
+        tailCycles += 1
+        tailCycles should be <= 2 * lineRateConfig.outputFrameBeats + 1
+      }
+      dut.io.busy.expect(false.B)
+    }
   }
 }

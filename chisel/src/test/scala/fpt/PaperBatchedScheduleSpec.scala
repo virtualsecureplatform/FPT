@@ -43,7 +43,8 @@ final class PaperBatchedScheduleSpec
     val config = BatchedCmuxEngineConfig(
       engine,
       batchContexts = 14,
-      serializeInverseComponents = true
+      serializeInverseComponents = true,
+      useSynchronousExternalProductMemory = true
     )
     val issuedContexts = (0 until config.batchContexts) :+ 0
 
@@ -142,7 +143,7 @@ final class PaperBatchedScheduleSpec
         doneCycles.sliding(2).foreach { pair =>
           pair(1) - pair(0) should be(config.commandInterval)
         }
-        doneCycles.head - acceptCycles.head should be(215)
+        doneCycles.head - acceptCycles.head should be(211)
         info(
           s"Set-II batch interval ${config.commandInterval}, " +
             s"latency ${doneCycles.head - acceptCycles.head} launch-inclusive cycles"

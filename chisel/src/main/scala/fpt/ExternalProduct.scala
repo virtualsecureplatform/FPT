@@ -275,12 +275,15 @@ final class ExternalProductAccumulator(val config: ExternalProductConfig)
   * `inputFirst` marks the first decomposition beat and travels with `inputTag`.
   * Transactions may be adjacent without an idle cycle. The output tag allows
   * the downstream inverse pipeline to route its delayed result back to the
-  * corresponding batch accumulator.
+  * corresponding batch accumulator. The default register-array storage is
+  * convenient for small simulations; `useSynchronousMemory` packs each wide
+  * beat into a pair of inferred synchronous memories for paper-scale RTL.
   */
 final class DoubleBufferedExternalProductAccumulator(
     val config: ExternalProductConfig,
     val tagWidth: Int,
-    val serializeComponents: Boolean = false
+    val serializeComponents: Boolean = false,
+    val useSynchronousMemory: Boolean = false
 ) extends Module {
   import TransformUtil._
   require(tagWidth >= 1)
@@ -331,6 +334,9 @@ final class DoubleBufferedExternalProductAccumulator(
     val busy = Output(Bool())
   })
 
+  private val groupBits = log2Ceil(config.outputGroupsPerInputBeat)
+
+  if (!useSynchronousMemory) {
   val accumulatorMemory = Reg(
     Vec(
       bufferCount,
@@ -379,7 +385,6 @@ final class DoubleBufferedExternalProductAccumulator(
     )
   }
 
-  private val groupBits = log2Ceil(config.outputGroupsPerInputBeat)
   val outputGroup = if (config.outputGroupsPerInputBeat == 1) {
     0.U
   } else {
@@ -550,6 +555,307 @@ final class DoubleBufferedExternalProductAccumulator(
       outputBeat := 0.U
     }.otherwise {
       outputBeat := outputBeat + 1.U
+    }
+  }
+  } else {
+    require(
+      config.inputFrameBeats >= 2,
+      "synchronous External Product storage needs at least two input beats"
+    )
+
+    def memoryWordType =
+      Vec(
+        config.outputComponents,
+        Vec(
+          config.outputGroupsPerInputBeat,
+          Vec(
+            config.outputLanes,
+            new ComplexSInt(config.accumulator.width)
+          )
+        )
+      )
+
+    val memoryWordWidth = config.outputComponents *
+      config.outputGroupsPerInputBeat * config.outputLanes * 2 *
+      config.accumulator.width
+    val accumulatorMemories = Seq.fill(bufferCount) {
+      SyncReadMem(config.inputFrameBeats, UInt(memoryWordWidth.W))
+    }
+
+    val bankTags = Reg(Vec(bufferCount, UInt(tagWidth.W)))
+    val bankReady = RegInit(VecInit(Seq.fill(bufferCount)(false.B)))
+    val writeBank = RegInit(0.U(1.W))
+    val inputActive = RegInit(false.B)
+    val row = RegInit(0.U(rowWidth.W))
+    val inputBeat = RegInit(0.U(inputBeatWidth.W))
+    val outputActive = RegInit(false.B)
+    val outputBank = RegInit(0.U(1.W))
+    val outputComponent = RegInit(0.U(outputComponentWidth.W))
+    val outputBeat = RegInit(0.U(outputBeatWidth.W))
+    val outputHeldValid = RegInit(false.B)
+    val doneReg = RegInit(false.B)
+    val doneTagReg = RegInit(0.U(tagWidth.W))
+
+    val releasingWriteBank = Wire(Bool())
+    val writeBankFree = (!bankReady(writeBank) &&
+      !(outputActive && outputBank === writeBank)) || releasingWriteBank
+    io.inputReady := inputActive || (io.inputFirst && writeBankFree)
+    val inputFire = io.inputValid && io.inputReady
+    val activeRow = Mux(inputActive, row, 0.U)
+    val activeInputBeat = Mux(inputActive, inputBeat, 0.U)
+    val finalInputBeat = inputFire &&
+      activeRow === (config.rows - 1).U &&
+      activeInputBeat === (config.inputFrameBeats - 1).U
+
+    io.keyRow := activeRow
+    for (lane <- 0 until config.inputLanes) {
+      io.pointIndex(lane) := indexedAddress(
+        activeInputBeat,
+        config.inputLanes,
+        lane,
+        pointWidth
+      )
+    }
+
+    def beatGroup(beat: UInt): UInt =
+      if (config.outputGroupsPerInputBeat == 1) 0.U
+      else beat(groupBits - 1, 0)
+    def beatDepth(beat: UInt): UInt =
+      if (config.outputGroupsPerInputBeat == 1) beat
+      else beat >> groupBits
+
+    val outputReadResponse = RegInit(false.B)
+    val outputReadBank = RegInit(0.U(1.W))
+    val outputReadGroup = RegInit(0.U(math.max(1, groupBits).W))
+    io.outputValid := outputHeldValid || outputReadResponse
+    io.outputFirst := io.outputValid && outputComponent === 0.U &&
+      outputBeat === 0.U
+    val outputFrameLast = io.outputValid &&
+      outputBeat === (config.outputFrameBeats - 1).U
+    io.outputLast := outputFrameLast &&
+      outputComponent === (config.outputComponents - 1).U
+    io.outputComponent := outputComponent
+    io.outputTag := bankTags(outputBank)
+    io.done := doneReg
+    io.doneTag := doneTagReg
+    io.busy := inputActive || outputActive || bankReady.asUInt.orR
+    doneReg := false.B
+
+    val outputFire = io.outputValid && io.outputReady
+    val finalOutputBeat = outputFire &&
+      (if (serializeComponents) io.outputLast else outputFrameLast)
+    releasingWriteBank := finalOutputBeat && outputBank === writeBank
+    val readyNext = Wire(Vec(bufferCount, Bool()))
+    readyNext := bankReady
+    for (buffer <- 0 until bufferCount) {
+      when(finalInputBeat && writeBank === buffer.U) {
+        readyNext(buffer) := true.B
+      }
+      when(finalOutputBeat && outputBank === buffer.U) {
+        readyNext(buffer) := false.B
+      }
+    }
+    bankReady := readyNext
+
+    val readableReady = Wire(Vec(bufferCount, Bool()))
+    for (buffer <- 0 until bufferCount) {
+      // A bank becomes logically ready on its final input beat, but its last
+      // synchronous read and following write still occupy the memory ports.
+      readableReady(buffer) := readyNext(buffer) &&
+        !(inputFire && writeBank === buffer.U)
+    }
+    val readyBank = Mux(readableReady(0), 0.U, 1.U)
+    val idleRead = !outputActive && readableReady.asUInt.orR
+    val nextTransactionRead = finalOutputBeat && readableReady.asUInt.orR
+    val continuingRead = outputFire && !finalOutputBeat
+    val outputReadIssue = idleRead || nextTransactionRead || continuingRead
+    val startingRead = idleRead || nextTransactionRead
+    val nextFrameRead = continuingRead && serializeComponents.B &&
+      outputFrameLast
+    val issueBank = Mux(startingRead, readyBank, outputBank)
+    val issueBeat = Mux(
+      startingRead || nextFrameRead,
+      0.U,
+      outputBeat + 1.U
+    )
+    io.outputStart := outputReadIssue &&
+      (startingRead || nextFrameRead)
+
+    val productWord = Wire(memoryWordType)
+    for (component <- 0 until config.outputComponents) {
+      for (group <- 0 until config.outputGroupsPerInputBeat) {
+        for (lane <- 0 until config.outputLanes) {
+          val inputLane = group * config.outputLanes + lane
+          val a = io.decomposition(inputLane)
+          val b = io.bootstrappingKey(component)(inputLane)
+          val (productReal, productImag) =
+            ExternalProductMultiply(a, b, config)
+          productWord(component)(group)(lane).real :=
+            FixedPointBits.shiftedLowSigned(
+              productReal,
+              config.productShift,
+              config.accumulator.width
+            )
+          productWord(component)(group)(lane).imag :=
+            FixedPointBits.shiftedLowSigned(
+              productImag,
+              config.productShift,
+              config.accumulator.width
+            )
+        }
+      }
+    }
+    val pendingProduct = Reg(memoryWordType)
+    val pendingInputValid = RegNext(inputFire, false.B)
+    val pendingFirstRow = RegEnable(activeRow === 0.U, false.B, inputFire)
+    val pendingInputBeat = RegEnable(
+      activeInputBeat,
+      0.U(inputBeatWidth.W),
+      inputFire
+    )
+    val pendingWriteBank = RegEnable(writeBank, 0.U(1.W), inputFire)
+    when(inputFire) {
+      pendingProduct := productWord
+    }
+
+    val memoryReadEnable = Wire(Vec(bufferCount, Bool()))
+    val memoryReadAddress = Wire(
+      Vec(bufferCount, UInt(inputBeatWidth.W))
+    )
+    for (buffer <- 0 until bufferCount) {
+      val inputRead = inputFire && writeBank === buffer.U
+      val outputRead = outputReadIssue && issueBank === buffer.U
+      assert(!(inputRead && outputRead), "External Product bank read conflict")
+      memoryReadEnable(buffer) := inputRead || outputRead
+      memoryReadAddress(buffer) := Mux(
+        inputRead,
+        activeInputBeat,
+        beatDepth(issueBeat)
+      )
+    }
+    val memoryReadWords = accumulatorMemories.zipWithIndex.map {
+      case (memory, buffer) =>
+        memory.read(memoryReadAddress(buffer), memoryReadEnable(buffer))
+    }
+
+    val pendingPreviousWord = VecInit(memoryReadWords)(pendingWriteBank)
+      .asTypeOf(memoryWordType)
+    val accumulatedWord = Wire(memoryWordType)
+    for (component <- 0 until config.outputComponents) {
+      for (group <- 0 until config.outputGroupsPerInputBeat) {
+        for (lane <- 0 until config.outputLanes) {
+          val previous = pendingPreviousWord(component)(group)(lane)
+          val product = pendingProduct(component)(group)(lane)
+          accumulatedWord(component)(group)(lane).real :=
+            FixedPointBits.lowSigned(
+              Mux(
+                pendingFirstRow,
+                0.S(config.accumulator.width.W),
+                previous.real
+              ) + product.real,
+              config.accumulator.width
+            )
+          accumulatedWord(component)(group)(lane).imag :=
+            FixedPointBits.lowSigned(
+              Mux(
+                pendingFirstRow,
+                0.S(config.accumulator.width.W),
+                previous.imag
+              ) + product.imag,
+              config.accumulator.width
+            )
+        }
+      }
+    }
+    for (buffer <- 0 until bufferCount) {
+      when(pendingInputValid && pendingWriteBank === buffer.U) {
+        accumulatorMemories(buffer).write(
+          pendingInputBeat,
+          accumulatedWord.asUInt
+        )
+      }
+    }
+
+    outputReadResponse := outputReadIssue
+    when(outputReadIssue) {
+      outputReadBank := issueBank
+      outputReadGroup := beatGroup(issueBeat)
+    }
+    val outputWord = VecInit(memoryReadWords)(outputReadBank)
+      .asTypeOf(memoryWordType)
+    for (component <- 0 until config.outputComponents) {
+      for (lane <- 0 until config.outputLanes) {
+        val groups = VecInit(
+          (0 until config.outputGroupsPerInputBeat).map(group =>
+            outputWord(component)(group)(lane)
+          )
+        )
+        io.output(component)(lane) := groups(outputReadGroup)
+      }
+    }
+    when(outputFire) {
+      outputHeldValid := false.B
+    }.elsewhen(outputReadResponse) {
+      outputHeldValid := true.B
+    }
+
+    when(io.inputValid) {
+      assert(
+        inputActive || io.inputFirst,
+        "first External Product beat must carry inputFirst"
+      )
+    }
+    when(io.inputFirst && io.inputValid) {
+      assert(!inputActive, "inputFirst asserted inside a transaction")
+    }
+    when(inputFire) {
+      when(io.inputFirst) {
+        bankTags(writeBank) := io.inputTag
+      }
+      when(finalInputBeat) {
+        inputActive := false.B
+        row := 0.U
+        inputBeat := 0.U
+        writeBank := ~writeBank
+      }.otherwise {
+        inputActive := true.B
+        when(activeInputBeat === (config.inputFrameBeats - 1).U) {
+          inputBeat := 0.U
+          row := activeRow + 1.U
+        }.otherwise {
+          inputBeat := activeInputBeat + 1.U
+          row := activeRow
+        }
+      }
+    }
+
+    when(!outputActive) {
+      when(readableReady.asUInt.orR) {
+        outputActive := true.B
+        outputBank := readyBank
+        outputComponent := 0.U
+        outputBeat := 0.U
+      }
+    }.elsewhen(outputFire) {
+      when(finalOutputBeat) {
+        doneReg := true.B
+        doneTagReg := bankTags(outputBank)
+        when(readableReady.asUInt.orR) {
+          outputActive := true.B
+          outputBank := readyBank
+          outputComponent := 0.U
+          outputBeat := 0.U
+        }.otherwise {
+          outputActive := false.B
+          outputComponent := 0.U
+          outputBeat := 0.U
+        }
+      }.elsewhen(serializeComponents.B && outputFrameLast) {
+        outputComponent := outputComponent + 1.U
+        outputBeat := 0.U
+      }.otherwise {
+        outputBeat := outputBeat + 1.U
+      }
     }
   }
 }

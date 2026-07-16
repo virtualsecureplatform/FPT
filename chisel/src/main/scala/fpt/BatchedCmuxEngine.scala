@@ -16,7 +16,8 @@ final case class BatchedCmuxEngineConfig(
     batchContexts: Int,
     coefficientStorage: BatchedCoefficientStorage =
       BatchedCoefficientStorage.RegisterArray,
-    serializeInverseComponents: Boolean = false
+    serializeInverseComponents: Boolean = false,
+    useSynchronousExternalProductMemory: Boolean = false
 ) {
   require(batchContexts >= 2)
   require(
@@ -182,7 +183,8 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
     new DoubleBufferedExternalProductAccumulator(
       externalConfig,
       contextWidth,
-      serializeComponents = config.serializeInverseComponents
+      serializeComponents = config.serializeInverseComponents,
+      useSynchronousMemory = config.useSynchronousExternalProductMemory
     )
   )
 

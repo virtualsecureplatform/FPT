@@ -111,7 +111,8 @@ object EmitPaperExternalProduct extends App {
   ChiselStage.emitSystemVerilogFile(
     new DoubleBufferedExternalProductAccumulator(
       PaperSetII.external,
-      tagWidth = 4
+      tagWidth = 4,
+      useSynchronousMemory = true
     ),
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
@@ -189,7 +190,8 @@ object EmitPaperBatchedCmux extends App {
   val config = BatchedCmuxEngineConfig(
     engine,
     batchContexts = 14,
-    serializeInverseComponents = true
+    serializeInverseComponents = true,
+    useSynchronousExternalProductMemory = true
   )
 
   ChiselStage.emitSystemVerilogFile(
@@ -220,7 +222,8 @@ object EmitPaperBankedBatchedCmux extends App {
     engine,
     batchContexts = PaperSetII.barrelBatchContexts,
     coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks,
-    serializeInverseComponents = true
+    serializeInverseComponents = true,
+    useSynchronousExternalProductMemory = true
   )
 
   ChiselStage.emitSystemVerilogFile(
@@ -252,7 +255,8 @@ object EmitPaperBitwiseBatchedCmux extends App {
     engine,
     batchContexts = PaperSetII.bitwiseBatchContexts,
     coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
-    serializeInverseComponents = true
+    serializeInverseComponents = true,
+    useSynchronousExternalProductMemory = true
   )
 
   ChiselStage.emitSystemVerilogFile(
@@ -289,7 +293,8 @@ object EmitPaperBatchedBlindRotate extends App {
       engine,
       batchContexts = PaperSetII.barrelBatchContexts,
       coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks,
-      serializeInverseComponents = true
+      serializeInverseComponents = true,
+      useSynchronousExternalProductMemory = true
     ),
     domainDimension
   )
@@ -329,7 +334,8 @@ object EmitPaperBitwiseBatchedBlindRotate extends App {
       engine,
       batchContexts = PaperSetII.bitwiseBatchContexts,
       coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
-      serializeInverseComponents = true
+      serializeInverseComponents = true,
+      useSynchronousExternalProductMemory = true
     ),
     domainDimension
   )
@@ -369,7 +375,8 @@ object EmitPaperBitwiseBatchedBlindRotateSampleExtract extends App {
       engine,
       batchContexts = PaperSetII.bitwiseBatchContexts,
       coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
-      serializeInverseComponents = true
+      serializeInverseComponents = true,
+      useSynchronousExternalProductMemory = true
     ),
     domainDimension
   )

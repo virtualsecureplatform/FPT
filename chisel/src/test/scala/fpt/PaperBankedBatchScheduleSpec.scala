@@ -48,14 +48,15 @@ final class PaperBankedBatchScheduleSpec
       includeVerilogSource = true,
       bitwiseBitsPerCycle = if (bitwise) Some(2) else None
     )
-    val expectedLatency = if (bitwise) 241 else 224
+    val expectedLatency = if (bitwise) 237 else 220
     val config = BatchedCmuxEngineConfig(
       engine,
       batchContexts = if (bitwise) 16 else 14,
       coefficientStorage =
         if (bitwise) BatchedCoefficientStorage.BitwiseReplicatedBanks
         else BatchedCoefficientStorage.ReplicatedBanks,
-      serializeInverseComponents = true
+      serializeInverseComponents = true,
+      useSynchronousExternalProductMemory = true
     )
     val issuedContexts = (0 until config.batchContexts) :+ 0
 
