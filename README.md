@@ -360,6 +360,12 @@ loads. The compiled schedule models use content signatures, so
 `HOGE_SCHEDULE_BUILD_DIR` caches remain reusable when the same RTL is
 regenerated in a different handoff directory.
 
+The HOGE reference is already physically buffered: eight 512-bit key streams
+feed two internal double-bank TRGSW caches. Its schedule accepts exactly
+122,112 beats per stream, not the former ready-cycle count of 122,512. The
+boundary checker locks its 4,663 top-level port bits and 1,572,864 logical
+cache bits before a handoff manifest is written.
+
 When Yosys is installed, the same preparation independently checks the full
 Chisel/SGen synthesis hierarchy and the expected coefficient-accumulator,
 External Product, exponent, and sample-extraction memory shapes. The External

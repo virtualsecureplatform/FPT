@@ -21,12 +21,13 @@ multipliers in HOGE's forward INTT, 32 in its inverse NTT, and 127 in its
 Blind Rotate path.
 
 The baseline Blind Rotate tops exclude IKS, Vitis DataMover IP, and full
-on-chip bootstrapping-key storage. HOGE receives key data externally. The
-default FPT top loads it through an 864-bit port into a two-coefficient
-ping-pong cache; the former 13,824-bit direct-key top remains an opt-in
-diagnostic design. Both retain index-zero sample extraction: HOGE returns two
-TLWEs and FPT returns sixteen TLWEs. FPT's Chisel wrapper drains each completed
-TRLWE into synchronous mask memory, emits
+on-chip bootstrapping-key storage. HOGE's eight 512-bit HBM-style streams feed
+two internal double-bank `TRGSWBatchMemory` caches. The default FPT top loads
+its key through an 864-bit port into a two-coefficient ping-pong cache; the
+former 13,824-bit direct-key top remains an opt-in diagnostic design. Both
+retain index-zero sample extraction: HOGE returns two TLWEs and FPT returns
+sixteen TLWEs. FPT's Chisel wrapper drains each completed TRLWE into
+synchronous mask memory, emits
 `a(0), -a(N-1), ..., -a(1), b(0)`, and marks only the last coefficient of the
 full batch. Complete-top resource totals must still be reported with batch
 size and throughput. The transform-only pairs remain the cleaner measurement
@@ -119,7 +120,8 @@ the end of CMUX computation, and a 16,849-cycle drain tail. The direct-key
 diagnostic source takes 190,645 cycles (11,915.3 cycles/result). Sample
 extraction of earlier contexts overlaps the computation. HOGE's final `TLAST`
 occurs after 316,637 cycles (158,318.5 cycles/result). Each of its eight BK
-streams consumes 122,512 beats, with a maximum inter-port skew of eight beats.
+streams consumes exactly 122,112 beats, with a maximum inter-port skew of
+eight beats.
 At an equal clock, these wrapper schedules imply 13.287 times the result rate
 for physical FPT, before accounting for routed frequency or resources.
 
@@ -148,7 +150,7 @@ the three technology-mapped memory counts separately. These are independent
 synthesis checks; only the Vivado runs provide placed and routed U280
 resource and timing results.
 
-## Buffered bootstrapping-key boundary
+## Physical bootstrapping-key boundaries
 
 The direct-key FPT wrapper above is useful for measuring the arithmetic
 schedule, but its 13,824-bit spectral-key input is not a realistic accelerator
@@ -174,6 +176,25 @@ removes the unused legacy twist/untwist ports--the selected SGen `fptdft` and
 transform diagnostics. This leaves 60 ports and 1,012 port bits: 94.7% fewer
 bits than the buffered verification top and 96.8% fewer than the direct-key
 top. The functional input, key-load, control, and result streams remain.
+
+HOGE already has an equivalent throughput-shaped physical boundary; adding
+another wrapper would duplicate its reference architecture's storage. The
+generated top has eight 512-bit key streams and 4,663 total port bits. Its two
+cache instances each contain two 192-deep banks with 2,048-bit words, for
+1,572,864 logical cache bits. The exact per-batch interfaces are therefore:
+
+| Physical Blind Rotate top | Key data bits/cycle | Total port bits | Internal throughput-cache bits | Key bits accepted/batch |
+| --- | ---: | ---: | ---: | ---: |
+| FPT buffered accelerator | 864 | 1,012 | 442,368 | 139,345,920 |
+| HOGE baseline | 4,096 (`8 x 512`) | 4,663 | 1,572,864 | 500,170,752 |
+
+These bandwidth and capacity differences are part of the current
+architecture and parameter choices, not evidence about FTT arithmetic by
+themselves. The transform-only routes remain the controlled representation
+comparison. `tools/check_hoge_blind_rotate_boundary.sh` rejects any change to
+the HOGE port or cache contract, and the schedule test now deasserts each AXI
+key stream after exactly 122,112 accepted beats instead of counting idle
+`TREADY` cycles after the transfer.
 
 The synchronous cache costs two startup cycles per 16-result batch, or
 0.001%, and introduces no transaction gap beyond the current SGen core's
@@ -234,9 +255,9 @@ ratio is 13.287x and its logic-cell, LUT, FF, and DSP throughput efficiencies
 are 3.361x, 3.693x, 7.641x, and 4.992x respectively. These remain pre-route
 estimates with intentionally different FHE parameters and key boundaries.
 The physical map took 6,178.76 seconds and 32,879,380 KiB peak RSS, 0.6% less
-time and 6.1% less memory than the direct wrapper run. Placement, routing,
-clock measurement, and a comparable buffered HOGE boundary remain work for
-the Vivado machine.
+time and 6.1% less memory than the direct wrapper run. Placement, routing, and
+clock measurement remain work for the Vivado machine; both complete-wrapper
+routes now have audited throughput caches and physical streaming boundaries.
 
 ## Local UltraScale+ complete-wrapper mapping
 

@@ -154,6 +154,9 @@ tests/u280_route_contract_test.sh
 
 # Exercise portable packaging, checksum rejection, mocked routing, and reuse.
 tests/prepared_u280_handoff_test.sh
+
+# Lock HOGE's eight-stream port and internal double-bank key-cache boundary.
+tests/hoge_blind_rotate_boundary_test.sh
 ```
 
 ## Outputs
