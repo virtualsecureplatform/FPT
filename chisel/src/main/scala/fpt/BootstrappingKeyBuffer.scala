@@ -120,6 +120,11 @@ final class BootstrappingKeyPingPongBuffer(
   io.loadDone := loadDone
   io.loadDoneIndex := loadDoneIndex
   loadDone := false.B
+  io.loadReady := loading
+  val loadFire = io.loadValid && io.loadReady
+  val completingLoad = loadFire &&
+    loadGroup === (config.loadGroupsPerRead - 1).U &&
+    loadWord === (config.wordsPerCoefficient - 1).U
 
   val responseValid = RegInit(false.B)
   val responseBank = RegInit(0.U(1.W))
@@ -135,15 +140,19 @@ final class BootstrappingKeyPingPongBuffer(
   val bankFree = Wire(Vec(2, Bool()))
   for (bank <- 0 until 2) {
     bankFree(bank) := !bankValid(bank) &&
+      !(loading && loadBank === bank.U) &&
       !(responseValid && responseBank === bank.U && !responseFire)
   }
-  val duplicateLoad = bankValid.zip(bankIndex).map {
+  val residentDuplicate = bankValid.zip(bankIndex).map {
     case (valid, index) => valid && index === io.loadIndex
   }.reduce(_ || _)
+  val duplicateLoad = residentDuplicate ||
+    (loading && loadIndex === io.loadIndex)
   val selectedLoadBank = Mux(bankFree(0), 0.U, 1.U)
-  io.loadStartReady := !loading && bankFree.asUInt.orR &&
+  io.loadStartReady := (!loading || completingLoad) &&
+    bankFree.asUInt.orR &&
     !duplicateLoad && io.loadIndex < config.domainDimension.U
-  io.loadReady := loading
+  val loadStartFire = io.loadStart && io.loadStartReady
 
   when(io.loadStart) {
     assert(io.loadStartReady, "bootstrapping-key load started while unavailable")
@@ -151,7 +160,7 @@ final class BootstrappingKeyPingPongBuffer(
   when(io.loadValid) {
     assert(io.loadReady, "bootstrapping-key load data presented while idle")
   }
-  when(io.loadStart && io.loadStartReady) {
+  when(loadStartFire) {
     loading := true.B
     loadBank := selectedLoadBank
     loadIndex := io.loadIndex
@@ -177,13 +186,12 @@ final class BootstrappingKeyPingPongBuffer(
   val loadAddress = (
     loadBank * config.wordsPerCoefficient.U + loadWord
   )(memoryAddressWidth - 1, 0)
-  val loadFire = io.loadValid && io.loadReady
   when(loadFire) {
     memory.write(loadAddress, loadWriteData, loadWriteMask)
     when(loadGroup === (config.loadGroupsPerRead - 1).U) {
       loadGroup := 0.U
       when(loadWord === (config.wordsPerCoefficient - 1).U) {
-        loading := false.B
+        loading := loadStartFire
         loadWord := 0.U
         bankValid(loadBank) := true.B
         bankReadCount(loadBank) := 0.U
@@ -200,9 +208,6 @@ final class BootstrappingKeyPingPongBuffer(
   val readWord = (
     io.readRow * external.inputFrameBeats.U + io.readBeat
   )(wordWidth - 1, 0)
-  val completingLoad = loadFire &&
-    loadGroup === (config.loadGroupsPerRead - 1).U &&
-    loadWord === (config.wordsPerCoefficient - 1).U
   val matchingBank = Wire(Vec(2, Bool()))
   for (bank <- 0 until 2) {
     val resident = bankValid(bank) && bankIndex(bank) === io.readIndex

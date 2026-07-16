@@ -24,7 +24,7 @@ final class BootstrappingKeyBufferSpec
   private val config = BootstrappingKeyBufferConfig(
     external,
     batchContexts = 4,
-    domainDimension = 3,
+    domainDimension = 4,
     loadLanes = 2
   )
 
@@ -158,10 +158,16 @@ final class BootstrappingKeyBufferSpec
         dut.io.readIndex.poke(nextIndex.U)
         dut.io.readRow.poke((nextWord / external.inputFrameBeats).U)
         dut.io.readBeat.poke((nextWord % external.inputFrameBeats).U)
+        if (operation == config.loadBeatsPerCoefficient - 1) {
+          dut.io.loadIndex.poke(3.U)
+          dut.io.loadStartReady.expect(true.B)
+          dut.io.loadStart.poke(true.B)
+        }
         dut.io.loadReady.expect(true.B)
         dut.io.readRequestReady.expect(true.B)
         dut.clock.step()
       }
+      dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.readRequestValid.poke(false.B)
       observed.toSeq should be(0 until config.loadBeatsPerCoefficient)
@@ -171,6 +177,8 @@ final class BootstrappingKeyBufferSpec
       dut.io.bankValid(0).expect(true.B)
       dut.io.bankIndex(0).expect(2.U)
       dut.io.bankValid(1).expect(false.B)
+      dut.io.bankIndex(1).expect(3.U)
+      dut.io.loadReady.expect(true.B)
 
       dut.io.readResponseReady.poke(false.B)
       expectResponse(2, 0)
