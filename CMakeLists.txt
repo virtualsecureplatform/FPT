@@ -9,6 +9,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(FPT_BUILD_TESTS "Build the standalone fixed-point FFT tests" ON)
 option(FPT_BUILD_TFHEPP_TESTS "Build the TFHEpp Blind Rotate integration test" OFF)
 option(FPT_BUILD_RTL_TESTS "Build C++ vectors for the Chisel RTL tests" ON)
+set(FPT_RTL_ARITHMETIC_PROFILE "paper-set-ii" CACHE STRING
+    "Arithmetic profile for physical RTL numerical vectors")
+set_property(CACHE FPT_RTL_ARITHMETIC_PROFILE PROPERTY STRINGS
+    paper-set-ii tfhepp-hardware)
+if(NOT FPT_RTL_ARITHMETIC_PROFILE STREQUAL "paper-set-ii" AND
+   NOT FPT_RTL_ARITHMETIC_PROFILE STREQUAL "tfhepp-hardware")
+    message(FATAL_ERROR
+        "FPT_RTL_ARITHMETIC_PROFILE must be paper-set-ii or tfhepp-hardware")
+endif()
 set(FPT_TFHEPP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../TFHEpp" CACHE PATH
     "Path to a TFHEpp source checkout")
 
@@ -101,6 +110,7 @@ if(FPT_BUILD_RTL_TESTS)
             COMMAND fpt_paper_sgen_vector_gen
                 "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_sgen_forward_vectors.txt"
                 "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_sgen_inverse_vectors.txt"
+                "${FPT_RTL_ARITHMETIC_PROFILE}"
             DEPENDS fpt_paper_sgen_vector_gen
             VERBATIM
         )
@@ -136,6 +146,7 @@ if(FPT_BUILD_RTL_TESTS)
                 "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_blind_rotate_vectors.txt"
             COMMAND fpt_paper_blind_rotate_vector_gen
                 "${CMAKE_CURRENT_BINARY_DIR}/rtl_paper_blind_rotate_vectors.txt"
+                "${FPT_RTL_ARITHMETIC_PROFILE}"
             DEPENDS fpt_paper_blind_rotate_vector_gen
             VERBATIM
         )

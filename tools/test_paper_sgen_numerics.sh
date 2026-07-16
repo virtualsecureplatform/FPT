@@ -4,6 +4,10 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 sgen_dir=${1:-$repo_root/../SGen}
 work_dir=${2:-$repo_root/build/paper-sgen-numerics}
+arithmetic_profile=${FPT_ARITHMETIC_PROFILE:-paper-set-ii}
+# shellcheck source=tools/fpt_arithmetic_profile_contract.sh
+source "$repo_root/tools/fpt_arithmetic_profile_contract.sh"
+fpt_resolve_arithmetic_profile "$arithmetic_profile"
 
 if ! git -C "$sgen_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "SGen checkout not found: $sgen_dir" >&2
@@ -11,7 +15,7 @@ if ! git -C "$sgen_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 for command in cmake sbt verilator; do
     if ! command -v "$command" >/dev/null; then
-        echo "$command is required for the Set-II numerical regression" >&2
+        echo "$command is required for the SGen numerical regression" >&2
         exit 1
     fi
 done
@@ -34,13 +38,20 @@ cleanup() {
 trap cleanup EXIT
 
 (cd "$sgen_dir" && sbt assembly)
-"$repo_root/tools/generate_sgen_fpt.sh" "$sgen_dir" "$sgen_output"
+FPT_ARITHMETIC_PROFILE="$arithmetic_profile" \
+    "$repo_root/tools/generate_sgen_fpt.sh" "$sgen_dir" "$sgen_output"
 
 cmake -S "$repo_root" -B "$cmake_output" \
     -DFPT_BUILD_TESTS=OFF -DFPT_BUILD_TFHEPP_TESTS=OFF \
-    -DFPT_BUILD_RTL_TESTS=ON
-cmake --build "$cmake_output" -j --target \
-    fpt_paper_sgen_vectors fpt_paper_cmux_vectors
+    -DFPT_BUILD_RTL_TESTS=ON \
+    -DFPT_RTL_ARITHMETIC_PROFILE="$arithmetic_profile"
+cmake --build "$cmake_output" -j --target fpt_paper_sgen_vectors
+
+test_suites='testOnly fpt.PaperSGenNumericalSpec'
+if [[ $arithmetic_profile == paper-set-ii ]]; then
+    cmake --build "$cmake_output" -j --target fpt_paper_cmux_vectors
+    test_suites+=' fpt.PaperCmuxNumericalSpec'
+fi
 
 (
     cd "$repo_root/chisel"
@@ -51,11 +62,13 @@ cmake --build "$cmake_output" -j --target \
 "$cmake_output/rtl_paper_sgen_forward_vectors.txt" \
     FPT_PAPER_SGEN_INVERSE_VECTORS=\
 "$cmake_output/rtl_paper_sgen_inverse_vectors.txt" \
-    FPT_PAPER_CMUX_NUMERICS=1 \
+    FPT_ARITHMETIC_PROFILE="$arithmetic_profile" \
+    FPT_PAPER_CMUX_NUMERICS=$([[ $arithmetic_profile == paper-set-ii ]] && \
+        printf 1 || printf 0) \
     FPT_PAPER_CMUX_VECTORS="$cmake_output/rtl_paper_cmux_vectors.txt" \
     MAKEFLAGS="${MAKEFLAGS:--e -j4}" \
     VK_PCH_I_FAST= \
     VK_PCH_I_SLOW= \
         sbt -J-Xmx8G \
-            'testOnly fpt.PaperSGenNumericalSpec fpt.PaperCmuxNumericalSpec'
+            "$test_suites"
 )

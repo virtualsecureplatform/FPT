@@ -6,6 +6,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -19,14 +20,20 @@ constexpr int rows = components * levels;
 constexpr int base_bits = 10;
 constexpr int exponent_bits = 11;
 constexpr int modulus_shift = 32 - exponent_bits;
-constexpr fpt::FixedFormat forward_format{18, 12};
-constexpr fpt::FixedFormat key_format{8, 19};
-constexpr fpt::FixedFormat inverse_format{27, 3};
 
 using Polynomial = std::array<std::uint32_t, polynomial_size>;
 using Accumulator = std::array<Polynomial, components>;
 using KeyRow = std::array<std::vector<fpt::FixedComplex>, components>;
 using Key = std::array<KeyRow, rows>;
+
+fpt::ArithmeticProfile arithmetic_profile(std::string_view name)
+{
+    if (name == "paper-set-ii")
+        return fpt::ArithmeticProfile::parameter_set_ii();
+    if (name == "tfhepp-hardware")
+        return fpt::ArithmeticProfile::tfhepp_hardware();
+    throw std::invalid_argument("unknown RTL arithmetic profile");
+}
 
 std::uint32_t rotate_subtract(const Polynomial &polynomial, std::size_t index,
                               int exponent)
@@ -72,13 +79,16 @@ Accumulator initialize_accumulator(std::uint32_t test_vector, int body)
     return accumulator;
 }
 
-void apply_cmux(Accumulator &accumulator, const Key &key, int exponent)
+void apply_cmux(Accumulator &accumulator, const Key &key, int exponent,
+                const fpt::ArithmeticProfile &profile)
 {
     const fpt::NegacyclicFFT forward_plan(
-        {polynomial_size, forward_format, 4, {}});
+        {polynomial_size, profile.forward_fft, profile.twiddle_width_reduction,
+         {}});
     const std::vector<bool> scale_every_inverse_stage(9, true);
     const fpt::NegacyclicFFT inverse_plan(
-        {polynomial_size, inverse_format, 4, scale_every_inverse_stage});
+        {polynomial_size, profile.inverse_fft, profile.twiddle_width_reduction,
+         scale_every_inverse_stage});
 
     std::array<std::vector<fpt::FixedComplex>, components> spectra;
     for (auto &spectrum : spectra) spectrum.assign(transform_size, {});
@@ -99,10 +109,10 @@ void apply_cmux(Accumulator &accumulator, const Key &key, int exponent)
                  ++output_component) {
                 fpt::QuantizedSpectrum key_spectrum;
                 key_spectrum.values = key[row][output_component];
-                key_spectrum.format = key_format;
+                key_spectrum.format = profile.bootstrapping_key;
                 fpt::multiply_accumulate_spectra(
-                    spectra[output_component], inverse_format, transformed,
-                    key_spectrum);
+                    spectra[output_component], profile.inverse_fft,
+                    transformed, key_spectrum);
             }
         }
     }
@@ -110,11 +120,15 @@ void apply_cmux(Accumulator &accumulator, const Key &key, int exponent)
     for (int component = 0; component < components; ++component) {
         fpt::QuantizedSpectrum spectrum;
         spectrum.values = spectra[component];
-        spectrum.format = inverse_format;
+        spectrum.format = profile.inverse_fft;
         const auto update = inverse_plan.inverse_raw(spectrum);
+        const int torus_shift = 32 - profile.inverse_fft.fractional_bits;
+        if (torus_shift < 0)
+            throw std::invalid_argument(
+                "inverse profile has more than 32 fractional bits");
         for (std::size_t index = 0; index < polynomial_size; ++index) {
             accumulator[component][index] += static_cast<std::uint32_t>(
-                update[index] * (std::int64_t{1} << 29));
+                update[index] * (std::int64_t{1} << torus_shift));
         }
     }
 }
@@ -135,9 +149,13 @@ std::vector<std::uint32_t> sample_extract(const Accumulator &accumulator)
 int main(int argc, char **argv)
 {
     try {
-        if (argc != 2)
+        if (argc != 2 && argc != 3)
             throw std::invalid_argument(
-                "usage: fpt_paper_blind_rotate_vector_gen OUTPUT_TXT");
+                "usage: fpt_paper_blind_rotate_vector_gen OUTPUT_TXT "
+                "[ARITHMETIC_PROFILE]");
+        const std::string_view profile_name =
+            argc == 3 ? argv[2] : "paper-set-ii";
+        const auto profile = arithmetic_profile(profile_name);
         std::ofstream output(argv[1]);
         if (!output)
             throw std::runtime_error(
@@ -162,6 +180,11 @@ int main(int argc, char **argv)
         }
 
         Key key;
+        const int key_quarter_shift =
+            profile.bootstrapping_key.fractional_bits - 2;
+        if (key_quarter_shift < 0 || key_quarter_shift >= 62)
+            throw std::invalid_argument(
+                "bootstrapping-key format cannot represent quarter steps");
         std::uniform_int_distribution<int> key_quarters(-2, 2);
         for (int row = 0; row < rows; ++row) {
             for (auto &component : key[row])
@@ -173,8 +196,10 @@ int main(int argc, char **argv)
                     if (real == 0 && imag == 0)
                         real = ((row + component + point) & 1U) ? 1 : -1;
                     key[row][component][point] = {
-                        static_cast<std::int64_t>(real) * (1LL << 17),
-                        static_cast<std::int64_t>(imag) * (1LL << 17)};
+                        static_cast<std::int64_t>(real) *
+                            (std::int64_t{1} << key_quarter_shift),
+                        static_cast<std::int64_t>(imag) *
+                            (std::int64_t{1} << key_quarter_shift)};
                     output << key[row][component][point].real << ' '
                            << key[row][component][point].imag
                            << (component + 1 == components ? '\n' : ' ');
@@ -187,7 +212,7 @@ int main(int argc, char **argv)
             auto accumulator = initialize_accumulator(
                 test_vectors[context], body_exponents[context]);
             const auto initial = sample_extract(accumulator);
-            apply_cmux(accumulator, key, mask_exponents[context]);
+            apply_cmux(accumulator, key, mask_exponents[context], profile);
             const auto expected = sample_extract(accumulator);
             for (std::size_t index = 0; index < expected.size(); ++index) {
                 if (expected[index] != initial[index]) ++changed;
@@ -195,7 +220,8 @@ int main(int argc, char **argv)
             }
         }
 
-        std::cout << "Generated paper-size physical Blind Rotate vectors; "
+        std::cout << "Generated " << profile_name
+                  << " physical Blind Rotate vectors; "
                   << changed << '/' << contexts * (polynomial_size + 1)
                   << " sample-extracted coefficients changed\n";
         return changed == 0 ? 1 : 0;

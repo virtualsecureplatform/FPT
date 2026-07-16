@@ -29,6 +29,13 @@ struct ArithmeticProfile {
         return {{8, 19}, {18, 12}, {27, 3}, 4};
     }
 
+    [[nodiscard]] static constexpr ArithmeticProfile tfhepp_hardware()
+    {
+        // Experimentally stable with TFHEpp lvl01param while retaining widths
+        // that can be split exactly across DSP48E2-sized multipliers.
+        return {{8, 21}, {18, 28}, {27, 24}, 4};
+    }
+
     [[nodiscard]] static constexpr ArithmeticProfile for_parameter_set(
         PaperParameterSet parameter_set)
     {

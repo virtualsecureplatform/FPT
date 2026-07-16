@@ -5,6 +5,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -12,10 +13,18 @@ namespace {
 constexpr std::size_t polynomial_size = 1024;
 constexpr std::size_t transform_size = polynomial_size / 2;
 constexpr int frame_count = 4;
-constexpr fpt::FixedFormat forward_format{18, 12};
-constexpr fpt::FixedFormat inverse_format{27, 3};
 
-void write_forward_vectors(std::ostream &output, std::mt19937_64 &generator)
+fpt::ArithmeticProfile arithmetic_profile(std::string_view name)
+{
+    if (name == "paper-set-ii")
+        return fpt::ArithmeticProfile::parameter_set_ii();
+    if (name == "tfhepp-hardware")
+        return fpt::ArithmeticProfile::tfhepp_hardware();
+    throw std::invalid_argument("unknown RTL arithmetic profile");
+}
+
+void write_forward_vectors(std::ostream &output, std::mt19937_64 &generator,
+                           fpt::FixedFormat forward_format)
 {
     const fpt::NegacyclicFFT plan(
         {polynomial_size, forward_format, 4, {}});
@@ -49,13 +58,18 @@ void write_forward_vectors(std::ostream &output, std::mt19937_64 &generator)
     }
 }
 
-void write_inverse_vectors(std::ostream &output, std::mt19937_64 &generator)
+void write_inverse_vectors(std::ostream &output, std::mt19937_64 &generator,
+                           fpt::FixedFormat inverse_format)
 {
     const std::vector<bool> scale_every_stage(9, true);
     const fpt::NegacyclicFFT plan(
         {polynomial_size, inverse_format, 4, scale_every_stage});
+    const int raw_magnitude_bits = inverse_format.fractional_bits + 15;
+    if (raw_magnitude_bits >= inverse_format.width() - 1)
+        throw std::invalid_argument("inverse test distribution exceeds format");
     std::uniform_int_distribution<std::int64_t> raw_distribution(
-        -(std::int64_t{1} << 18), (std::int64_t{1} << 18) - 1);
+        -(std::int64_t{1} << raw_magnitude_bits),
+        (std::int64_t{1} << raw_magnitude_bits) - 1);
 
     for (int frame = 0; frame < frame_count; ++frame) {
         fpt::QuantizedSpectrum spectrum;
@@ -65,8 +79,9 @@ void write_inverse_vectors(std::ostream &output, std::mt19937_64 &generator)
         for (std::size_t index = 0; index < transform_size; ++index) {
             if (frame == 0) {
                 spectrum.values[index] = index == 0
-                    ? fpt::FixedComplex{std::int64_t{1} << 18,
-                                        -(std::int64_t{1} << 17)}
+                    ? fpt::FixedComplex{
+                          std::int64_t{1} << raw_magnitude_bits,
+                          -(std::int64_t{1} << (raw_magnitude_bits - 1))}
                     : fpt::FixedComplex{};
             }
             else {
@@ -100,18 +115,25 @@ void write_inverse_vectors(std::ostream &output, std::mt19937_64 &generator)
 int main(int argc, char **argv)
 {
     try {
-        if (argc != 3)
+        if (argc != 3 && argc != 4)
             throw std::invalid_argument(
-                "usage: fpt_paper_sgen_vector_gen FORWARD_TXT INVERSE_TXT");
+                "usage: fpt_paper_sgen_vector_gen FORWARD_TXT INVERSE_TXT "
+                "[ARITHMETIC_PROFILE]");
+        const std::string_view profile_name =
+            argc == 4 ? argv[3] : "paper-set-ii";
+        const auto profile = arithmetic_profile(profile_name);
         std::ofstream forward_output(argv[1]);
         std::ofstream inverse_output(argv[2]);
         if (!forward_output || !inverse_output)
             throw std::runtime_error("could not open paper SGen vector output");
 
         std::mt19937_64 generator(0x4650545f5347454eULL);
-        write_forward_vectors(forward_output, generator);
-        write_inverse_vectors(inverse_output, generator);
-        std::cout << "Generated Set-II SGen numerical vectors\n";
+        write_forward_vectors(
+            forward_output, generator, profile.forward_fft);
+        write_inverse_vectors(
+            inverse_output, generator, profile.inverse_fft);
+        std::cout << "Generated " << profile_name
+                  << " SGen numerical vectors\n";
         return 0;
     }
     catch (const std::exception &exception) {

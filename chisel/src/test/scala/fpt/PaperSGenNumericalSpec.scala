@@ -9,10 +9,11 @@ import org.scalatest.matchers.should.Matchers
 import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters._
 
-/** Opt-in numerical validation of the actual Set-II SGen tangent transforms.
-  * Each vector row contains the input, the fixed radix-2 C++ result, and the
-  * quantized double-precision tangent-transform result. The latter is the
-  * accuracy oracle; the radix-2 result makes differing rounding order visible.
+/** Opt-in numerical validation of the actual generated SGen tangent transforms
+  * for either supported arithmetic profile. Each vector row contains the
+  * input, the fixed radix-2 C++ result, and the quantized double-precision
+  * tangent-transform result. The latter is the accuracy oracle; the radix-2
+  * result makes differing rounding order visible.
   */
 final class PaperSGenNumericalSpec
     extends AnyFlatSpec
@@ -21,7 +22,7 @@ final class PaperSGenNumericalSpec
   private def requireEnabled(): Unit =
     if (!sys.env.get("FPT_PAPER_SGEN_NUMERICS").contains("1")) {
       cancel(
-        "set FPT_PAPER_SGEN_NUMERICS=1 to run the generated Set-II transforms"
+        "set FPT_PAPER_SGEN_NUMERICS=1 to run the generated transforms"
       )
     }
 
@@ -59,7 +60,11 @@ final class PaperSGenNumericalSpec
     PaperVerilator.flags
   )
 
-  behavior of "the generated Set-II SGen tangent transforms"
+  private def rtlProfile: FptRtlProfile = FptRtlProfile.named(
+    sys.env.getOrElse("FPT_ARITHMETIC_PROFILE", "paper-set-ii")
+  )
+
+  behavior of "the generated SGen tangent transforms"
 
   it should "bound forward FTT error against the C++ oracle" in {
     requireEnabled()
@@ -70,7 +75,8 @@ final class PaperSGenNumericalSpec
         "../build/rtl_paper_sgen_forward_vectors.txt"
       )
     )
-    val config = PaperSetII.forward
+    val profile = rtlProfile
+    val config = profile.forward
     val frames = rows.grouped(config.points).toSeq
     frames should not be empty
     rows.foreach(_.length should be(6))
@@ -172,11 +178,14 @@ final class PaperSGenNumericalSpec
       }
 
       info(
-        s"Set-II forward maximum error: reference=$maximumReferenceError " +
+        s"${profile.profileName} forward maximum error: " +
+          s"reference=$maximumReferenceError " +
           s"radix2=$maximumRadix2Error ($worstReference)"
       )
+      val tolerance = BigInt(2048) <<
+        (profile.arithmetic.forwardFft.fractionalBits - 12)
       withClue(s"worst forward output $worstReference: ") {
-        maximumReferenceError should be <= BigInt(2048)
+        maximumReferenceError should be <= tolerance
       }
     }
   }
@@ -190,7 +199,8 @@ final class PaperSGenNumericalSpec
         "../build/rtl_paper_sgen_inverse_vectors.txt"
       )
     )
-    val config = PaperSetII.inverse
+    val profile = rtlProfile
+    val config = profile.inverse
     val frames = rows.grouped(config.points).toSeq
     frames should not be empty
     rows.foreach(_.length should be(6))
@@ -292,11 +302,14 @@ final class PaperSGenNumericalSpec
       }
 
       info(
-        s"Set-II inverse maximum error: reference=$maximumReferenceError " +
+        s"${profile.profileName} inverse maximum error: " +
+          s"reference=$maximumReferenceError " +
           s"radix2=$maximumRadix2Error ($worstReference)"
       )
+      val tolerance = BigInt(8) <<
+        (profile.arithmetic.inverseFft.fractionalBits - 3)
       withClue(s"worst inverse output $worstReference: ") {
-        maximumReferenceError should be <= BigInt(8)
+        maximumReferenceError should be <= tolerance
       }
     }
   }

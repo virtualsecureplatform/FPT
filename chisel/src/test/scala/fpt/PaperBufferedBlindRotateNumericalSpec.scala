@@ -10,10 +10,11 @@ import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
-/** Opt-in nonzero numerical validation of the exact host-facing Set-II FPT
-  * accelerator boundary. The test crosses raw-TLWE loading, corrected modulus
-  * switching, the narrow ping-pong key loader, all generated tangent FTTs,
-  * the folded bitwise CMUX path, and automatic sample extraction.
+/** Opt-in nonzero numerical validation of the exact host-facing FPT
+  * accelerator boundary for either supported arithmetic profile. The test
+  * crosses raw-TLWE loading, corrected modulus switching, the narrow ping-pong
+  * key loader, all generated tangent FTTs, the folded bitwise CMUX path, and
+  * automatic sample extraction.
   */
 final class PaperBufferedBlindRotateNumericalSpec
     extends AnyFlatSpec
@@ -36,15 +37,22 @@ final class PaperBufferedBlindRotateNumericalSpec
       .map(_.trim.split("\\s+").map(BigInt(_)))
       .toSeq
 
-  private def wrappedDifference(actual: BigInt, expected: BigInt): BigInt = {
-    val width = PaperSetII.coefficient.torusWidth
+  private def wrappedDifference(
+      actual: BigInt,
+      expected: BigInt,
+      width: Int
+  ): BigInt = {
     val modulus = BigInt(1) << width
     val raw = (actual - expected) & (modulus - 1)
     val signed = if (raw.testBit(width - 1)) raw - modulus else raw
     signed.abs
   }
 
-  behavior of "the physical buffered Set-II Blind Rotate accelerator"
+  private def rtlProfile: FptRtlProfile = FptRtlProfile.named(
+    sys.env.getOrElse("FPT_ARITHMETIC_PROFILE", "paper-set-ii")
+  )
+
+  behavior of "the physical buffered Blind Rotate accelerator"
 
   it should "bound a complete nonzero batch against the C++ oracle" in {
     if (!sys.env
@@ -52,7 +60,7 @@ final class PaperBufferedBlindRotateNumericalSpec
           .contains("1")) {
       cancel(
         "set FPT_PAPER_BUFFERED_BLIND_ROTATE_NUMERICS=1 to run the " +
-          "paper-size physical Blind Rotate"
+          "physical Blind Rotate"
       )
     }
 
@@ -71,7 +79,8 @@ final class PaperBufferedBlindRotateNumericalSpec
       )
     )
 
-    val config = PaperSetII.bufferedBlindRotate(
+    val profile = rtlProfile
+    val config = profile.bufferedBlindRotate(
       forwardPath.toString,
       inversePath.toString,
       domainDimension = 1,
@@ -88,7 +97,7 @@ final class PaperBufferedBlindRotateNumericalSpec
     val outputsPerContext = coefficient.polynomialSize + 1
     val expected = expectedRows.map(_.head)
 
-    contexts should be(PaperSetII.bitwiseBatchContexts)
+    contexts should be(profile.bitwiseBatchContexts)
     inputRows.size should be(contexts)
     inputRows.foreach(_.length should be(3))
     key.size should be(keyRows)
@@ -184,7 +193,8 @@ final class PaperBufferedBlindRotateNumericalSpec
         dut.io.runStart.poke(false.B)
 
         val rawUnit = BigInt(1) << coefficient.torusShift
-        val errors = Array.fill(5)(0)
+        val errors = scala.collection.mutable.Map.empty[Int, Int]
+          .withDefaultValue(0)
         val observedContexts = ArrayBuffer.empty[Int]
         var outputIndex = 0
         var exact = 0
@@ -205,13 +215,16 @@ final class PaperBufferedBlindRotateNumericalSpec
             if (firstResultCycle.isEmpty) firstResultCycle = Some(cycle)
             outputIndex should be < expected.size
             val actual = dut.io.result.peek().litValue
-            val error = wrappedDifference(actual, expected(outputIndex))
+            val error = wrappedDifference(
+              actual,
+              expected(outputIndex),
+              coefficient.torusWidth
+            )
             maximumError = maximumError.max(error)
             if (error == 0) exact += 1
             if (error <= rawUnit) withinOne += 1
             val errorBin = (error / rawUnit).toInt
-            errorBin should be < errors.length
-            errors(errorBin) += 1
+            errors(errorBin) = errors(errorBin) + 1
             val context = outputIndex / outputsPerContext
             dut.io.resultContext.expect(context.U)
             observedContexts += dut.io.resultContext.peek().litValue.toInt
@@ -235,20 +248,21 @@ final class PaperBufferedBlindRotateNumericalSpec
         )
         computeDoneCycle should not be empty
         firstResultCycle.get should be > computeDoneCycle.get
-        maximumError should be <= 4 * rawUnit
-        exact * 4 should be > expected.size
-        withinOne * 3 should be > expected.size * 2
         dut.io.active.expect(false.B)
         dut.io.runReady.expect(false.B)
-        val histogram = errors.mkString("[", ",", "]")
+        val histogram = errors.toSeq.sortBy(_._1).mkString("[", ",", "]")
         info(
-          s"physical Set-II Blind Rotate: cycles=$cycle, " +
+          s"physical ${profile.profileName} Blind Rotate: cycles=$cycle, " +
             s"maximum Torus error=$maximumError " +
             s"(${maximumError / rawUnit} inverse raw units), " +
             s"exact=$exact/${expected.size}, " +
             s"within one inverse raw unit=$withinOne/${expected.size}, " +
             s"error histogram=$histogram"
         )
+        val maximumRawError = if (profile eq PaperSetII) 4 else 8
+        maximumError should be <= maximumRawError * rawUnit
+        exact * 4 should be > expected.size
+        withinOne * 3 should be > expected.size * 2
       }
   }
 }
