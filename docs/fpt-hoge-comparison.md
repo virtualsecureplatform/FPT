@@ -216,13 +216,34 @@ bitwise schedules confirm that the shared inverse preserves II=16. The bitwise
 latency rises from 234 to 241 cycles, requiring 16 contexts; its measured full
 wrapper schedule improves from 12,217.1 to 11,915.2 cycles/result because the
 extra resident context amortizes batch fill and drain. The new complete-wrapper
-DSP contract is 5,408 (`2,384 + 1,486 + 1,536 + 2`); a complete remap is still
-needed to measure combined logic and confirm that contract in the parent.
+DSP contract is 5,408 (`2,384 + 1,486 + 1,536 + 2`).
 
-The complete baseline flow retains `stat.json`, synthesis logs, host timing
+At checkpoint `0cd4e7b`, the same complete-wrapper flow confirms that contract:
+
+| Wrapper | Cycles/result | Estimated logic cells | LUT1--6 | FF | BRAM | Distributed RAM | DSP48E2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| FPT, 16 contexts | 11,915.2 | 768,755 | 1,243,985 | 1,448,004 | 265 | 2,904 | 5,408 |
+| HOGE, 2 contexts | 158,318.5 | 156,913 | 281,598 | 775,713 | 202 | 3,341 | 2,032 |
+
+At an equal clock, the measured schedules and current mapped resources give:
+
+| Result-rate ratio | Logic-cell efficiency | LUT efficiency | FF efficiency | DSP efficiency |
+| ---: | ---: | ---: | ---: | ---: |
+| 13.287x | 2.712x | 3.008x | 7.118x | 4.992x |
+
+Relative to `66c8dc1`, the FPT map uses 62.9% fewer DSPs, 23.0% fewer FFs,
+7.3% fewer LUTs, and 29.5% fewer distributed-RAM primitives. The estimated
+logic-cell figure is effectively unchanged (-0.008%) because Yosys's packing
+heuristic does not track the raw primitive reductions monotonically. BRAM
+remains 265 even with the sixteenth context. The 1,216 distributed-RAM
+reduction exactly matches the removed standalone inverse core's mapped
+distributed-RAM count.
+
+The complete flow retains `stat.json`, synthesis logs, host timing
 and peak RSS, and source/tool/flow signatures under
-`build/yosys-fpt-hoge-blind-rotate/`. The FPT map took 7,206 seconds and
-44,803,252 KiB peak RSS on the development host; HOGE took 1,919 seconds and
+`build/yosys-fpt-hoge-blind-rotate/`. The current FPT map took 6,237.72 seconds
+and 39,613,916 KiB peak RSS on the development host, 13.4% less time and 11.6%
+less peak memory than the `66c8dc1` map. HOGE took 1,919.05 seconds and
 16,443,268 KiB. `summary.tsv` records the raw counts and `comparison.tsv`
 records the throughput-normalized ratios.
 

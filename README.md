@@ -394,16 +394,16 @@ tools/synthesize_fpt_hoge_blind_rotate.sh
 ```
 
 At an equal clock, the current measured wrapper schedule gives FPT 13.287x the
-HOGE result rate. The older `66c8dc1` map achieved 1.807x throughput per mapped
-DSP but used 14,574 DSPs, exposing CIRCT's widened External Product
+HOGE result rate. The current `0cd4e7b` map gives 2.712x/3.008x/7.118x/4.992x
+throughput per logic cell/LUT/FF/DSP. The older `66c8dc1` map used 14,574 DSPs,
+exposing CIRCT's widened External Product
 multiplications and two parallel inverse cores. The new exact Gauss MAC maps
 the standalone 256-lane External Product to 1,536 DSPs instead of 9,216, and
 the throughput top now serializes both components through one inverse FTT. Its
-projected complete-wrapper contract is 5,408 DSPs pending the new parent map.
-Run `tools/synthesize_fpt_external_product.sh` to reproduce that map. These
-are local technology maps without timing or routing, so the U280 bundle
-remains the final comparison. The raw counts, normalization, and planned
-reductions are in
+complete-wrapper map confirms 5,408 DSPs, 1,243,985 LUTs, and 1,448,004 FFs.
+Run `tools/synthesize_fpt_external_product.sh` to isolate the MAC reduction.
+These are local technology maps without timing or routing, so the U280 bundle
+remains the final comparison. The raw counts and normalization are in
 [the FPT/HOGE comparison guide](docs/fpt-hoge-comparison.md).
 
 The integration currently supports native 32-bit Torus parameters.  Its
