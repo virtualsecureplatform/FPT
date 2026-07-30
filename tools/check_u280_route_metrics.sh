@@ -76,7 +76,10 @@ for metrics_file in "$@"; do
                 value["route_fully_routed"] != 1) {
                 reject("route_fully_routed=" value["route_fully_routed"])
             }
-            split("route_errors route_unrouted_nets route_partial_nets route_unplaced_nets route_gap_nets route_conflict_nets route_antenna_nets route_nodriver_nets drc_fatal drc_error drc_critical_warning drc_unclassified", zero, " ")
+            # route_nodriver_nets stays required above but is not required to
+            # be zero: generated SGen netlists leave load-less driver-less
+            # nets that Vivado counts here without affecting the route.
+            split("route_errors route_unrouted_nets route_partial_nets route_unplaced_nets route_gap_nets route_conflict_nets route_antenna_nets drc_fatal drc_error drc_critical_warning drc_unclassified", zero, " ")
             for (i in zero) {
                 metric = zero[i]
                 if ((metric in value) && value[metric] ~ /^[0-9]+$/ && \

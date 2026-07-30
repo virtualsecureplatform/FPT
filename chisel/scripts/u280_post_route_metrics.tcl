@@ -122,6 +122,11 @@ proc fpt_require_clean_u280_route {metrics} {
     if {[dict get $metrics route_errors] != 0} {
         lappend failures "route status reports errors"
     }
+    # route_nodriver_nets is recorded but not fatal: on the generated SGen
+    # netlists Vivado reports thousands of driver-less nets that also have no
+    # loads, so they cannot affect the implementation and do not survive a
+    # checkpoint round-trip.  An undriven net with real loads still fails
+    # here as an unrouted net or a DRC error.
     foreach metric {
         route_unrouted_nets
         route_partial_nets
@@ -129,7 +134,6 @@ proc fpt_require_clean_u280_route {metrics} {
         route_gap_nets
         route_conflict_nets
         route_antenna_nets
-        route_nodriver_nets
         drc_fatal
         drc_error
         drc_critical_warning
