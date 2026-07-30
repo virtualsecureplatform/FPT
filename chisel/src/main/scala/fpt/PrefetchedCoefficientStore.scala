@@ -179,42 +179,73 @@ final class PrefetchedBatchedCmuxCoefficientStore(
 
   // Decomposition streamer. A ready prefetched buffer may replace the active
   // buffer on the final pair beat with no bubble at the SGen input boundary.
-  val streamActive = RegInit(false.B)
+  // Selection (lead) counters run `rotatorLatency` cycles ahead of emission:
+  // the rotator's register layers plus the narrow metadata/subtrahend pipes
+  // below cross to the emission domain under one shared advance strobe, so
+  // downstream sees the unpipelined protocol with a fixed extra latency.
+  val rotatorOpt =
+    if (config.windowedRotator) None
+    else
+      Some(
+        Module(
+          new NegacyclicBarrelRotator(
+            config.polynomialSize,
+            config.torusWidth,
+            config.rotatorPipelineEvery
+          )
+        )
+      )
+  private val rotatorLatency = rotatorOpt.map(_.latency).getOrElse(0)
+
+  val leadActive = RegInit(false.B)
   val selectedBuffer = RegInit(0.U(bufferWidth.W))
   val row = RegInit(0.U(rowWidth.W))
   val forwardBeat = RegInit(0.U(forwardBeatWidth.W))
-  val pairFire = io.pairValid && io.pairReady
-  val finalPairBeat = pairFire &&
-    forwardBeat === (config.forwardBeats - 1).U
+
+  private def emitPipe[T <: Data](value: T, enable: Bool): T =
+    ShiftRegister(value, rotatorLatency, enable)
+  private def emitPipeReset[T <: Data](value: T, init: T, enable: Bool): T =
+    ShiftRegister(value, rotatorLatency, init, enable)
+
+  val emitActive = Wire(Bool())
+  val advance = !emitActive || io.pairReady
+  rotatorOpt.foreach(_.enable.foreach(_ := advance))
+
+  val leadFire = leadActive && advance
+  val beatLast = forwardBeat === (config.forwardBeats - 1).U
   val finalRow = row === (rows - 1).U
-  val finishingCommand = streamActive && finalPairBeat && finalRow
-  val launchFromIdle = !streamActive && readyBuffers.io.deq.valid
+  val finishingCommand = leadFire && beatLast && finalRow
+  val launchFromIdle = !leadActive && readyBuffers.io.deq.valid && advance
   val switchCommand = finishingCommand && readyBuffers.io.deq.valid
-  val launchFollowingRow = streamActive && finalPairBeat && !finalRow
+  val launchFollowingRow = leadFire && beatLast && !finalRow
 
   readyBuffers.io.deq.ready := launchFromIdle || switchCommand
-  io.transformStart := launchFromIdle || switchCommand || launchFollowingRow
-  io.pairValid := streamActive
-  io.pairLast := streamActive &&
-    forwardBeat === (config.forwardBeats - 1).U
-  io.rowIndex := row
+  emitActive := emitPipeReset(leadActive, false.B, advance)
+  io.transformStart := emitPipeReset(
+    launchFromIdle || switchCommand || launchFollowingRow,
+    false.B,
+    advance
+  )
+  io.pairValid := emitActive
+  io.pairLast := emitPipeReset(leadActive && beatLast, false.B, advance)
+  io.rowIndex := emitPipe(row, advance)
 
   when(launchFromIdle) {
-    streamActive := true.B
+    leadActive := true.B
     selectedBuffer := readyBuffers.io.deq.bits
     row := 0.U
     forwardBeat := 0.U
-  }.elsewhen(pairFire) {
-    when(finalPairBeat) {
+  }.elsewhen(leadFire) {
+    when(beatLast) {
       forwardBeat := 0.U
       when(finalRow) {
         bufferOccupied(selectedBuffer) := false.B
         when(switchCommand) {
-          streamActive := true.B
+          leadActive := true.B
           selectedBuffer := readyBuffers.io.deq.bits
           row := 0.U
         }.otherwise {
-          streamActive := false.B
+          leadActive := false.B
         }
       }.otherwise {
         row := row + 1.U
@@ -260,24 +291,23 @@ final class PrefetchedBatchedCmuxCoefficientStore(
         ))(selectedComponent)
       })(selectedBuffer)
     }
-  val rotator = Module(
-    new NegacyclicBarrelRotator(config.polynomialSize, config.torusWidth)
-  )
-  rotator.io.input := VecInit(selectedPolynomial)
-  rotator.io.exponent := selectedExponent
+  rotatorOpt.foreach { rotator =>
+    rotator.io.input := VecInit(selectedPolynomial)
+    rotator.io.exponent := selectedExponent
+  }
 
-  def decompose(source: UInt, current: UInt): SInt = {
+  def decompose(source: UInt, current: UInt, level: UInt): SInt = {
     val difference = (source - current)(config.torusWidth - 1, 0)
     val biased = (difference +& config.decompositionBias.U)(
       config.torusWidth - 1,
       0
     )
-    val shifts = (0 until config.levels).map { level =>
-      val shift = config.torusWidth - (level + 1) * config.baseBits
+    val shifts = (0 until config.levels).map { index =>
+      val shift = config.torusWidth - (index + 1) * config.baseBits
       (biased >> shift)(config.baseBits - 1, 0)
     }
-    val digitBits = MuxLookup(selectedLevel, shifts.head)(
-      shifts.zipWithIndex.map { case (bits, level) => level.U -> bits }
+    val digitBits = MuxLookup(level, shifts.head)(
+      shifts.zipWithIndex.map { case (bits, index) => index.U -> bits }
     )
     val centered = (digitBits -
       (BigInt(1) << (config.baseBits - 1)).U)(
@@ -289,15 +319,83 @@ final class PrefetchedBatchedCmuxCoefficientStore(
     fixed
   }
 
+  // The unrotated subtrahends and the beat/level metadata cross to the
+  // emission domain at stream width; only the rotator itself pipes the full
+  // polynomial.
+  val emitLevel = emitPipe(selectedLevel, advance)
+  val emitBeat = emitPipe(forwardBeat, advance)
+  val currentWindow = Wire(
+    Vec(2, Vec(config.forwardLanes, UInt(config.torusWidth.W)))
+  )
+  for (half <- 0 until 2) {
+    for (lane <- 0 until config.forwardLanes) {
+      val values = VecInit((0 until config.forwardBeats).map { beat =>
+        selectedPolynomial(
+          half * config.points + beat * config.forwardLanes + lane
+        )
+      })
+      currentWindow(half)(lane) := values(forwardBeat)
+    }
+  }
+  val emitCurrent = emitPipe(currentWindow, advance)
+
+  // Stream-width rotation: each emitted half-window reads one contiguous
+  // span of the virtual 2N ring, so two block-selected inputs and a lane
+  // extractor replace the full-width barrel entirely.
+  val windowedOutputs: Option[Vec[Vec[UInt]]] =
+    if (config.windowedRotator) {
+      val lanes = config.forwardLanes
+      val blocks = config.polynomialSize / lanes
+      val laneWidth = log2Ceil(lanes)
+      val ringWidth = log2Ceil(2 * config.polynomialSize)
+      val pairs = VecInit((0 until blocks).map { block =>
+        VecInit((0 until 2 * lanes).map { t =>
+          selectedPolynomial((block * lanes + t) % config.polynomialSize)
+        })
+      })
+      Some(VecInit((0 until 2).map { half =>
+        val base = (half * config.points).U
+        val position = base +& (2 * config.polynomialSize).U +&
+          (forwardBeat << laneWidth) -& selectedExponent
+        val v = position(ringWidth - 1, 0)
+        val firstRing = v(ringWidth - 1, laneWidth)
+        val offset = v(laneWidth - 1, 0)
+        val window = Module(
+          new WindowedNegacyclicRotatorWindow(
+            config.polynomialSize,
+            config.torusWidth,
+            lanes
+          )
+        )
+        val physical = firstRing(log2Ceil(blocks) - 1, 0)
+        window.io.firstBlock := VecInit(
+          (0 until lanes).map(t => pairs(physical)(t))
+        )
+        window.io.secondBlock := VecInit(
+          (0 until lanes).map(t => pairs(physical)(lanes + t))
+        )
+        window.io.offset := offset
+        window.io.firstRingBlock := firstRing
+        window.io.output
+      }))
+    } else None
+
   def streamedCoefficient(lane: Int, high: Boolean): SInt = {
-    val halfOffset = if (high) config.points else 0
-    val rotated = VecInit((0 until config.forwardBeats).map { beat =>
-      rotator.io.output(halfOffset + beat * config.forwardLanes + lane)
-    })
-    val current = VecInit((0 until config.forwardBeats).map { beat =>
-      selectedPolynomial(halfOffset + beat * config.forwardLanes + lane)
-    })
-    decompose(rotated(forwardBeat), current(forwardBeat))
+    val source = windowedOutputs match {
+      case Some(windows) => windows(if (high) 1 else 0)(lane)
+      case None =>
+        val halfOffset = if (high) config.points else 0
+        val rotated = VecInit((0 until config.forwardBeats).map { beat =>
+          rotatorOpt.get.io
+            .output(halfOffset + beat * config.forwardLanes + lane)
+        })
+        rotated(emitBeat)
+    }
+    decompose(
+      source,
+      emitCurrent(if (high) 1 else 0)(lane),
+      emitLevel
+    )
   }
   for (lane <- 0 until config.forwardLanes) {
     io.coefficientLow(lane) := streamedCoefficient(lane, high = false)
@@ -321,7 +419,10 @@ final class PrefetchedBatchedCmuxCoefficientStore(
   when(io.loadStart) {
     assert(!busy(io.loadContext), "cannot load an in-flight context")
     assert(!fillOutstanding, "cannot load during an accumulator prefetch")
-    assert(!streamActive, "cannot load while decomposition is active")
+    assert(
+      !leadActive && !emitActive,
+      "cannot load while decomposition is active"
+    )
     assert(!drainStreaming, "cannot load while drain is active")
     assert(!io.updateValid, "cannot load with inverse update data")
   }

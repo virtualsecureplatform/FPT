@@ -12,8 +12,15 @@ final case class CmuxCoefficientConfig(
     baseBits: Int,
     torusWidth: Int,
     forwardFormat: FixedFormat,
-    inverseFormat: FixedFormat
+    inverseFormat: FixedFormat,
+    rotatorPipelineEvery: Int = 0,
+    windowedRotator: Boolean = false
 ) {
+  require(rotatorPipelineEvery >= 0)
+  require(
+    !(windowedRotator && rotatorPipelineEvery > 0),
+    "the windowed rotator is stream-width and needs no pipeline layers"
+  )
   require(polynomialSize >= 4 && isPow2(polynomialSize))
   require(forwardLanes >= 1 && isPow2(forwardLanes))
   require(inverseLanes >= 1 && isPow2(inverseLanes))
@@ -49,22 +56,36 @@ final case class CmuxCoefficientConfig(
   */
 final class NegacyclicBarrelRotator(
     val polynomialSize: Int,
-    val coefficientWidth: Int
+    val coefficientWidth: Int,
+    val pipelineEvery: Int = 0
 ) extends Module {
   require(polynomialSize >= 2 && isPow2(polynomialSize))
   require(coefficientWidth >= 1)
+  require(pipelineEvery >= 0)
   private val indexWidth = log2Ceil(polynomialSize)
+
+  /** Register layers between mux stages; outputs lag inputs by this count.
+    * The full-width combinational rotator places as one unroutable block at
+    * Set-II width, so pipelined users cut it into locally routable layers.
+    */
+  val latency: Int =
+    if (pipelineEvery == 0) 0 else indexWidth / pipelineEvery
 
   val io = IO(new Bundle {
     val input = Input(Vec(polynomialSize, UInt(coefficientWidth.W)))
     val exponent = Input(UInt((indexWidth + 1).W))
     val output = Output(Vec(polynomialSize, UInt(coefficientWidth.W)))
   })
+  /** Pipeline advance strobe; absent (always advancing) when combinational. */
+  val enable: Option[Bool] =
+    if (latency > 0) Some(IO(Input(Bool()))) else None
 
   def negate(value: UInt): UInt =
     (0.U((coefficientWidth + 1).W) - value)(coefficientWidth - 1, 0)
 
+  private val advance = enable.getOrElse(true.B)
   var stage: Seq[UInt] = io.input.toSeq
+  private var exponentStage: UInt = io.exponent
   for (bit <- 0 until indexWidth) {
     val shift = 1 << bit
     val previous = stage
@@ -75,12 +96,16 @@ final class NegacyclicBarrelRotator(
       } else {
         previous(sourceIndex)
       }
-      Mux(io.exponent(bit), shifted, previous(index))
+      Mux(exponentStage(bit), shifted, previous(index))
+    }
+    if (pipelineEvery > 0 && (bit + 1) % pipelineEvery == 0) {
+      stage = stage.map(value => RegEnable(value, advance))
+      exponentStage = RegEnable(exponentStage, advance)
     }
   }
   for (index <- 0 until polynomialSize) {
     io.output(index) := Mux(
-      io.exponent(indexWidth),
+      exponentStage(indexWidth),
       negate(stage(index)),
       stage(index)
     )
