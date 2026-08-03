@@ -2,6 +2,7 @@ package fpt
 
 import chisel3._
 import chiseltest._
+import chiseltest.experimental.expose
 import chiseltest.simulator.{VerilatorBackendAnnotation, VerilatorFlags}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -9,6 +10,42 @@ import org.scalatest.matchers.should.Matchers
 import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
+
+private final class BatchedCmuxPendingQueueTimingHarness extends Module {
+  val io = IO(new Bundle {
+    val enqValid = Input(Bool())
+    val enqReady = Output(Bool())
+    val deqReady = Input(Bool())
+    val deqValid = Output(Bool())
+    val count = Output(UInt(3.W))
+    val inputBoundaryValid = Output(Bool())
+    val outputBoundaryValid = Output(Bool())
+    val queueDeqFire = Output(Bool())
+    val shiftReady = Output(Bool())
+    val enqFire = Output(Bool())
+  })
+
+  private val queue = Module(
+    new BatchedCmuxPendingKeyRequestQueue(
+      contextWidth = 2,
+      rowWidth = 3,
+      beatWidth = 2,
+      inputLanes = 1,
+      spectrumWidth = 8
+    )
+  )
+  queue.io.enq.valid := io.enqValid
+  queue.io.enq.bits := 0.U.asTypeOf(queue.io.enq.bits)
+  io.enqReady := queue.io.enq.ready
+  queue.io.deq.ready := io.deqReady
+  io.deqValid := queue.io.deq.valid
+  io.count := expose(queue.count)
+  io.inputBoundaryValid := expose(queue.inputBoundaryValid)
+  io.outputBoundaryValid := expose(queue.outputBoundaryValid)
+  io.queueDeqFire := expose(queue.queueDeqFire)
+  io.shiftReady := expose(queue.shiftReady)
+  io.enqFire := expose(queue.enqFire)
+}
 
 final class BatchedCmuxEngineSpec
     extends AnyFlatSpec
@@ -119,6 +156,44 @@ final class BatchedCmuxEngineSpec
   }
 
   behavior of "the tagged batched CMUX engine"
+
+  it should "keep a full pending queue's SRL enable local" in {
+    test(new BatchedCmuxPendingQueueTimingHarness) { dut =>
+      dut.io.enqValid.poke(false.B)
+      dut.io.deqReady.poke(false.B)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+
+      // The output boundary, four SRL entries, and input boundary hold six
+      // requests while the consumer is stalled.
+      for (_ <- 0 until 6) {
+        dut.io.enqValid.poke(true.B)
+        dut.io.enqReady.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.enqValid.poke(false.B)
+      dut.io.count.expect(4.U)
+      dut.io.inputBoundaryValid.expect(true.B)
+      dut.io.outputBoundaryValid.expect(true.B)
+      dut.io.shiftReady.expect(false.B)
+      dut.io.enqFire.expect(false.B)
+
+      // Releasing the consumer dequeues the output boundary, but must not
+      // feed that combinational readiness into the wide SRL clock enable.
+      dut.io.deqReady.poke(true.B)
+      dut.io.queueDeqFire.expect(true.B)
+      dut.io.shiftReady.expect(false.B)
+      dut.io.enqFire.expect(false.B)
+      dut.clock.step()
+
+      // The registered occupancy change exposes the slot on the next cycle.
+      dut.io.count.expect(3.U)
+      dut.io.inputBoundaryValid.expect(true.B)
+      dut.io.shiftReady.expect(true.B)
+      dut.io.enqFire.expect(true.B)
+    }
+  }
 
   private def exercise(
       config: BatchedCmuxEngineConfig,

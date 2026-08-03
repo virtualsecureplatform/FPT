@@ -107,11 +107,16 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
   }
 
   val queueDeqFire = count =/= 0.U && outputBoundaryReady
-  val shiftReady = count =/= 4.U || queueDeqFire
+  // Never use a same-cycle dequeue as permission to shift a full SRL. That
+  // shortcut feeds External Product readiness back through queueDeqFire into
+  // every payload bit's clock enable. Waiting for the registered count to
+  // expose the freed slot keeps enqFire entirely local; the input and output
+  // boundary registers retain enough credit to cover the extra cycle.
+  val shiftReady = count =/= 4.U
   val enqFire = inputBoundaryValid && shiftReady
   // Do not use same-cycle downstream readiness here. If both the SRL and
-  // input boundary are full, transfer the resident boundary word first and
-  // advertise the newly freed credit on the following cycle.
+  // input boundary are full, hold the boundary word until the registered
+  // count exposes a slot, then advertise that local credit.
   io.enq.ready := !inputBoundaryValid || count =/= 4.U
 
   // When ready is high, an invalid upstream beat can safely overwrite the

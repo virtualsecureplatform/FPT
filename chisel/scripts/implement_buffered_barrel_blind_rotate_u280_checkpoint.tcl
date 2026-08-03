@@ -18,7 +18,7 @@ set floorplan_mode [lindex $argv 5]
 set force_high_fanout [lindex $argv 6]
 set pre_route_phys_opt [lindex $argv 7]
 if {$input_checkpoint eq "" || $output_dir eq ""} {
-    error "usage: POST_SYNTH_DCP OUTPUT_DIR ?CLOCK_PERIOD_NS? ?PLACE_DIRECTIVE? ?JOBS? ?FLOORPLAN_MODE? ?FORCE_MODE_0_NONE_1_ALL_2_ADDRESS? ?PRE_ROUTE_PHYS_OPT_AGGRESSIVE_OR_NONE?"
+    error "usage: POST_SYNTH_DCP OUTPUT_DIR ?CLOCK_PERIOD_NS? ?PLACE_DIRECTIVE? ?JOBS? ?FLOORPLAN_MODE? ?FORCE_MODE_0_NONE_1_ALL_2_ADDRESS_3_ADDRESS_AND_PENDING? ?PRE_ROUTE_PHYS_OPT_AGGRESSIVE_OR_NONE?"
 }
 if {$clock_period eq ""} { set clock_period 3.333 }
 if {$place_directive eq ""} { set place_directive AltSpreadLogic_high }
@@ -36,8 +36,8 @@ if {$floorplan_mode ni {full transforms-only}} {
     error "FLOORPLAN_MODE must be full or transforms-only: $floorplan_mode"
 }
 if {![string is integer -strict $force_high_fanout] ||
-    $force_high_fanout ni {0 1 2}} {
-    error "FORCE_MODE must be 0 (none), 1 (all), or 2 (output address only): $force_high_fanout"
+    $force_high_fanout ni {0 1 2 3}} {
+    error "FORCE_MODE must be 0 (none), 1 (all), 2 (output address only), or 3 (output address and local pending-queue shift): $force_high_fanout"
 }
 if {$pre_route_phys_opt ni {aggressive none}} {
     error "PRE_ROUTE_PHYS_OPT must be aggressive or none: $pre_route_phys_opt"
@@ -149,13 +149,10 @@ if {$force_high_fanout} {
     set sample_extract_fanout_nets {}
     set pending_request_enable_nets {}
     if {$force_high_fanout == 1} {
-        # Full mode also targets the decoded prefetch enables, the
-        # sample-extraction distributed-memory port, and the wide pending
-        # queue. Address-only mode deliberately omits them: forcing their
-        # parent control nets encouraged BUFG insertion and degraded the v44
-        # placement estimate. Never force the elastic boundary enables,
-        # because replication can turn their local ready path into an SLR
-        # round trip.
+        # Full mode also targets the decoded prefetch enables and the
+        # sample-extraction distributed-memory port. The narrower modes omit
+        # them because forcing these controls encouraged BUFG insertion and
+        # degraded the v44 placement estimate.
         set coefficient_write_enable_nets [get_nets -hierarchical -quiet \
             -regexp {^.*/coefficients/buffers_[01]_0_0_[0-7]_00$}]
         if {[llength $coefficient_write_enable_nets] != 16} {
@@ -180,6 +177,13 @@ if {$force_high_fanout} {
         }
         set sample_extract_fanout_nets [concat \
             $sample_extract_beat_nets $sample_extract_memory_nets]
+    }
+    if {$force_high_fanout == 1 || $force_high_fanout == 3} {
+        # The pending queue makes this 7,688-load SRL clock enable a function
+        # of only registered occupancy and the input-boundary valid bit. It can
+        # therefore be replicated without recreating the downstream-ready
+        # round trip that dominated all 100 v48 placement paths. Mode 3
+        # selects just this proven target plus the UltraRAM address controls.
         set pending_request_enable_nets [get_nets -hierarchical -quiet \
             -regexp {^.*/pendingRequests/enqFire$}]
         if {[llength $pending_request_enable_nets] != 1} {
@@ -192,6 +196,8 @@ if {$force_high_fanout} {
         $pending_request_enable_nets $external_output_address_nets]
     if {$force_high_fanout == 1} {
         set_property FORCE_MAX_FANOUT 128 $forced_high_fanout_nets
+    } elseif {$force_high_fanout == 3} {
+        set_property FORCE_MAX_FANOUT 128 $pending_request_enable_nets
     }
     set_property FORCE_MAX_FANOUT 32 $external_output_address_nets
     puts "FPT_FORCE_HIGH_FANOUT mode=$force_high_fanout coefficient_nets=[llength $coefficient_write_enable_nets] sample_extract_nets=[llength $sample_extract_fanout_nets] pending_request_nets=[llength $pending_request_enable_nets] external_output_address_nets=2 pending_boundary_nets=0 max_fanout=128 external_address_max_fanout=32"
