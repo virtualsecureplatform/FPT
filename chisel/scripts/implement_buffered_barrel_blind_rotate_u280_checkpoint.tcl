@@ -18,7 +18,7 @@ set floorplan_mode [lindex $argv 5]
 set force_high_fanout [lindex $argv 6]
 set pre_route_phys_opt [lindex $argv 7]
 if {$input_checkpoint eq "" || $output_dir eq ""} {
-    error "usage: POST_SYNTH_DCP OUTPUT_DIR ?CLOCK_PERIOD_NS? ?PLACE_DIRECTIVE? ?JOBS? ?FLOORPLAN_MODE? ?FORCE_MODE_0_NONE_1_ALL_2_ADDRESS_3_ADDRESS_AND_PENDING_4_ADDRESS_AND_COEFFICIENT_SELECTORS? ?PRE_ROUTE_PHYS_OPT_AGGRESSIVE_OR_NONE?"
+    error "usage: POST_SYNTH_DCP OUTPUT_DIR ?CLOCK_PERIOD_NS? ?PLACE_DIRECTIVE? ?JOBS? ?FLOORPLAN_MODE? ?FORCE_MODE_0_NONE_1_ALL_2_ADDRESS_3_ADDRESS_AND_PENDING_4_ADDRESS_AND_COEFFICIENT_SELECTORS_5_ADDRESS_AND_OUTPUT_BOUNDARY? ?PRE_ROUTE_PHYS_OPT_AGGRESSIVE_OR_NONE?"
 }
 if {$clock_period eq ""} { set clock_period 3.333 }
 if {$place_directive eq ""} { set place_directive AltSpreadLogic_high }
@@ -32,12 +32,12 @@ if {![string is double -strict $clock_period] || $clock_period <= 0} {
 if {![string is integer -strict $jobs] || $jobs < 1} {
     error "JOBS must be a positive integer: $jobs"
 }
-if {$floorplan_mode ni {full transforms-only}} {
-    error "FLOORPLAN_MODE must be full or transforms-only: $floorplan_mode"
+if {$floorplan_mode ni {full transforms-only rotator-forward}} {
+    error "FLOORPLAN_MODE must be full, transforms-only, or rotator-forward: $floorplan_mode"
 }
 if {![string is integer -strict $force_high_fanout] ||
-    $force_high_fanout ni {0 1 2 3 4}} {
-    error "FORCE_MODE must be 0 (none), 1 (all), 2 (output address only), 3 (output address and local pending-queue shift), or 4 (output address and coefficient selectors): $force_high_fanout"
+    $force_high_fanout ni {0 1 2 3 4 5}} {
+    error "FORCE_MODE must be 0 (none), 1 (all), 2 (output address only), 3 (output address and local pending-queue shift), 4 (output address and coefficient selectors), or 5 (output address and pending-queue output boundary): $force_high_fanout"
 }
 if {$pre_route_phys_opt ni {aggressive none}} {
     error "PRE_ROUTE_PHYS_OPT must be aggressive or none: $pre_route_phys_opt"
@@ -90,6 +90,54 @@ create_pblock pb_forward
 resize_pblock pb_forward -add CLOCKREGION_X0Y0:CLOCKREGION_X7Y3
 add_cells_to_pblock pb_forward [dict get $resolved_cells forward]
 
+set coefficient_advance_nets {}
+if {$floorplan_mode eq "rotator-forward"} {
+    # The v52 router found level-7 global congestion in the middle SLR, with
+    # the two stream-width rotators contributing more than 54K LUTs there.
+    # They ultimately feed the forward transform, so move the rotators and
+    # their output cuts into the forward SLR. The even/odd candidate registers
+    # stay with the coefficient buffers; the narrower selected-span cut and
+    # its metadata occupy the U280's dedicated SLL registers at the boundary.
+    set coefficient_rotators [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/windowedOutputs_window(_1)?$}]
+    if {[llength $coefficient_rotators] != 2} {
+        error "Expected 2 coefficient window rotators, found [llength $coefficient_rotators]"
+    }
+    set coefficient_bias_registers [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/(low|high)_stagedBiased.*$}]
+    if {[llength $coefficient_bias_registers] < 5000} {
+        error "Expected at least 5000 coefficient bias registers, found [llength $coefficient_bias_registers]"
+    }
+    set coefficient_output_registers [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/io_coefficient(Low|High)_.*_reg.*$}]
+    if {[llength $coefficient_output_registers] < 2500} {
+        error "Expected at least 2500 coefficient stream registers, found [llength $coefficient_output_registers]"
+    }
+    set coefficient_span_boundary_registers [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/windowedOutputs_selectedSpanBoundary(_1)?/value_reg.*$}]
+    if {[llength $coefficient_span_boundary_registers] < 12000} {
+        error "Expected at least 12000 selected-span boundary registers, found [llength $coefficient_span_boundary_registers]"
+    }
+    set coefficient_span_metadata_registers [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/windowedOutputs_(boundaryOffset|boundaryFirstRing)(_1)?_reg.*$}]
+    # The two six-bit offsets are all dynamic. Vivado can constant-fold most
+    # first-ring bits after specializing the two half-window instances, so
+    # require the offsets and include every surviving ring bit in the cut.
+    if {[llength $coefficient_span_metadata_registers] < 12} {
+        error "Expected at least 12 selected-span metadata registers, found [llength $coefficient_span_metadata_registers]"
+    }
+    add_cells_to_pblock pb_forward [concat \
+        $coefficient_rotators $coefficient_bias_registers \
+        $coefficient_output_registers $coefficient_span_boundary_registers \
+        $coefficient_span_metadata_registers]
+
+    set coefficient_sll_registers [concat \
+        $coefficient_span_boundary_registers \
+        $coefficient_span_metadata_registers]
+    set_property USER_SLL_REG TRUE $coefficient_sll_registers
+    puts "FPT_ROTATOR_FORWARD rotators=[llength $coefficient_rotators] bias_registers=[llength $coefficient_bias_registers] output_registers=[llength $coefficient_output_registers] span_boundary_registers=[llength $coefficient_span_boundary_registers] span_metadata_registers=[llength $coefficient_span_metadata_registers] sll_registers=[llength $coefficient_sll_registers]"
+}
+
 if {$floorplan_mode eq "full"} {
     create_pblock pb_middle
     resize_pblock pb_middle -add CLOCKREGION_X0Y4:CLOCKREGION_X7Y7
@@ -120,7 +168,36 @@ add_cells_to_pblock pb_inverse [dict get $resolved_cells inverse]
 # experiments they remain unconstrained so placement can make the same local
 # choice from timing.
 
+if {$floorplan_mode eq "rotator-forward"} {
+    # opt_design otherwise promotes this 89K-load pipeline enable into a
+    # BUFGCE owned by the forward-transform hierarchy. With the coefficient
+    # selectors left in the middle SLR, the resulting path travels from the
+    # forward SLR to that BUFG and then back across the boundary to every CE;
+    # the v53 placement measured 4.66 ns of routing on this control alone.
+    # Keep it on fabric routing and bound its fanout so optimization can place
+    # local replicas on both sides of the registered span boundary.
+    set coefficient_advance_nets [get_nets -hierarchical -quiet \
+        -regexp {^.*/forward/core/backend/advance$}]
+    if {[llength $coefficient_advance_nets] != 1} {
+        error "Expected 1 coefficient pipeline advance net, found [llength $coefficient_advance_nets]"
+    }
+    set_property CLOCK_BUFFER_TYPE NONE $coefficient_advance_nets
+    set_property MAX_FANOUT 128 $coefficient_advance_nets
+}
+
 opt_design -directive ExploreWithRemap
+
+if {$floorplan_mode eq "rotator-forward"} {
+    # Re-resolve the optimized segment, then make replication mandatory in
+    # both the placer and the explicit post-placement physical-synthesis pass.
+    set coefficient_advance_nets [get_nets -hierarchical -quiet \
+        -regexp {^.*/forward/core/backend/advance$}]
+    if {[llength $coefficient_advance_nets] != 1} {
+        error "Expected 1 optimized coefficient pipeline advance net, found [llength $coefficient_advance_nets]"
+    }
+    set_property FORCE_MAX_FANOUT 128 $coefficient_advance_nets
+    puts "FPT_ROTATOR_FORWARD_ADVANCE nets=1 clock_buffer_type=NONE max_fanout=128 force_max_fanout=128"
+}
 
 # Guide the elastic forward-crossing payload and its valid bit into the U280's
 # dedicated Laguna SLL registers. Vivado ignores USER_SLL_REG when the path
@@ -149,6 +226,8 @@ if {$force_high_fanout} {
     set sample_extract_fanout_nets {}
     set pending_request_enable_nets {}
     set coefficient_selector_nets {}
+    set pending_output_enable_nets {}
+    set pending_output_ce_loads 0
     if {$force_high_fanout == 1} {
         # Full mode also targets the decoded prefetch enables and the
         # sample-extraction distributed-memory port. The narrower modes omit
@@ -203,10 +282,40 @@ if {$force_high_fanout} {
             error "Expected 4 coefficient window-selector nets, found [llength $coefficient_selector_nets]"
         }
     }
+    if {$force_high_fanout == 5} {
+        # Once the coefficient selectors are localized, all six worst v52
+        # paths end at the 7,688 output-boundary clock enables. Replicate the
+        # final local enable cone so External Product readiness crosses the
+        # hierarchy at modest fanout instead of routing to every payload bit.
+        # Recover the net from those CE pins rather than a synthesized net
+        # name, which changes when unrelated preserved registers perturb
+        # Vivado's logic packing.
+        set pending_output_registers [get_cells -hierarchical -quiet \
+            -regexp {^.*/pendingRequests/outputBoundary_.*_reg.*$}]
+        if {[llength $pending_output_registers] < 7000} {
+            error "Expected at least 7000 pending-request output registers, found [llength $pending_output_registers]"
+        }
+        set pending_output_ce_pins [get_pins -quiet \
+            -of_objects $pending_output_registers -filter {REF_PIN_NAME == CE}]
+        set pending_output_candidate_nets [get_nets -quiet \
+            -of_objects $pending_output_ce_pins]
+        foreach candidate_net $pending_output_candidate_nets {
+            set candidate_ce_pins [get_pins -quiet -of_objects $candidate_net \
+                -filter {REF_PIN_NAME == CE}]
+            if {[llength $candidate_ce_pins] >= 7000} {
+                lappend pending_output_enable_nets $candidate_net
+                set pending_output_ce_loads [llength $candidate_ce_pins]
+            }
+        }
+        if {[llength $pending_output_enable_nets] != 1} {
+            error "Expected 1 pending-request output-boundary enable net with at least 7000 CE loads, found [llength $pending_output_enable_nets] among [llength $pending_output_candidate_nets] candidates"
+        }
+    }
 
     set forced_high_fanout_nets [concat \
         $coefficient_write_enable_nets $sample_extract_fanout_nets \
         $pending_request_enable_nets $coefficient_selector_nets \
+        $pending_output_enable_nets $coefficient_advance_nets \
         $external_output_address_nets]
     if {$force_high_fanout == 1} {
         set_property FORCE_MAX_FANOUT 128 $forced_high_fanout_nets
@@ -214,9 +323,11 @@ if {$force_high_fanout} {
         set_property FORCE_MAX_FANOUT 128 $pending_request_enable_nets
     } elseif {$force_high_fanout == 4} {
         set_property FORCE_MAX_FANOUT 128 $coefficient_selector_nets
+    } elseif {$force_high_fanout == 5} {
+        set_property FORCE_MAX_FANOUT 128 $pending_output_enable_nets
     }
     set_property FORCE_MAX_FANOUT 32 $external_output_address_nets
-    puts "FPT_FORCE_HIGH_FANOUT mode=$force_high_fanout coefficient_nets=[llength $coefficient_write_enable_nets] sample_extract_nets=[llength $sample_extract_fanout_nets] pending_request_nets=[llength $pending_request_enable_nets] coefficient_selector_nets=[llength $coefficient_selector_nets] external_output_address_nets=2 pending_boundary_nets=0 max_fanout=128 external_address_max_fanout=32"
+    puts "FPT_FORCE_HIGH_FANOUT mode=$force_high_fanout coefficient_nets=[llength $coefficient_write_enable_nets] sample_extract_nets=[llength $sample_extract_fanout_nets] pending_request_nets=[llength $pending_request_enable_nets] coefficient_selector_nets=[llength $coefficient_selector_nets] pending_output_nets=[llength $pending_output_enable_nets] pending_output_ce_loads=$pending_output_ce_loads coefficient_advance_nets=[llength $coefficient_advance_nets] external_output_address_nets=2 max_fanout=128 external_address_max_fanout=32"
 }
 place_design -directive $place_directive -ultrathreads
 if {$force_high_fanout && [info exists forced_high_fanout_nets] &&

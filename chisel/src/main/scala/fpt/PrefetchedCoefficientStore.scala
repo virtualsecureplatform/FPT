@@ -213,12 +213,13 @@ final class PrefetchedBatchedCmuxCoefficientStore(
       )
   // The windowed path first registers the narrow row/buffer/beat selectors,
   // then delays the data selectors alongside a registered physical-bank
-  // selector. This cuts the large span mux before its candidate registers.
-  // The aligner's four local stages, a biased-difference cut, and a final
-  // stream-width stage follow.
+  // selector. This cuts the large span mux before its candidate registers,
+  // then registers the selected span at the coefficient/rotator physical
+  // boundary. The aligner's four local stages, a biased-difference cut, and
+  // a final stream-width stage follow.
   private val selectionStages = if (config.windowedRotator) 2 else 0
   private val windowedStages =
-    1 + PipelinedWindowedNegacyclicRotatorSpan.latency
+    2 + PipelinedWindowedNegacyclicRotatorSpan.latency
   private val rotatorLatency = rotatorOpt
     .map(_.latency)
     .getOrElse(if (config.windowedRotator) windowedStages else 0)
@@ -504,6 +505,29 @@ final class PrefetchedBatchedCmuxCoefficientStore(
           evenCandidate
         )
 
+        // Keep the parity mux and the SLR crossing out of the first two
+        // alignment layers. The candidate registers remain with the wide
+        // coefficient-buffer selector in the middle SLR, while this selected
+        // span cut can occupy the dedicated SLL register sites beside the
+        // forward-SLR rotator. A normal RegEnable is absorbed into the
+        // rotator's shift-register fabric during synthesis, so preserve this
+        // boundary explicitly.
+        val selectedSpanBoundary = Module(
+          new PhysicalCutRegister(spanSize * config.torusWidth)
+        )
+        selectedSpanBoundary.io.clock := clock
+        selectedSpanBoundary.io.enable := advance
+        selectedSpanBoundary.io.inputData := selectedSpan.asUInt
+        val boundarySpan =
+          selectedSpanBoundary.io.outputData.asTypeOf(selectedSpan)
+        val boundaryOffset = RegEnable(candidateOffset, advance)
+        val boundaryFirstRing = RegEnable(
+          (
+            candidateFirstRing + (half * halfBlockOffset).U
+          )(log2Ceil(2 * blocks) - 1, 0),
+          advance
+        )
+
         val window = Module(
           new PipelinedWindowedNegacyclicRotatorSpan(
             config.polynomialSize,
@@ -515,14 +539,12 @@ final class PrefetchedBatchedCmuxCoefficientStore(
         for (block <- 0 until spanBlocks) {
           window.io.input(block) := VecInit(
             (0 until blockLanes).map { lane =>
-              selectedSpan(block * blockLanes + lane)
+              boundarySpan(block * blockLanes + lane)
             }
           )
         }
-        window.io.offset := candidateOffset
-        window.io.firstRingBlock := (
-          candidateFirstRing + (half * halfBlockOffset).U
-        )(log2Ceil(2 * blocks) - 1, 0)
+        window.io.offset := boundaryOffset
+        window.io.firstRingBlock := boundaryFirstRing
         window.io.enable := advance
         window.io.output
       }))
