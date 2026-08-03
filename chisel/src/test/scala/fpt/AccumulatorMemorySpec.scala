@@ -153,10 +153,14 @@ final class AccumulatorMemorySpec
       dut.io.prefetchReady.expect(true.B)
       dut.io.prefetchContext.poke(0.U)
       dut.io.prefetchStart.poke(true.B)
+      dut.clock.step()
+      dut.io.prefetchStart.poke(false.B)
+      // The request register is followed by the BRAM read and its dedicated
+      // output register before the first response beat becomes visible.
+      dut.clock.step()
       dut.io.updateContext.poke(1.U)
       dut.io.updateValid.poke(true.B)
       for (beat <- 0 until config.halfBeats) {
-        dut.io.prefetchStart.poke((beat == 0).B)
         dut.io.updateFirst.poke((beat == 0).B)
         dut.io.updateReady.expect(true.B)
         for (component <- 0 until coefficient.components) {
@@ -176,6 +180,8 @@ final class AccumulatorMemorySpec
       dut.io.prefetchStart.poke(false.B)
       dut.io.updateValid.poke(false.B)
       dut.io.updateFirst.poke(false.B)
+      dut.io.updateDone.expect(false.B)
+      dut.clock.step()
       dut.io.updateDone.expect(true.B)
       dut.io.updateDoneContext.expect(1.U)
 
@@ -185,9 +191,11 @@ final class AccumulatorMemorySpec
       dut.io.prefetchReady.expect(true.B)
       dut.io.prefetchContext.poke(1.U)
       dut.io.prefetchStart.poke(true.B)
+      dut.clock.step()
+      dut.io.prefetchStart.poke(false.B)
+      dut.clock.step()
       for (beat <- 0 until config.halfBeats) {
         dut.clock.step()
-        dut.io.prefetchStart.poke(false.B)
         expectPrefetchBeat(dut, context = 1, beat, updated = true)
       }
       dut.clock.step()
@@ -197,9 +205,11 @@ final class AccumulatorMemorySpec
       // alias neighboring context addresses.
       dut.io.prefetchContext.poke(2.U)
       dut.io.prefetchStart.poke(true.B)
+      dut.clock.step()
+      dut.io.prefetchStart.poke(false.B)
+      dut.clock.step()
       for (beat <- 0 until config.halfBeats) {
         dut.clock.step()
-        dut.io.prefetchStart.poke(false.B)
         expectPrefetchBeat(dut, context = 2, beat, updated = false)
       }
     }

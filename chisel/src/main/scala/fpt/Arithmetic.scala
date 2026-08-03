@@ -9,6 +9,47 @@ final class ComplexSInt(val componentWidth: Int) extends Bundle {
   val imag = SInt(componentWidth.W)
 }
 
+/** An explicitly preserved FPGA pipeline cut.
+  *
+  * Chisel's `dontTouch` is an optimization barrier for Chisel and FIRRTL,
+  * but it does not ask Vivado to keep a register during global synthesis
+  * retiming.  Use this narrow BlackBox only where a register is part of the
+  * physical architecture, such as directly in front of a wide RAM port.
+  */
+private[fpt] final class PhysicalCutRegister(val width: Int)
+    extends BlackBox(Map("WIDTH" -> IntParam(width)))
+    with HasBlackBoxInline {
+  require(width >= 1)
+  override def desiredName: String = "FptPhysicalCutRegister"
+
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val enable = Input(Bool())
+    val inputData = Input(UInt(width.W))
+    val outputData = Output(UInt(width.W))
+  })
+
+  setInline(
+    "FptPhysicalCutRegister.sv",
+    """module FptPhysicalCutRegister #(
+      |  parameter integer WIDTH = 1
+      |) (
+      |  input  wire                 clock,
+      |  input  wire                 enable,
+      |  input  wire [WIDTH-1:0]     inputData,
+      |  output wire [WIDTH-1:0]     outputData
+      |);
+      |  (* DONT_TOUCH = "yes" *) reg [WIDTH-1:0] value;
+      |  always @(posedge clock) begin
+      |    if (enable)
+      |      value <= inputData;
+      |  end
+      |  assign outputData = value;
+      |endmodule
+      |""".stripMargin
+  )
+}
+
 final class GaussTwiddle(val twiddleWidth: Int) extends Bundle {
   val c = SInt(twiddleWidth.W)
   val cMinusD = SInt(twiddleWidth.W)
@@ -98,6 +139,7 @@ private final class ExactGaussComplexMultiplyBlackBox(
       |  localparam integer SUM_WIDTH = PRODUCT_WIDTH + 1;
       |
       |  wire signed [LOW_WIDTH-1:0] low = $signed(a[LOW_WIDTH-1:0]);
+      |  (* use_dsp = "no" *)
       |  wire signed [HIGH_WIDTH:0] adjusted_high =
       |    $signed({a[A_WIDTH-1], a[A_WIDTH-1:LOW_WIDTH]}) +
       |    $signed({{HIGH_WIDTH{1'b0}}, a[LOW_WIDTH-1]});
@@ -211,6 +253,190 @@ private final class ExactGaussComplexMultiplyBlackBox(
       |
       |  assign productReal = full_real[PRODUCT_WIDTH:0];
       |  assign productImag = full_imag[PRODUCT_WIDTH:0];
+      |endmodule
+      |""".stripMargin
+  )
+}
+
+/** Three-stage exact schoolbook complex multiplier for the U280 datapath.
+  *
+  * Each 30-by-27-bit real product is split into two DSP48E2-sized products.
+  * The first stage registers the complex operands at the integration
+  * boundary, the second registers the eight partial products, and the third
+  * reconstructs the four full real products while performing the complex
+  * add/subtract. It uses eight DSPs per complex product: more than an ideal
+  * six-DSP split Gauss product, but fewer than the ten slices Vivado used
+  * after mapping that product's wide overflow-correction network. It also
+  * removes the unregistered BRAM-to-product path.
+  */
+final class PipelinedExactSchoolbookComplexMultiply(
+    val aWidth: Int,
+    val bWidth: Int
+) extends Module {
+  require(aWidth > 27 && aWidth <= 35)
+  require(bWidth >= 2 && bWidth <= 27)
+
+  val io = IO(new Bundle {
+    val a = Input(new ComplexSInt(aWidth))
+    val b = Input(new ComplexSInt(bWidth))
+    val productReal = Output(SInt((aWidth + bWidth + 1).W))
+    val productImag = Output(SInt((aWidth + bWidth + 1).W))
+  })
+
+  private val multiplier = Module(
+    new PipelinedExactSchoolbookComplexMultiplyBlackBox(aWidth, bWidth)
+  )
+  multiplier.io.clock := clock
+  multiplier.io.aReal := io.a.real
+  multiplier.io.aImag := io.a.imag
+  multiplier.io.bReal := io.b.real
+  multiplier.io.bImag := io.b.imag
+  io.productReal := multiplier.io.productReal
+  io.productImag := multiplier.io.productImag
+}
+
+object PipelinedExactSchoolbookComplexMultiply {
+  val latency: Int = 3
+}
+
+private final class PipelinedExactSchoolbookComplexMultiplyBlackBox(
+    aWidth: Int,
+    bWidth: Int
+) extends BlackBox(
+      Map("A_WIDTH" -> IntParam(aWidth), "B_WIDTH" -> IntParam(bWidth))
+    )
+    with HasBlackBoxInline {
+  override def desiredName: String =
+    "FptPipelinedExactSchoolbookComplexMultiply"
+
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val aReal = Input(SInt(aWidth.W))
+    val aImag = Input(SInt(aWidth.W))
+    val bReal = Input(SInt(bWidth.W))
+    val bImag = Input(SInt(bWidth.W))
+    val productReal = Output(SInt((aWidth + bWidth + 1).W))
+    val productImag = Output(SInt((aWidth + bWidth + 1).W))
+  })
+
+  setInline(
+    "FptPipelinedExactSchoolbookComplexMultiply.sv",
+    """module FptPipelinedSignedSplitMultiply #(
+      |  parameter integer A_WIDTH = 30,
+      |  parameter integer B_WIDTH = 27
+      |) (
+      |  input  wire                         clock,
+      |  input  wire signed [A_WIDTH-1:0]    a,
+      |  input  wire signed [B_WIDTH-1:0]    b,
+      |  output wire signed [A_WIDTH+B_WIDTH-1:0] product
+      |);
+      |  // Reserve the low DSP operand's sign bit so the radix-2^17 low limb
+      |  // is non-negative.  This avoids a carry-correction adder/DSP.
+      |  localparam integer LOW_WIDTH = 17;
+      |  localparam integer HIGH_WIDTH = A_WIDTH - LOW_WIDTH;
+      |  localparam integer PRODUCT_WIDTH = A_WIDTH + B_WIDTH;
+      |  localparam integer SUM_WIDTH = PRODUCT_WIDTH + 1;
+      |  localparam integer LOW_PRODUCT_WIDTH = LOW_WIDTH + 1 + B_WIDTH;
+      |  localparam integer HIGH_PRODUCT_WIDTH = HIGH_WIDTH + B_WIDTH;
+      |  wire signed [LOW_WIDTH:0] low =
+      |    $signed({1'b0, a[LOW_WIDTH-1:0]});
+      |  wire signed [HIGH_WIDTH-1:0] high =
+      |    $signed(a[A_WIDTH-1:LOW_WIDTH]);
+      |  wire signed [B_WIDTH-1:0] signed_b = $signed(b);
+      |
+      |  (* use_dsp = "yes", extract_enable = "no" *)
+      |  reg signed [LOW_PRODUCT_WIDTH-1:0] low_product;
+      |  (* use_dsp = "yes", extract_enable = "no" *)
+      |  reg signed [HIGH_PRODUCT_WIDTH-1:0] high_product;
+      |  wire signed [SUM_WIDTH-1:0] extended_low_product =
+      |    {{(SUM_WIDTH-LOW_PRODUCT_WIDTH){low_product[LOW_PRODUCT_WIDTH-1]}},
+      |      low_product};
+      |  wire signed [SUM_WIDTH-1:0] shifted_high_product =
+      |    {{(SUM_WIDTH-HIGH_PRODUCT_WIDTH-LOW_WIDTH){
+      |        high_product[HIGH_PRODUCT_WIDTH-1]}},
+      |      high_product, {LOW_WIDTH{1'b0}}};
+      |  wire signed [SUM_WIDTH-1:0] full_product =
+      |    extended_low_product + shifted_high_product;
+      |  assign product = full_product[PRODUCT_WIDTH-1:0];
+      |
+      |  always @(posedge clock) begin
+      |    low_product <= low * signed_b;
+      |    high_product <= high * signed_b;
+      |  end
+      |endmodule
+      |
+      |module FptPipelinedExactSchoolbookComplexMultiply #(
+      |  parameter integer A_WIDTH = 30,
+      |  parameter integer B_WIDTH = 27
+      |) (
+      |  input  wire                              clock,
+      |  input  wire signed [A_WIDTH-1:0]         aReal,
+      |  input  wire signed [A_WIDTH-1:0]         aImag,
+      |  input  wire signed [B_WIDTH-1:0]         bReal,
+      |  input  wire signed [B_WIDTH-1:0]         bImag,
+      |  output wire signed [A_WIDTH+B_WIDTH:0]   productReal,
+      |  output wire signed [A_WIDTH+B_WIDTH:0]   productImag
+      |);
+      |  localparam integer PRODUCT_WIDTH = A_WIDTH + B_WIDTH;
+      |  // These registers isolate the key-buffer and transform selection
+      |  // networks from the DSP input paths in the physical accelerator.
+      |  (* keep = "yes", extract_enable = "no" *)
+      |  reg signed [A_WIDTH-1:0] a_real_reg;
+      |  (* keep = "yes", extract_enable = "no" *)
+      |  reg signed [A_WIDTH-1:0] a_imag_reg;
+      |  (* keep = "yes", extract_enable = "no" *)
+      |  reg signed [B_WIDTH-1:0] b_real_reg;
+      |  (* keep = "yes", extract_enable = "no" *)
+      |  reg signed [B_WIDTH-1:0] b_imag_reg;
+      |  (* use_dsp = "no", extract_enable = "no" *)
+      |  reg signed [PRODUCT_WIDTH:0] product_real_reg;
+      |  (* use_dsp = "no", extract_enable = "no" *)
+      |  reg signed [PRODUCT_WIDTH:0] product_imag_reg;
+      |  assign productReal = product_real_reg;
+      |  assign productImag = product_imag_reg;
+      |
+      |  wire signed [PRODUCT_WIDTH-1:0] product_ac;
+      |  wire signed [PRODUCT_WIDTH-1:0] product_bd;
+      |  wire signed [PRODUCT_WIDTH-1:0] product_ad;
+      |  wire signed [PRODUCT_WIDTH-1:0] product_bc;
+      |  FptPipelinedSignedSplitMultiply #(
+      |    .A_WIDTH(A_WIDTH), .B_WIDTH(B_WIDTH)
+      |  ) multiply_ac (
+      |    .clock(clock), .a(a_real_reg), .b(b_real_reg), .product(product_ac)
+      |  );
+      |  FptPipelinedSignedSplitMultiply #(
+      |    .A_WIDTH(A_WIDTH), .B_WIDTH(B_WIDTH)
+      |  ) multiply_bd (
+      |    .clock(clock), .a(a_imag_reg), .b(b_imag_reg), .product(product_bd)
+      |  );
+      |  FptPipelinedSignedSplitMultiply #(
+      |    .A_WIDTH(A_WIDTH), .B_WIDTH(B_WIDTH)
+      |  ) multiply_ad (
+      |    .clock(clock), .a(a_real_reg), .b(b_imag_reg), .product(product_ad)
+      |  );
+      |  FptPipelinedSignedSplitMultiply #(
+      |    .A_WIDTH(A_WIDTH), .B_WIDTH(B_WIDTH)
+      |  ) multiply_bc (
+      |    .clock(clock), .a(a_imag_reg), .b(b_real_reg), .product(product_bc)
+      |  );
+      |
+      |  wire signed [PRODUCT_WIDTH:0] ac_extended =
+      |    {product_ac[PRODUCT_WIDTH-1], product_ac};
+      |  wire signed [PRODUCT_WIDTH:0] bd_extended =
+      |    {product_bd[PRODUCT_WIDTH-1], product_bd};
+      |  wire signed [PRODUCT_WIDTH:0] ad_extended =
+      |    {product_ad[PRODUCT_WIDTH-1], product_ad};
+      |  wire signed [PRODUCT_WIDTH:0] bc_extended =
+      |    {product_bc[PRODUCT_WIDTH-1], product_bc};
+      |
+      |  always @(posedge clock) begin
+      |    a_real_reg <= aReal;
+      |    a_imag_reg <= aImag;
+      |    b_real_reg <= bReal;
+      |    b_imag_reg <= bImag;
+      |    product_real_reg <= ac_extended - bd_extended;
+      |    product_imag_reg <= ad_extended + bc_extended;
+      |  end
       |endmodule
       |""".stripMargin
   )

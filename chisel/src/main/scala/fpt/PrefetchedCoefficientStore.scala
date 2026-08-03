@@ -117,12 +117,26 @@ final class PrefetchedBatchedCmuxCoefficientStore(
   val drainBuffer = RegInit(0.U(bufferWidth.W))
   val drainContextReg = RegInit(0.U(contextWidth.W))
   val drainBeat = RegInit(0.U(polynomialBeatWidth.W))
+  // One elastic beat cuts the accumulator-buffer selector away from the
+  // sample-extraction RAM write.  At Set II the unregistered path is almost
+  // entirely routing: drainBeat selects thousands of buffer bits, then the
+  // result crosses the middle SLR to the distributed mask RAM.  This stage
+  // sustains one beat per cycle while allowing the consumer to stall.
+  val drainOutputValid = RegInit(false.B)
+  val drainOutputLast = RegInit(false.B)
+  val drainOutput = Reg(
+    Vec(
+      config.components,
+      Vec(config.inverseLanes, UInt(config.torusWidth.W))
+    )
+  )
   val drainDoneReg = RegInit(false.B)
   val drainDoneContextReg = RegInit(0.U(contextWidth.W))
   drainDoneReg := false.B
 
   val readyBuffers = Module(new Queue(UInt(bufferWidth.W), bufferCount))
-  val drainCanStart = !drainStreaming && !fillOutstanding &&
+  val drainCanStart = !drainStreaming && !drainOutputValid &&
+    !fillOutstanding &&
     memory.io.prefetchReady && hasFreeBuffer && !io.commandValid &&
     !readyBuffers.io.deq.valid && io.drainContext < batchContexts.U &&
     !busy(io.drainContext)
@@ -179,10 +193,12 @@ final class PrefetchedBatchedCmuxCoefficientStore(
 
   // Decomposition streamer. A ready prefetched buffer may replace the active
   // buffer on the final pair beat with no bubble at the SGen input boundary.
-  // Selection (lead) counters run `rotatorLatency` cycles ahead of emission:
-  // the rotator's register layers plus the narrow metadata/subtrahend pipes
-  // below cross to the emission domain under one shared advance strobe, so
-  // downstream sees the unpipelined protocol with a fixed extra latency.
+  // Selection (lead) counters run `emissionLatency` cycles ahead of emission:
+  // the rotator's register layers, the narrow metadata/subtrahend pipes, and
+  // the final decomposition register all cross to the emission domain under
+  // one shared advance strobe.  The last register makes the wide SLR boundary
+  // to the forward transform register-to-register rather than placing the
+  // subtract/bias/digit-select cone on that crossing.
   val rotatorOpt =
     if (config.windowedRotator) None
     else
@@ -195,17 +211,35 @@ final class PrefetchedBatchedCmuxCoefficientStore(
           )
         )
       )
-  private val rotatorLatency = rotatorOpt.map(_.latency).getOrElse(0)
+  // The windowed path first registers the narrow row/buffer/beat selectors,
+  // then delays the data selectors alongside a registered physical-bank
+  // selector. This cuts the large span mux before its candidate registers.
+  // The aligner's four local stages, a biased-difference cut, and a final
+  // stream-width stage follow.
+  private val selectionStages = if (config.windowedRotator) 2 else 0
+  private val windowedStages =
+    1 + PipelinedWindowedNegacyclicRotatorSpan.latency
+  private val rotatorLatency = rotatorOpt
+    .map(_.latency)
+    .getOrElse(if (config.windowedRotator) windowedStages else 0)
+  private val outputStages = if (config.windowedRotator) 2 else 0
+  private val emissionLatency =
+    selectionStages + rotatorLatency + outputStages
 
   val leadActive = RegInit(false.B)
   val selectedBuffer = RegInit(0.U(bufferWidth.W))
   val row = RegInit(0.U(rowWidth.W))
   val forwardBeat = RegInit(0.U(forwardBeatWidth.W))
 
-  private def emitPipe[T <: Data](value: T, enable: Bool): T =
+  private def dataPipe[T <: Data](value: T, enable: Bool): T =
     ShiftRegister(value, rotatorLatency, enable)
-  private def emitPipeReset[T <: Data](value: T, init: T, enable: Bool): T =
-    ShiftRegister(value, rotatorLatency, init, enable)
+  private def emissionPipe[T <: Data](value: T, enable: Bool): T =
+    ShiftRegister(value, emissionLatency, enable)
+  private def emissionPipeReset[T <: Data](
+      value: T,
+      init: T,
+      enable: Bool
+  ): T = ShiftRegister(value, emissionLatency, init, enable)
 
   val emitActive = Wire(Bool())
   val advance = !emitActive || io.pairReady
@@ -220,15 +254,19 @@ final class PrefetchedBatchedCmuxCoefficientStore(
   val launchFollowingRow = leadFire && beatLast && !finalRow
 
   readyBuffers.io.deq.ready := launchFromIdle || switchCommand
-  emitActive := emitPipeReset(leadActive, false.B, advance)
-  io.transformStart := emitPipeReset(
+  emitActive := emissionPipeReset(leadActive, false.B, advance)
+  io.transformStart := emissionPipeReset(
     launchFromIdle || switchCommand || launchFollowingRow,
     false.B,
     advance
   )
   io.pairValid := emitActive
-  io.pairLast := emitPipeReset(leadActive && beatLast, false.B, advance)
-  io.rowIndex := emitPipe(row, advance)
+  io.pairLast := emissionPipeReset(
+    leadActive && beatLast,
+    false.B,
+    advance
+  )
+  io.rowIndex := emissionPipe(row, advance)
 
   when(launchFromIdle) {
     leadActive := true.B
@@ -279,6 +317,44 @@ final class PrefetchedBatchedCmuxCoefficientStore(
   val selectedComponent = balancedSelect(rowComponents, row)
   val selectedLevel = balancedSelect(rowLevels, row)
   val selectedExponent = bufferExponent(selectedBuffer)
+
+  // Isolate the wide polynomial muxes from the lead counters. In Set II the
+  // component bit otherwise drives roughly twenty thousand LUT inputs before
+  // the first data register, producing a route-dominated path across SLR1.
+  // Registered selectors are simple high-fanout sources that Vivado can
+  // replicate locally during placement. The non-windowed implementation keeps
+  // its original latency and structure.
+  val streamComponent =
+    if (config.windowedRotator)
+      RegEnable(selectedComponent, advance)
+    else selectedComponent
+  val streamLevel =
+    if (config.windowedRotator) RegEnable(selectedLevel, advance)
+    else selectedLevel
+  val streamBuffer =
+    if (config.windowedRotator) RegEnable(selectedBuffer, advance)
+    else selectedBuffer
+  val streamBeat =
+    if (config.windowedRotator) RegEnable(forwardBeat, advance)
+    else forwardBeat
+  val streamExponent =
+    if (config.windowedRotator) RegEnable(selectedExponent, advance)
+    else selectedExponent
+  // Keep the buffered polynomial data aligned with the physical span select
+  // registered below. Registering only the span select would pair one beat's
+  // address with the following beat's buffer contents.
+  val windowComponent =
+    if (config.windowedRotator) RegEnable(streamComponent, advance)
+    else streamComponent
+  val windowLevel =
+    if (config.windowedRotator) RegEnable(streamLevel, advance)
+    else streamLevel
+  val windowBuffer =
+    if (config.windowedRotator) RegEnable(streamBuffer, advance)
+    else streamBuffer
+  val windowBeat =
+    if (config.windowedRotator) RegEnable(streamBeat, advance)
+    else streamBeat
   val selectedPolynomial: Seq[UInt] =
     (0 until config.polynomialSize).map { index =>
       val high = index >= config.points
@@ -288,20 +364,23 @@ final class PrefetchedBatchedCmuxCoefficientStore(
       VecInit((0 until bufferCount).map { buffer =>
         VecInit((0 until config.components).map(component =>
           buffers(buffer)(component)(bank)(depth)(if (high) 1 else 0)
-        ))(selectedComponent)
-      })(selectedBuffer)
+        ))(windowComponent)
+      })(windowBuffer)
     }
   rotatorOpt.foreach { rotator =>
     rotator.io.input := VecInit(selectedPolynomial)
-    rotator.io.exponent := selectedExponent
+    rotator.io.exponent := streamExponent
   }
 
-  def decompose(source: UInt, current: UInt, level: UInt): SInt = {
+  def biasedDifference(source: UInt, current: UInt): UInt = {
     val difference = (source - current)(config.torusWidth - 1, 0)
-    val biased = (difference +& config.decompositionBias.U)(
+    (difference +& config.decompositionBias.U)(
       config.torusWidth - 1,
       0
     )
+  }
+
+  def decomposeBiased(biased: UInt, level: UInt): SInt = {
     val shifts = (0 until config.levels).map { index =>
       val shift = config.torusWidth - (index + 1) * config.baseBits
       (biased >> shift)(config.baseBits - 1, 0)
@@ -322,8 +401,11 @@ final class PrefetchedBatchedCmuxCoefficientStore(
   // The unrotated subtrahends and the beat/level metadata cross to the
   // emission domain at stream width; only the rotator itself pipes the full
   // polynomial.
-  val emitLevel = emitPipe(selectedLevel, advance)
-  val emitBeat = emitPipe(forwardBeat, advance)
+  val emitLevel = dataPipe(windowLevel, advance)
+  val emitBeat = dataPipe(windowBeat, advance)
+  val decompositionLevel =
+    if (config.windowedRotator) RegEnable(emitLevel, advance)
+    else emitLevel
   val currentWindow = Wire(
     Vec(2, Vec(config.forwardLanes, UInt(config.torusWidth.W)))
   )
@@ -334,48 +416,94 @@ final class PrefetchedBatchedCmuxCoefficientStore(
           half * config.points + beat * config.forwardLanes + lane
         )
       })
-      currentWindow(half)(lane) := values(forwardBeat)
+      currentWindow(half)(lane) := values(windowBeat)
     }
   }
-  val emitCurrent = emitPipe(currentWindow, advance)
+  val emitCurrent = dataPipe(currentWindow, advance)
 
   // Stream-width rotation: each emitted half-window reads one contiguous
-  // span of the virtual 2N ring, so two block-selected inputs and a lane
-  // extractor replace the full-width barrel entirely.
+  // span of the virtual 2N ring. Select at the accumulator's physical
+  // inverse-lane bank width, rather than at the wider forward width, so the
+  // variable aligner is substantially smaller and its select fanout stays
+  // local to one bank group.
   val windowedOutputs: Option[Vec[Vec[UInt]]] =
     if (config.windowedRotator) {
-      val lanes = config.forwardLanes
-      val blocks = config.polynomialSize / lanes
-      val laneWidth = log2Ceil(lanes)
+      val blockLanes = config.inverseLanes
+      val outputLanes = config.forwardLanes
+      require(blockLanes >= 2)
+      require(outputLanes >= blockLanes)
+      require(outputLanes % blockLanes == 0)
+      val blocks = config.polynomialSize / blockLanes
+      require(blocks >= 4 && isPow2(blocks))
+      val blockLaneWidth = log2Ceil(blockLanes)
+      val outputLaneWidth = log2Ceil(outputLanes)
       val ringWidth = log2Ceil(2 * config.polynomialSize)
-      val pairs = VecInit((0 until blocks).map { block =>
-        VecInit((0 until 2 * lanes).map { t =>
-          selectedPolynomial((block * lanes + t) % config.polynomialSize)
+      val spanBlocks = outputLanes / blockLanes + 1
+      val spanSize = spanBlocks * blockLanes
+      val spans = (0 until blocks).map { block =>
+        VecInit((0 until spanSize).map { t =>
+          selectedPolynomial(
+            (block * blockLanes + t) % config.polynomialSize
+          )
         })
-      })
+      }
+      val position = (2 * config.polynomialSize).U +&
+        (streamBeat << outputLaneWidth) -& streamExponent
+      val v = position(ringWidth - 1, 0)
+      val firstRing = v(ringWidth - 1, blockLaneWidth)
+      val offset = v(blockLaneWidth - 1, 0)
+      val physical = firstRing(log2Ceil(blocks) - 1, 0)
+      val upperSelect = physical(log2Ceil(blocks) - 1, 1)
+      val stagedUpperSelect = RegEnable(upperSelect, advance)
+      val parity = RegEnable(physical(0), advance)
+      val stagedOffset = RegEnable(offset, advance)
+      val stagedFirstRing = RegEnable(firstRing, advance)
+      val candidateParity = RegEnable(parity, advance)
+      val candidateOffset = RegEnable(stagedOffset, advance)
+      val candidateFirstRing = RegEnable(stagedFirstRing, advance)
+      val halfBlockOffset = config.points / blockLanes
+
       Some(VecInit((0 until 2).map { half =>
-        val base = (half * config.points).U
-        val position = base +& (2 * config.polynomialSize).U +&
-          (forwardBeat << laneWidth) -& selectedExponent
-        val v = position(ringWidth - 1, 0)
-        val firstRing = v(ringWidth - 1, laneWidth)
-        val offset = v(laneWidth - 1, 0)
+        // Index both halves with the same low-half physical selector. The
+        // high half is exactly N/2 coefficients, or `halfBlockOffset`
+        // physical blocks, later in the same anti-periodic ring.
+        val indexedSpans = (0 until blocks).map { start =>
+          spans((start + half * halfBlockOffset) % blocks)
+        }
+        val evenSpans = VecInit(
+          (0 until blocks by 2).map(index => indexedSpans(index))
+        )
+        val oddSpans = VecInit(
+          (1 until blocks by 2).map(index => indexedSpans(index))
+        )
+        val evenCandidate = RegEnable(evenSpans(stagedUpperSelect), advance)
+        val oddCandidate = RegEnable(oddSpans(stagedUpperSelect), advance)
+        val selectedSpan = Mux(
+          candidateParity,
+          oddCandidate,
+          evenCandidate
+        )
+
         val window = Module(
-          new WindowedNegacyclicRotatorWindow(
+          new PipelinedWindowedNegacyclicRotatorSpan(
             config.polynomialSize,
             config.torusWidth,
-            lanes
+            blockLanes,
+            outputLanes
           )
         )
-        val physical = firstRing(log2Ceil(blocks) - 1, 0)
-        window.io.firstBlock := VecInit(
-          (0 until lanes).map(t => pairs(physical)(t))
-        )
-        window.io.secondBlock := VecInit(
-          (0 until lanes).map(t => pairs(physical)(lanes + t))
-        )
-        window.io.offset := offset
-        window.io.firstRingBlock := firstRing
+        for (block <- 0 until spanBlocks) {
+          window.io.input(block) := VecInit(
+            (0 until blockLanes).map { lane =>
+              selectedSpan(block * blockLanes + lane)
+            }
+          )
+        }
+        window.io.offset := candidateOffset
+        window.io.firstRingBlock := (
+          candidateFirstRing + (half * halfBlockOffset).U
+        )(log2Ceil(2 * blocks) - 1, 0)
+        window.io.enable := advance
         window.io.output
       }))
     } else None
@@ -391,15 +519,26 @@ final class PrefetchedBatchedCmuxCoefficientStore(
         })
         rotated(emitBeat)
     }
-    decompose(
+    val biased = biasedDifference(
       source,
-      emitCurrent(if (high) 1 else 0)(lane),
-      emitLevel
+      emitCurrent(if (high) 1 else 0)(lane)
     )
+    // Split the 32-bit subtract/bias carry chain from digit selection and the
+    // final forward-SLR boundary. On the placed U280 design the uncut path is
+    // dominated by the route from the carry chain to the stream registers,
+    // even though the arithmetic itself is shallow.
+    val stagedBiased =
+      if (config.windowedRotator) RegEnable(biased, advance)
+      else biased
+    decomposeBiased(stagedBiased, decompositionLevel)
   }
   for (lane <- 0 until config.forwardLanes) {
-    io.coefficientLow(lane) := streamedCoefficient(lane, high = false)
-    io.coefficientHigh(lane) := streamedCoefficient(lane, high = true)
+    val low = streamedCoefficient(lane, high = false)
+    val high = streamedCoefficient(lane, high = true)
+    io.coefficientLow(lane) :=
+      (if (config.windowedRotator) RegEnable(low, advance) else low)
+    io.coefficientHigh(lane) :=
+      (if (config.windowedRotator) RegEnable(high, advance) else high)
   }
 
   when(io.updateFirst && io.updateValid) {
@@ -424,11 +563,14 @@ final class PrefetchedBatchedCmuxCoefficientStore(
       "cannot load while decomposition is active"
     )
     assert(!drainStreaming, "cannot load while drain is active")
+    assert(!drainOutputValid, "cannot load with a buffered drain beat")
     assert(!io.updateValid, "cannot load with inverse update data")
   }
 
-  // Read-only diagnostic drain from its prefetched buffer.
-  io.drainValid := drainStreaming
+  // Read-only diagnostic drain from its prefetched buffer.  The elastic
+  // output register decouples the wide buffer selection from the downstream
+  // sample-extraction memory without reducing the one-beat-per-cycle rate.
+  io.drainValid := drainOutputValid
   io.drainDone := drainDoneReg
   io.drainDoneContext := drainDoneContextReg
   val drainHigh = drainBeat >= memoryConfig.halfBeats.U
@@ -445,18 +587,37 @@ final class PrefetchedBatchedCmuxCoefficientStore(
           )(drainHigh)
         }
       )
-      io.drain(component)(lane) := halves(drainBuffer)
+      io.drain(component)(lane) := drainOutput(component)(lane)
+      when(drainStreaming && (!drainOutputValid || io.drainReady)) {
+        drainOutput(component)(lane) := halves(drainBuffer)
+      }
     }
   }
-  when(io.drainValid && io.drainReady) {
+
+  val drainOutputFire = drainOutputValid && io.drainReady
+  val drainSourceFire = drainStreaming &&
+    (!drainOutputValid || io.drainReady)
+  when(drainSourceFire) {
+    drainOutputValid := true.B
+    drainOutputLast := drainBeat === (config.polynomialBeats - 1).U
     when(drainBeat === (config.polynomialBeats - 1).U) {
       drainStreaming := false.B
       drainBeat := 0.U
-      bufferOccupied(drainBuffer) := false.B
-      drainDoneReg := true.B
-      drainDoneContextReg := drainContextReg
     }.otherwise {
       drainBeat := drainBeat + 1.U
     }
+  }.elsewhen(drainOutputFire) {
+    drainOutputValid := false.B
+  }
+  when(drainOutputFire && drainOutputLast) {
+    assert(!drainStreaming, "final drain beat consumed before source stopped")
+    drainOutputLast := false.B
+    for (buffer <- 0 until bufferCount) {
+      when(drainBuffer === buffer.U) {
+        bufferOccupied(buffer) := false.B
+      }
+    }
+    drainDoneReg := true.B
+    drainDoneContextReg := drainContextReg
   }
 }

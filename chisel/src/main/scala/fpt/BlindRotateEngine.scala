@@ -324,6 +324,23 @@ final class BatchedBlindRotateEngine(
     VecInit(Seq.fill(config.batchContexts)(0.U(config.exponentWidth.W)))
   )
   val scanContext = RegInit(0.U(contextWidth.W))
+  val readRequestValid = RegInit(false.B)
+  val readRequestAddressInput = WireDefault(0.U(exponentAddressWidth.W))
+  val readRequestAddressEnable = WireDefault(false.B)
+  val readRequestAddress =
+    if (cmuxConfig.useSynchronousExternalProductMemory) {
+      val addressRegister = Module(
+        new PhysicalCutRegister(exponentAddressWidth)
+      )
+      addressRegister.io.clock := clock
+      addressRegister.io.enable := readRequestAddressEnable
+      addressRegister.io.inputData := readRequestAddressInput
+      addressRegister.io.outputData
+    } else {
+      0.U(exponentAddressWidth.W)
+    }
+  val readRequestContext = RegInit(0.U(contextWidth.W))
+  val readRequestDimension = RegInit(0.U(config.dimensionWidth.W))
   val readPending = RegInit(false.B)
   val pendingContext = RegInit(0.U(contextWidth.W))
   val pendingDimension = RegInit(0.U(config.dimensionWidth.W))
@@ -332,23 +349,59 @@ final class BatchedBlindRotateEngine(
   val candidateDimension = RegInit(0.U(config.dimensionWidth.W))
   val candidateExponent = RegInit(0.U(config.exponentWidth.W))
 
-  val readEnable = WireDefault(false.B)
-  val readAddress = WireDefault(0.U(exponentAddressWidth.W))
   val everyContextIssued = allIssued.asUInt.andR
-  when(running && !candidateValid && !readPending && !everyContextIssued) {
-    when(!allIssued(scanContext) && !cmux.io.contextBusy(scanContext)) {
-      readEnable := true.B
-      readAddress := exponentAddress(scanContext, progress(scanContext))
-    }.otherwise {
+  val readExponent = Wire(UInt(config.exponentWidth.W))
+  if (cmuxConfig.useSynchronousExternalProductMemory) {
+    when(
+      running && !candidateValid && !readPending && !readRequestValid &&
+        !everyContextIssued
+    ) {
+      when(!allIssued(scanContext)) {
+        // Register the complete exponent-memory request in the physical
+        // implementation. In particular, this keeps the dynamic
+        // progress-vector select and context-by-dimension address arithmetic
+        // off the BRAM address pins.
+        readRequestAddressInput := exponentAddress(
+          scanContext,
+          progress(scanContext)
+        )
+        readRequestAddressEnable := true.B
+        readRequestContext := scanContext
+        readRequestDimension := progress(scanContext)
+        readRequestValid := true.B
+        scanContext := nextContext(scanContext)
+      }.otherwise {
+        scanContext := nextContext(scanContext)
+      }
+    }
+    readExponent := exponentMemory.read(
+      readRequestAddress,
+      readRequestValid
+    )
+    when(readRequestValid) {
+      pendingContext := readRequestContext
+      pendingDimension := readRequestDimension
+      readPending := true.B
+      readRequestValid := false.B
+    }
+  } else {
+    val readEnable = WireDefault(false.B)
+    val readAddress = WireDefault(0.U(exponentAddressWidth.W))
+    when(running && !candidateValid && !readPending && !everyContextIssued) {
+      when(!allIssued(scanContext) && !cmux.io.contextBusy(scanContext)) {
+        readEnable := true.B
+        readAddress := exponentAddress(scanContext, progress(scanContext))
+      }.otherwise {
+        scanContext := nextContext(scanContext)
+      }
+    }
+    readExponent := exponentMemory.read(readAddress, readEnable)
+    when(readEnable) {
+      pendingContext := scanContext
+      pendingDimension := progress(scanContext)
+      readPending := true.B
       scanContext := nextContext(scanContext)
     }
-  }
-  val readExponent = exponentMemory.read(readAddress, readEnable)
-  when(readEnable) {
-    pendingContext := scanContext
-    pendingDimension := progress(scanContext)
-    readPending := true.B
-    scanContext := nextContext(scanContext)
   }
   when(readPending) {
     candidateContext := pendingContext
@@ -358,7 +411,12 @@ final class BatchedBlindRotateEngine(
     readPending := false.B
   }
 
-  cmux.io.commandValid := running && candidateValid
+  // The physical address stage may prefetch the next exponent while that
+  // context's previous CMUX is still retiring. Hold the candidate locally
+  // until the context becomes available; this hides the extra BRAM-address
+  // register without changing command order.
+  cmux.io.commandValid := running && candidateValid &&
+    !cmux.io.contextBusy(candidateContext)
   cmux.io.commandContext := candidateContext
   cmux.io.exponent := candidateExponent
   val commandFire = cmux.io.commandValid && cmux.io.commandReady
@@ -396,6 +454,7 @@ final class BatchedBlindRotateEngine(
   when(io.runStart && io.runReady) {
     running := true.B
     scanContext := 0.U
+    readRequestValid := false.B
     readPending := false.B
     candidateValid := false.B
     for (context <- 0 until config.batchContexts) {

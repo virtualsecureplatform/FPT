@@ -25,6 +25,11 @@ private final class SampleExtractWord(width: Int) extends Bundle {
   val last = Bool()
 }
 
+private final class SampleExtractSelected(width: Int) extends Bundle {
+  val data = UInt(width.W)
+  val negate = Bool()
+}
+
 /** Stream sample extraction at polynomial index zero.
   *
   * The input is a natural-order, one-polynomial TRLWE drain with both
@@ -111,8 +116,16 @@ final class SampleExtractIndexZero(val config: SampleExtractConfig)
   val pendingNegate = RegInit(false.B)
   val bodyQueued = RegInit(false.B)
 
-  val occupiedAfterTransfers = resultQueue.io.count +&
-    responsePending.asUInt - outputFire.asUInt
+  // This queue is also the physical register cut after the distributed-memory
+  // lane selector. Count the in-flight synchronous-memory response against
+  // its two slots before issuing another read.
+  private val selectedResponses = Module(
+    new Queue(new SampleExtractSelected(config.torusWidth), entries = 2, pipe = true)
+  )
+  val selectedFire = selectedResponses.io.deq.valid &&
+    selectedResponses.io.deq.ready
+  val occupiedAfterTransfers = selectedResponses.io.count +&
+    responsePending.asUInt - selectedFire.asUInt
   val canReserveResponse = occupiedAfterTransfers < 2.U
   val maskOutputRemaining = nextOutputIndex < config.polynomialSize.U
   val issueRead = state === emit && maskOutputRemaining &&
@@ -134,26 +147,37 @@ final class SampleExtractIndexZero(val config: SampleExtractConfig)
     nextOutputIndex := nextOutputIndex + 1.U
   }
 
-  val readCoefficient = readWord(pendingLane)
+  selectedResponses.io.enq.valid := responsePending
+  selectedResponses.io.enq.bits.data := readWord(pendingLane)
+  selectedResponses.io.enq.bits.negate := pendingNegate
+  when(responsePending) {
+    assert(
+      selectedResponses.io.enq.ready,
+      "sample extraction selector stage overflow"
+    )
+  }
+
   val negativeReadCoefficient =
-    (0.U((config.torusWidth + 1).W) - readCoefficient)(
+    (0.U((config.torusWidth + 1).W) - selectedResponses.io.deq.bits.data)(
       config.torusWidth - 1,
       0
     )
   val bodyRequest = state === emit &&
     nextOutputIndex === config.polynomialSize.U && !responsePending &&
-    !bodyQueued
+    !selectedResponses.io.deq.valid && !bodyQueued
 
-  resultQueue.io.enq.valid := responsePending || bodyRequest
+  resultQueue.io.enq.valid := selectedResponses.io.deq.valid || bodyRequest
   resultQueue.io.enq.bits.data := Mux(
-    responsePending,
-    Mux(pendingNegate, negativeReadCoefficient, readCoefficient),
+    selectedResponses.io.deq.valid,
+    Mux(
+      selectedResponses.io.deq.bits.negate,
+      negativeReadCoefficient,
+      selectedResponses.io.deq.bits.data
+    ),
     body
   )
   resultQueue.io.enq.bits.last := bodyRequest
-  when(responsePending) {
-    assert(resultQueue.io.enq.ready, "sample extraction response overflow")
-  }
+  selectedResponses.io.deq.ready := resultQueue.io.enq.ready
   when(bodyRequest && resultQueue.io.enq.ready) {
     bodyQueued := true.B
   }

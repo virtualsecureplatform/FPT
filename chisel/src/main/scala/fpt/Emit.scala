@@ -30,13 +30,18 @@ private object SynthesisEmitter {
     }
   }
 
-  /** Mark one generated inferred memory as block RAM. Chisel 6's CIRCT
+  /** Mark one generated inferred memory with a synthesis RAM style. Chisel 6's CIRCT
     * emitter does not carry the legacy FIRRTL AttributeAnnotation API, so the
     * synthesis-only attribute is inserted into the generated artifact. The
     * surrounding module and declaration checks make emitter changes fail
     * loudly instead of silently tagging the wrong storage.
     */
-  def addBlockRamStyle(systemVerilog: Path, memoryModule: String): Unit = {
+  def addRamStyle(
+      systemVerilog: Path,
+      memoryModule: String,
+      style: String
+  ): Unit = {
+    require(Set("block", "distributed", "ultra").contains(style))
     val source = Files.readString(systemVerilog)
     val moduleStart = source.indexOf(s"module $memoryModule(")
     require(moduleStart >= 0, s"missing memory module $memoryModule")
@@ -62,11 +67,44 @@ private object SynthesisEmitter {
     )
     val tagged = declaration.replace(
       "  reg ",
-      "  (* ram_style = \"block\" *) reg "
+      s"  (* ram_style = \"$style\" *) reg "
     )
     Files.writeString(
       systemVerilog,
       source.substring(0, lineStart) + tagged + source.substring(lineEnd)
+    )
+  }
+
+  def addBlockRamStyle(systemVerilog: Path, memoryModule: String): Unit =
+    addRamStyle(systemVerilog, memoryModule, "block")
+
+  def addUltraRamStyle(systemVerilog: Path, memoryModule: String): Unit =
+    addRamStyle(systemVerilog, memoryModule, "ultra")
+
+  /** CIRCT gives a SyncReadMem's read and write ports distinct clock names
+    * even when both connect to the enclosing Chisel clock. UltraRAM inference
+    * requires one syntactic clock, so make that equivalence explicit in the
+    * generated memory module after checking every affected token.
+    */
+  def useReadClockForMemoryWrites(
+      systemVerilog: Path,
+      memoryModule: String
+  ): Unit = {
+    val source = Files.readString(systemVerilog)
+    val moduleStart = source.indexOf(s"module $memoryModule(")
+    require(moduleStart >= 0, s"missing memory module $memoryModule")
+    val moduleEnd = source.indexOf("\nendmodule", moduleStart)
+    require(moduleEnd >= 0, s"unterminated memory module $memoryModule")
+    val module = source.substring(moduleStart, moduleEnd)
+    val writeClock = "always @(posedge W0_clk)"
+    require(
+      module.sliding(writeClock.length).count(_ == writeClock) == 1,
+      s"expected one write clock in $memoryModule"
+    )
+    val rewritten = module.replace(writeClock, "always @(posedge R0_clk)")
+    Files.writeString(
+      systemVerilog,
+      source.substring(0, moduleStart) + rewritten + source.substring(moduleEnd)
     )
   }
 }

@@ -2,6 +2,7 @@ package fpt
 
 import chisel3._
 import chiseltest._
+import chiseltest.simulator.VerilatorBackendAnnotation
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -246,6 +247,7 @@ final class ExternalProductSpec
       var outputComponent = 0
       var outputBeat = 0
       var previousOutputStart = false
+      var inputStallCycles = 0
 
       def checkOutput(): Unit = {
         if (dut.io.outputValid.peek().litToBoolean) {
@@ -286,7 +288,6 @@ final class ExternalProductSpec
           for (beat <- 0 until lineRateConfig.inputFrameBeats) {
             dut.io.inputFirst.poke((row == 0 && beat == 0).B)
             dut.io.inputTag.poke(transaction.U)
-            dut.io.inputReady.expect(true.B)
             for (lane <- 0 until lineRateConfig.inputLanes) {
               val point = beat * lineRateConfig.inputLanes + lane
               val vector = rows(row * config.points + point)
@@ -303,6 +304,11 @@ final class ExternalProductSpec
               }
             }
             dut.io.inputValid.poke(true.B)
+            while (!dut.io.inputReady.peek().litToBoolean) {
+              inputStallCycles += 1
+              checkOutput()
+              dut.clock.step()
+            }
             checkOutput()
             dut.clock.step()
           }
@@ -318,7 +324,109 @@ final class ExternalProductSpec
         tailCycles += 1
         tailCycles should be <= 2 * lineRateConfig.outputFrameBeats + 1
       }
+      inputStallCycles should be(0)
       dut.io.busy.expect(false.B)
+    }
+  }
+
+  it should "align pipelined U280 products with synchronous accumulation" in {
+    val physicalConfig = ExternalProductConfig(
+      points = 8,
+      inputLanes = 2,
+      outputLanes = 1,
+      rows = 4,
+      outputComponents = 2,
+      spectrum = FixedFormat(18, 12),
+      bootstrappingKey = FixedFormat(8, 19),
+      accumulator = FixedFormat(27, 3),
+      multiplier =
+        ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+    )
+    val accumulatorWidth = physicalConfig.accumulator.width
+    val accumulatorModulus = BigInt(1) << accumulatorWidth
+    val accumulatorMask = accumulatorModulus - 1
+    def wrapSigned(value: BigInt): BigInt = {
+      val bits = value & accumulatorMask
+      if (bits.testBit(accumulatorWidth - 1)) bits - accumulatorModulus
+      else bits
+    }
+    val expected = Array.fill(physicalConfig.outputComponents,
+      physicalConfig.points)((BigInt(0), BigInt(0)))
+
+    test(
+      new DoubleBufferedExternalProductAccumulator(
+        physicalConfig,
+        tagWidth = 2,
+        useSynchronousMemory = true
+      )
+    ).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      dut.io.inputValid.poke(false.B)
+      dut.io.inputFirst.poke(false.B)
+      dut.io.inputTag.poke(1.U)
+      dut.io.outputReady.poke(true.B)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+
+      for (row <- 0 until physicalConfig.rows) {
+        for (beat <- 0 until physicalConfig.inputFrameBeats) {
+          dut.io.inputFirst.poke((row == 0 && beat == 0).B)
+          dut.io.inputReady.expect(true.B)
+          for (lane <- 0 until physicalConfig.inputLanes) {
+            val point = beat * physicalConfig.inputLanes + lane
+            val aReal = BigInt(row * 101 + point * 17 - 211)
+            val aImag = BigInt(row * 47 - point * 23 + 91)
+            dut.io.decomposition(lane).real.poke(aReal.S)
+            dut.io.decomposition(lane).imag.poke(aImag.S)
+            for (component <- 0 until physicalConfig.outputComponents) {
+              val bReal = BigInt(component * 73 + row * 13 - point * 5 + 19)
+              val bImag = BigInt(component * -61 + row * 7 + point * 11 - 3)
+              dut.io.bootstrappingKey(component)(lane).real.poke(bReal.S)
+              dut.io.bootstrappingKey(component)(lane).imag.poke(bImag.S)
+              val productReal = aReal * bReal - aImag * bImag
+              val productImag = aReal * bImag + aImag * bReal
+              val quantizedReal = wrapSigned(
+                productReal >> physicalConfig.productShift
+              )
+              val quantizedImag = wrapSigned(
+                productImag >> physicalConfig.productShift
+              )
+              val previous = expected(component)(point)
+              expected(component)(point) =
+                if (row == 0) (quantizedReal, quantizedImag)
+                else (
+                  wrapSigned(previous._1 + quantizedReal),
+                  wrapSigned(previous._2 + quantizedImag)
+                )
+            }
+          }
+          dut.io.inputValid.poke(true.B)
+          dut.clock.step()
+        }
+      }
+      dut.io.inputValid.poke(false.B)
+      dut.io.inputFirst.poke(false.B)
+
+      var waitCycles = 0
+      while (!dut.io.outputValid.peek().litToBoolean) {
+        dut.clock.step()
+        waitCycles += 1
+        waitCycles should be <=
+          PipelinedExactSchoolbookComplexMultiply.latency + 3
+      }
+      for (point <- 0 until physicalConfig.points) {
+        dut.io.outputValid.expect(true.B)
+        dut.io.outputTag.expect(1.U)
+        for (component <- 0 until physicalConfig.outputComponents) {
+          dut.io.output(component)(0).real.expect(
+            expected(component)(point)._1.S
+          )
+          dut.io.output(component)(0).imag.expect(
+            expected(component)(point)._2.S
+          )
+        }
+        dut.clock.step()
+      }
     }
   }
 }

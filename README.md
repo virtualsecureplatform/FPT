@@ -265,6 +265,7 @@ tools/emit_paper_bitwise_batched_blind_rotate_sample_extract.sh \
   build/chisel-paper-bitwise-blind-rotate-sample-extract
 tools/emit_paper_buffered_bitwise_batched_blind_rotate_sample_extract.sh
 tools/emit_paper_buffered_blind_rotate_accelerator.sh
+tools/emit_paper_buffered_barrel_blind_rotate_accelerator.sh
 ```
 
 The Blind Rotate tops load raw TLWE mask coefficients and body, implement
@@ -296,6 +297,37 @@ LUTs, 1,348,958 FFs, 457 BRAMs, 5,100 distributed-RAM primitives, and 5,408
 DSP48E2s. Relative to the direct-key map, this adds exactly the cache's 192
 BRAMs and no DSP or distributed RAM; whole-design packing adds only 457 LUTs
 and 8,461 FFs.
+
+For the 300 MHz U280 target, the windowed-barrel emitter replaces the
+full-polynomial variable barrel with pipelined inverse-bank-width spans,
+pipelines the exact External Product through DSP-sized schoolbook products,
+registers the CMUX-to-key-cache, accumulator-update, and accumulator-drain
+boundaries, and maps one External Product accumulator bank to UltraRAM while
+retaining the shallow twin in distributed memory to avoid saturating an SLR's
+block-RAM columns.
+Its complete generated 16-result schedule is 197,640 cycles (12,352.5
+cycles/result), including all 630 key coefficients, 161,280 key-load beats,
+and 16,400 result beats. Emit
+and run the timing-accepting out-of-context U280 flow with:
+
+```sh
+tools/emit_paper_buffered_barrel_blind_rotate_accelerator.sh \
+  build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
+  build/chisel-paper-buffered-barrel-blind-rotate
+vivado -mode batch \
+  -source chisel/scripts/synth_buffered_barrel_blind_rotate_u280.tcl \
+  -tclargs \
+  build/chisel-paper-buffered-barrel-blind-rotate/BufferedBlindRotateAccelerator.sv \
+  build/sgen-fpt/forward.v build/sgen-fpt/inverse.v \
+  build/vivado-buffered-barrel-blind-rotate-300mhz 3.333
+```
+
+The flow uses a middle-SLR clock root, keeps the two transforms in separate
+SLRs, co-locates the selector, External Product, and key cache in the middle
+SLR, and rejects negative setup slack, incomplete routes, or serious DRC
+violations. This remains the paper Set-II architectural-width experiment;
+the numerical-precision caveat and stable-profile fit gate are documented in
+[the U280 handoff](docs/u280-handoff.md).
 
 SGen remains a separate Verilog BlackBox in synthesis; CIRCT does not append
 the generated sources or its resource file list to `CmuxEngine.sv`.  The
@@ -483,10 +515,10 @@ status, DRC, vectorless power, routed checkpoints, and compact TSV metrics.
 The clock constraint is loaded before synthesis and verified afterward. Runs
 and report regeneration reject missing constraints, incomplete/error routes,
 and Fatal, Error, Critical Warning, or unclassified post-route DRC violations.
-Vivado is not installed in this workspace, so the checked regression stops at
-Chisel tests, complete-design Verilator lint, mocked acceptance-flow tests,
-source-only handoff generation, and open-source UltraScale+ mapping;
-placed-and-routed hardware benefit claims must wait for those U280 reports.
+The local Vivado flow targets `xcu280-fsvh2892-2L-e`; only a fully routed,
+DRC-clean result with nonnegative setup slack is accepted as meeting a stated
+frequency. Chisel tests, complete-design Verilator compilation, and the
+open-source UltraScale+ maps remain independent regression gates.
 
 See `docs/hardware-comparison.md` for the reproduced 211/220-cycle Set-II CMUX
 schedule, generated multiplier-expression comparison, and the remaining

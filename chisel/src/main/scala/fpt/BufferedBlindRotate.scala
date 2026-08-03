@@ -27,6 +27,16 @@ final case class BufferedBlindRotateConfig(
     s"memory_${keyMemoryDepth}x${keyMemoryWordBits}"
 }
 
+private final class BufferedKeyReadRequest(
+    dimensionWidth: Int,
+    rowWidth: Int,
+    beatWidth: Int
+) extends Bundle {
+  val index = UInt(dimensionWidth.W)
+  val row = UInt(rowWidth.W)
+  val beat = UInt(beatWidth.W)
+}
+
 /** Sample-extracted Blind Rotate with the paper's two-coefficient key cache.
   *
   * The host fills spectral key coefficients through a narrow ordered stream.
@@ -141,11 +151,30 @@ final class BufferedBatchedBlindRotateSampleExtractEngine(
   io.keyBankValid := keyBuffer.io.bankValid
   io.keyBankIndex := keyBuffer.io.bankIndex
 
-  keyBuffer.io.readRequestValid := blindRotate.io.keyReadRequestValid
-  blindRotate.io.keyReadRequestReady := keyBuffer.io.readRequestReady
-  keyBuffer.io.readIndex := blindRotate.io.keyReadRequestIndex
-  keyBuffer.io.readRow := blindRotate.io.keyReadRequestRow
-  keyBuffer.io.readBeat := blindRotate.io.keyReadRequestBeat
+  // Cut the forward-tag/transaction counter from the key BRAM address
+  // decoder. Two entries preserve one request per cycle without a
+  // combinational ready path through the key cache.
+  private val keyReadRequests = Module(
+    new Queue(
+      new BufferedKeyReadRequest(
+        blindConfig.dimensionWidth,
+        config.keyBuffer.rowWidth,
+        config.keyBuffer.beatWidth
+      ),
+      entries = 2
+    )
+  )
+  keyReadRequests.io.enq.valid := blindRotate.io.keyReadRequestValid
+  blindRotate.io.keyReadRequestReady := keyReadRequests.io.enq.ready
+  keyReadRequests.io.enq.bits.index := blindRotate.io.keyReadRequestIndex
+  keyReadRequests.io.enq.bits.row := blindRotate.io.keyReadRequestRow
+  keyReadRequests.io.enq.bits.beat := blindRotate.io.keyReadRequestBeat
+
+  keyBuffer.io.readRequestValid := keyReadRequests.io.deq.valid
+  keyReadRequests.io.deq.ready := keyBuffer.io.readRequestReady
+  keyBuffer.io.readIndex := keyReadRequests.io.deq.bits.index
+  keyBuffer.io.readRow := keyReadRequests.io.deq.bits.row
+  keyBuffer.io.readBeat := keyReadRequests.io.deq.bits.beat
   blindRotate.io.bootstrappingKeyValid := keyBuffer.io.readResponseValid
   keyBuffer.io.readResponseReady := blindRotate.io.bootstrappingKeyReady
   blindRotate.io.bootstrappingKey := keyBuffer.io.readResponse

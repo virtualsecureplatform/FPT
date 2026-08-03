@@ -200,6 +200,8 @@ final class PrefetchedCoefficientStoreSpec
         }
         dut.io.updateValid.poke(false.B)
         dut.io.updateFirst.poke(false.B)
+        dut.io.updateDone.expect(false.B)
+        dut.clock.step()
         dut.io.updateDone.expect(true.B)
         dut.io.updateDoneContext.expect(context.U)
         dut.clock.step()
@@ -216,7 +218,7 @@ final class PrefetchedCoefficientStoreSpec
         while (!dut.io.drainValid.peek().litToBoolean) {
           dut.clock.step()
           waitCycles += 1
-          waitCycles should be <= config.inverseBeats + 2
+          waitCycles should be <= config.inverseBeats + 3
         }
         for (beat <- 0 until config.polynomialBeats) {
           dut.io.drainValid.expect(true.B)
@@ -405,6 +407,8 @@ final class PrefetchedCoefficientStoreSpec
         }
         dut.io.updateValid.poke(false.B)
         dut.io.updateFirst.poke(false.B)
+        dut.io.updateDone.expect(false.B)
+        dut.clock.step()
         dut.io.updateDone.expect(true.B)
         dut.clock.step()
       }
@@ -419,7 +423,7 @@ final class PrefetchedCoefficientStoreSpec
         while (!dut.io.drainValid.peek().litToBoolean) {
           dut.clock.step()
           drainWait += 1
-          drainWait should be <= config.inverseBeats + 2
+          drainWait should be <= config.inverseBeats + 3
         }
         for (beat <- 0 until config.polynomialBeats) {
           dut.io.drainValid.expect(true.B)

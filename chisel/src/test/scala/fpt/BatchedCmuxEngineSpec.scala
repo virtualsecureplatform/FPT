@@ -264,8 +264,28 @@ final class BatchedCmuxEngineSpec
             while (!dut.io.drainValid.peek().litToBoolean) {
               step()
               drainWait += 1
-              drainWait should be <= coefficient.inverseBeats + 2
+              drainWait should be <= coefficient.inverseBeats + 3
             }
+
+            // The timing-cut register is elastic: a downstream stall must
+            // preserve both valid and every lane of the buffered beat.
+            val stalledBeat = Seq.tabulate(coefficient.components) {
+              component =>
+                Seq.tabulate(coefficient.inverseLanes) { lane =>
+                  dut.io.drain(component)(lane).peek().litValue
+                }
+            }
+            dut.io.drainReady.poke(false.B)
+            step()
+            dut.io.drainValid.expect(true.B)
+            for (component <- 0 until coefficient.components) {
+              for (lane <- 0 until coefficient.inverseLanes) {
+                dut.io.drain(component)(lane).expect(
+                  stalledBeat(component)(lane).U
+                )
+              }
+            }
+            dut.io.drainReady.poke(true.B)
           }
           var maximumError = BigInt(0)
           for (beat <- 0 until coefficient.polynomialBeats) {

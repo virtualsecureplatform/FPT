@@ -3,8 +3,10 @@ package fpt
 import chisel3._
 import chisel3.util._
 import chiseltest._
+import chiseltest.simulator.{VerilatorBackendAnnotation, VerilatorFlags}
 import org.scalatest.flatspec.AnyFlatSpec
 
+import scala.collection.mutable
 import scala.util.Random
 
 /** Equivalence harness: a pipelined rotator against the combinational
@@ -41,15 +43,34 @@ final class PipelinedRotatorHarness(
   private val fill = RegInit(0.U(8.W))
   when(io.enable && fill < k.U) { fill := fill + 1.U }
   io.checkValid := fill === k.U
-  io.mismatch := io.checkValid &&
-    delayedReference.asUInt =/= pipelined.io.output.asUInt
+  // Compare lanes before packing.  Casting each 1024-by-32 Vec to one UInt
+  // makes Verilator build a ladder of progressively wider concatenation
+  // temporaries; the generated evaluator then exceeds sbt's native worker
+  // stack before it can execute the equivalence check.
+  private val laneMismatch = VecInit((0 until size).map { lane =>
+    delayedReference(lane) =/= pipelined.io.output(lane)
+  })
+  io.mismatch := io.checkValid && laneMismatch.asUInt.orR
 }
 
 final class PipelinedRotatorEquivalenceSpec
     extends AnyFlatSpec
     with ChiselScalatestTester {
   private def run(size: Int, width: Int, every: Int): Unit = {
-    test(new PipelinedRotatorHarness(size, width, every)) { dut =>
+    test(new PipelinedRotatorHarness(size, width, every))
+      .withAnnotations(
+        Seq(
+          VerilatorBackendAnnotation,
+          VerilatorFlags(
+            Seq(
+              "--output-split",
+              "99999999",
+              "--output-split-cfuncs",
+              "99999999"
+            )
+          )
+        )
+      ) { dut =>
       val random = new Random(0xf97 + every)
       for (cycle <- 0 until 600) {
         for (index <- 0 until size) {
@@ -75,5 +96,76 @@ final class PipelinedRotatorEquivalenceSpec
 
   it should "match under a dense enable pattern at Set-II width" in {
     run(size = 1024, width = 32, every = 2)
+  }
+
+  it should "align bank-width windows across arbitrary stalls" in {
+    val size = 64
+    val width = 12
+    val blockLanes = 8
+    val outputLanes = 16
+    val ringBlocks = 2 * size / blockLanes
+    val mask = (BigInt(1) << width) - 1
+    val random = new Random(0x57494e44L)
+
+    test(
+      new PipelinedWindowedNegacyclicRotatorSpan(
+        size,
+        width,
+        blockLanes,
+        outputLanes
+      )
+    ) { dut =>
+      val expected = mutable.Queue.empty[Seq[BigInt]]
+      var lastOutput = Seq.fill(outputLanes)(BigInt(0))
+      var haveOutput = false
+
+      def driveAndStep(enable: Boolean, recordInput: Boolean = true): Unit = {
+        val polynomial = Seq.fill(size)(BigInt(width, random))
+        val firstRingBlock = random.nextInt(ringBlocks)
+        val offset = random.nextInt(blockLanes)
+        for (block <- 0 until outputLanes / blockLanes + 1) {
+          for (lane <- 0 until blockLanes) {
+            val ringBlock = (firstRingBlock + block) & (ringBlocks - 1)
+            val physical = (ringBlock * blockLanes + lane) & (size - 1)
+            dut.io.input(block)(lane).poke(polynomial(physical).U)
+          }
+        }
+        dut.io.firstRingBlock.poke(firstRingBlock.U)
+        dut.io.offset.poke(offset.U)
+        dut.io.enable.poke(enable.B)
+        dut.clock.step()
+
+        if (enable) {
+          val result = (0 until outputLanes).map { lane =>
+            val ringIndex = (firstRingBlock * blockLanes + offset + lane) &
+              (2 * size - 1)
+            val value = polynomial(ringIndex & (size - 1))
+            if (ringIndex >= size) (-value) & mask else value
+          }
+          if (recordInput) expected.enqueue(result)
+          if (
+            (!recordInput && expected.nonEmpty) ||
+            expected.size >= PipelinedWindowedNegacyclicRotatorSpan.latency
+          ) {
+            lastOutput = expected.dequeue()
+            haveOutput = true
+            for (lane <- 0 until outputLanes) {
+              dut.io.output(lane).expect(lastOutput(lane).U)
+            }
+          }
+        } else if (haveOutput) {
+          for (lane <- 0 until outputLanes) {
+            dut.io.output(lane).expect(lastOutput(lane).U)
+          }
+        }
+      }
+
+      for (_ <- 0 until 300) {
+        driveAndStep(random.nextInt(4) != 0)
+      }
+      while (expected.nonEmpty) {
+        driveAndStep(enable = true, recordInput = false)
+      }
+    }
   }
 }

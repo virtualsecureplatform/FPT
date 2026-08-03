@@ -8,6 +8,7 @@ sealed trait ExternalProductMultiplier
 object ExternalProductMultiplier {
   case object Schoolbook extends ExternalProductMultiplier
   case object ExactGaussDsp extends ExternalProductMultiplier
+  case object ExactPipelinedSchoolbookDsp extends ExternalProductMultiplier
   case object ExactGaussTwoLimbDsp extends ExternalProductMultiplier
 }
 
@@ -45,6 +46,16 @@ final case class ExternalProductConfig(
     require(spectrum.width > 27 && spectrum.width <= 35)
     require(bootstrappingKey.width >= 2 && bootstrappingKey.width <= 27)
   }
+  if (
+    multiplier == ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+  ) {
+    require(spectrum.width > 27 && spectrum.width <= 35)
+    require(bootstrappingKey.width >= 2 && bootstrappingKey.width <= 27)
+    require(
+      inputFrameBeats >= PipelinedExactSchoolbookComplexMultiply.latency + 1,
+      "the pipelined product and accumulator commit must complete before an accumulator address repeats"
+    )
+  }
   if (multiplier == ExternalProductMultiplier.ExactGaussTwoLimbDsp) {
     require(spectrum.width >= 36 && spectrum.width <= 51)
     require(bootstrappingKey.width >= 28 && bootstrappingKey.width <= 33)
@@ -73,6 +84,15 @@ private[fpt] object ExternalProductMultiply {
       multiply.io.a := a
       multiply.io.b := b
       (multiply.io.productReal, multiply.io.productImag)
+    case ExternalProductMultiplier.ExactPipelinedSchoolbookDsp =>
+      // This fallback keeps the configuration numerically usable in simple
+      // reference accumulators. The synchronous physical accumulator below
+      // replaces it with the explicitly registered DSP implementation.
+      val ac = a.real * b.real
+      val bd = a.imag * b.imag
+      val ad = a.real * b.imag
+      val bc = a.imag * b.real
+      (ac -& bd, ad +& bc)
     case ExternalProductMultiplier.ExactGaussTwoLimbDsp =>
       val multiply = Module(
         new ExactGaussTwoLimbComplexMultiply(
@@ -352,7 +372,12 @@ final class DoubleBufferedExternalProductAccumulator(
   private val groupBits = log2Ceil(config.outputGroupsPerInputBeat)
 
   if (!useSynchronousMemory) {
-  val accumulatorMemory = Reg(
+    require(
+      config.multiplier !=
+        ExternalProductMultiplier.ExactPipelinedSchoolbookDsp,
+      "the pipelined DSP multiplier requires synchronous accumulator storage"
+    )
+    val accumulatorMemory = Reg(
     Vec(
       bufferCount,
       Vec(
@@ -593,8 +618,22 @@ final class DoubleBufferedExternalProductAccumulator(
     val memoryWordWidth = config.outputComponents *
       config.outputGroupsPerInputBeat * config.outputLanes * 2 *
       config.accumulator.width
-    val accumulatorMemories = Seq.fill(bufferCount) {
-      SyncReadMem(config.inputFrameBeats, UInt(memoryWordWidth.W))
+    // Give the first ping-pong bank one harmless padding bit so CIRCT emits
+    // distinct inferred-memory modules for the two banks. The U280 physical
+    // emitter can then map only that bank into otherwise-unused UltraRAM,
+    // instead of forcing both very shallow 15K-bit-wide banks into either
+    // LUTRAM or the same RAM style. The padding bit is never read.
+    val accumulatorMemoryWidths =
+      Seq(memoryWordWidth + 1, memoryWordWidth)
+    val accumulatorMemories = accumulatorMemoryWidths.map { width =>
+      // The added accumulator commit register can write an address on the
+      // same edge that the next row reads it. Explicit write-first behavior
+      // forwards that just-completed sum into the next accumulation.
+      SyncReadMem(
+        config.inputFrameBeats,
+        UInt(width.W),
+        SyncReadMem.WriteFirst
+      )
     }
 
     val bankTags = Reg(Vec(bufferCount, UInt(tagWidth.W)))
@@ -638,6 +677,13 @@ final class DoubleBufferedExternalProductAccumulator(
     def beatDepth(beat: UInt): UInt =
       if (config.outputGroupsPerInputBeat == 1) beat
       else beat >> groupBits
+
+    val usePipelinedProduct = config.multiplier ==
+      ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+    val productPipelineCycles =
+      if (usePipelinedProduct)
+        PipelinedExactSchoolbookComplexMultiply.latency
+      else 1
 
     val outputReadResponse = RegInit(false.B)
     val outputReadBank = RegInit(0.U(1.W))
@@ -704,7 +750,19 @@ final class DoubleBufferedExternalProductAccumulator(
           val a = io.decomposition(inputLane)
           val b = io.bootstrappingKey(component)(inputLane)
           val (productReal, productImag) =
-            ExternalProductMultiply(a, b, config)
+            if (usePipelinedProduct) {
+              val multiply = Module(
+                new PipelinedExactSchoolbookComplexMultiply(
+                  config.spectrum.width,
+                  config.bootstrappingKey.width
+                )
+              )
+              multiply.io.a := a
+              multiply.io.b := b
+              (multiply.io.productReal, multiply.io.productImag)
+            } else {
+              ExternalProductMultiply(a, b, config)
+            }
           productWord(component)(group)(lane).real :=
             FixedPointBits.shiftedLowSigned(
               productReal,
@@ -720,25 +778,59 @@ final class DoubleBufferedExternalProductAccumulator(
         }
       }
     }
-    val pendingProduct = Reg(memoryWordType)
-    val pendingInputValid = RegNext(inputFire, false.B)
-    val pendingFirstRow = RegEnable(activeRow === 0.U, false.B, inputFire)
-    val pendingInputBeat = RegEnable(
+    val pendingProduct =
+      if (usePipelinedProduct) productWord
+      else {
+        val registered = Reg(memoryWordType)
+        when(inputFire) {
+          registered := productWord
+        }
+        registered
+      }
+
+    val firstPendingInputValid = RegNext(inputFire, false.B)
+    val firstPendingFirstRow = RegEnable(
+      activeRow === 0.U,
+      false.B,
+      inputFire
+    )
+    val firstPendingInputBeat = RegEnable(
       activeInputBeat,
       0.U(inputBeatWidth.W),
       inputFire
     )
-    val pendingWriteBank = RegEnable(writeBank, 0.U(1.W), inputFire)
-    when(inputFire) {
-      pendingProduct := productWord
-    }
+    val firstPendingWriteBank = RegEnable(writeBank, 0.U(1.W), inputFire)
+    val remainingProductCycles = productPipelineCycles - 1
+    val pendingInputValid = ShiftRegister(
+      firstPendingInputValid,
+      remainingProductCycles,
+      false.B,
+      true.B
+    )
+    val pendingFirstRow = ShiftRegister(
+      firstPendingFirstRow,
+      remainingProductCycles
+    )
+    val pendingInputBeat = ShiftRegister(
+      firstPendingInputBeat,
+      remainingProductCycles
+    )
+    val pendingWriteBank = ShiftRegister(
+      firstPendingWriteBank,
+      remainingProductCycles
+    )
 
     val memoryReadEnable = Wire(Vec(bufferCount, Bool()))
     val memoryReadAddress = Wire(
       Vec(bufferCount, UInt(inputBeatWidth.W))
     )
     for (buffer <- 0 until bufferCount) {
-      val inputRead = inputFire && writeBank === buffer.U
+      // Row zero overwrites stale accumulator contents, so it does not need
+      // a memory read.  Besides avoiding useless UltraRAM activity, this
+      // removes the only cycle where bankReady participates in inputFire
+      // and could otherwise feed the wide read-address decode.
+      val inputRead = inputFire && activeRow =/= 0.U &&
+        writeBank === buffer.U
       val outputRead = outputReadIssue && issueBank === buffer.U
       assert(!(inputRead && outputRead), "External Product bank read conflict")
       memoryReadEnable(buffer) := inputRead || outputRead
@@ -750,11 +842,20 @@ final class DoubleBufferedExternalProductAccumulator(
     }
     val memoryReadWords = accumulatorMemories.zipWithIndex.map {
       case (memory, buffer) =>
-        memory.read(memoryReadAddress(buffer), memoryReadEnable(buffer))
+        memory
+          .read(memoryReadAddress(buffer), memoryReadEnable(buffer))(
+            memoryWordWidth - 1,
+            0
+          )
     }
 
-    val pendingPreviousWord = VecInit(memoryReadWords)(pendingWriteBank)
-      .asTypeOf(memoryWordType)
+    val firstPendingPreviousWord = VecInit(memoryReadWords)(
+      firstPendingWriteBank
+    ).asTypeOf(memoryWordType)
+    val pendingPreviousWord = ShiftRegister(
+      firstPendingPreviousWord,
+      remainingProductCycles
+    )
     val accumulatedWord = Wire(memoryWordType)
     for (component <- 0 until config.outputComponents) {
       for (group <- 0 until config.outputGroupsPerInputBeat) {
@@ -782,12 +883,55 @@ final class DoubleBufferedExternalProductAccumulator(
         }
       }
     }
+
+    // The product modules already register their outputs, but placing the
+    // accumulator carry chain directly on the 15K-bit UltraRAM write word
+    // still creates long product-to-memory routes. For the U280 multiplier,
+    // register that complete word once more: the product registers can stay
+    // with their DSPs and the commit registers can stay with the UltraRAMs.
+    // The non-pipelined reference configuration retains its original latency
+    // so its serialized double-buffer handoff remains cycle-for-cycle.
+    val (
+      accumulationWriteValid,
+      accumulationWriteBeat,
+      accumulationWriteBank,
+      accumulationWriteWord
+    ) = if (usePipelinedProduct) {
+      val commitValid = RegNext(pendingInputValid, false.B)
+      val commitBeat = RegEnable(
+        pendingInputBeat,
+        0.U(inputBeatWidth.W),
+        pendingInputValid
+      )
+      val commitBank = RegEnable(
+        pendingWriteBank,
+        0.U(1.W),
+        pendingInputValid
+      )
+      // Global synthesis retiming otherwise absorbs a normal Chisel register
+      // back into the multiplier outputs, recreating a DSP-side carry chain
+      // followed by a long route to the UltraRAM write port.
+      val commitRegister = Module(new PhysicalCutRegister(memoryWordWidth))
+      commitRegister.io.clock := clock
+      commitRegister.io.enable := pendingInputValid
+      commitRegister.io.inputData := accumulatedWord.asUInt
+      val commitWord = commitRegister.io.outputData.asTypeOf(memoryWordType)
+      (commitValid, commitBeat, commitBank, commitWord)
+    } else {
+      (
+        pendingInputValid,
+        pendingInputBeat,
+        pendingWriteBank,
+        accumulatedWord
+      )
+    }
     for (buffer <- 0 until bufferCount) {
-      when(pendingInputValid && pendingWriteBank === buffer.U) {
-        accumulatorMemories(buffer).write(
-          pendingInputBeat,
-          accumulatedWord.asUInt
-        )
+      when(accumulationWriteValid && accumulationWriteBank === buffer.U) {
+        val writeWord =
+          if (accumulatorMemoryWidths(buffer) == memoryWordWidth)
+            accumulationWriteWord.asUInt
+          else Cat(0.U(1.W), accumulationWriteWord.asUInt)
+        accumulatorMemories(buffer).write(accumulationWriteBeat, writeWord)
       }
     }
 

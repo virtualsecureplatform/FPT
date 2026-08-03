@@ -505,7 +505,7 @@ final class BlindRotateEngineSpec
           while (!dut.io.drainValid.peek().litToBoolean) {
             step()
             drainWait += 1
-            drainWait should be <= coefficient.inverseBeats + 2
+            drainWait should be <= coefficient.inverseBeats + 3
           }
           for (beat <- 0 until coefficient.polynomialBeats) {
             dut.io.drainValid.expect(true.B)

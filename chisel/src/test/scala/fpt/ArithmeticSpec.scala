@@ -7,6 +7,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 import java.nio.file.{Files, Path}
+import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.Random
 
@@ -152,6 +153,75 @@ final class ArithmeticSpec
         withClue(s"Gauss product vector=$index imag") {
           dut.io.productImag.expect(expectedImag.S)
         }
+      }
+    }
+  }
+
+  it should "pipeline exact DSP-sized schoolbook products every cycle" in {
+    val aWidth = 30
+    val bWidth = 27
+    val random = new Random(0x55323830L)
+    def randomSigned(width: Int): BigInt = {
+      val bits = BigInt(width, random)
+      if (bits.testBit(width - 1)) bits - (BigInt(1) << width) else bits
+    }
+    val aLimit = BigInt(1) << (aWidth - 1)
+    val bLimit = BigInt(1) << (bWidth - 1)
+    val vectors = Seq(
+      (-aLimit, -aLimit, -bLimit, -bLimit),
+      (-aLimit, aLimit - 1, bLimit - 1, -bLimit),
+      (aLimit - 1, -aLimit, -bLimit, bLimit - 1),
+      (aLimit - 1, aLimit - 1, bLimit - 1, bLimit - 1),
+      (BigInt(-1), BigInt(0), BigInt(1), BigInt(-1))
+    ) ++ Seq.fill(500)(
+      (
+        randomSigned(aWidth),
+        randomSigned(aWidth),
+        randomSigned(bWidth),
+        randomSigned(bWidth)
+      )
+    )
+
+    test(new PipelinedExactSchoolbookComplexMultiply(aWidth, bWidth))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      val expected = mutable.Queue.empty[(BigInt, BigInt, Int)]
+
+      def checkReady(): Unit = {
+        if (
+          expected.size >= PipelinedExactSchoolbookComplexMultiply.latency
+        ) {
+          val (real, imag, index) = expected.dequeue()
+          withClue(s"pipelined schoolbook vector=$index real") {
+            dut.io.productReal.expect(real.S)
+          }
+          withClue(s"pipelined schoolbook vector=$index imag") {
+            dut.io.productImag.expect(imag.S)
+          }
+        }
+      }
+
+      for (((aReal, aImag, bReal, bImag), index) <- vectors.zipWithIndex) {
+        dut.io.a.real.poke(aReal.S)
+        dut.io.a.imag.poke(aImag.S)
+        dut.io.b.real.poke(bReal.S)
+        dut.io.b.imag.poke(bImag.S)
+        dut.clock.step()
+        expected.enqueue(
+          (aReal * bReal - aImag * bImag, aReal * bImag + aImag * bReal, index)
+        )
+        checkReady()
+      }
+      while (expected.nonEmpty) {
+        dut.io.a.real.poke(0.S)
+        dut.io.a.imag.poke(0.S)
+        dut.io.b.real.poke(0.S)
+        dut.io.b.imag.poke(0.S)
+        dut.clock.step()
+        // Keep the queue at the modeled pipeline depth while flushing the
+        // final real vectors; the appended zero products are not checked.
+        expected.enqueue((BigInt(0), BigInt(0), -1))
+        checkReady()
+        if (expected.forall(_._3 == -1)) expected.clear()
       }
     }
   }

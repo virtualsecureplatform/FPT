@@ -40,8 +40,8 @@ final case class ReplicatedAccumulatorBanksConfig(
   *   - the forward copy prefetches a complete context in `inverseBeats`
   *     consecutive cycles;
   *   - the update copy reads the old coefficient word while inverse results
-  *     arrive, then the updated word is written back to both copies one cycle
-  *     later.
+  *     arrive, then the Torus sum is registered and written back to both
+  *     copies two cycles later.
   *
   * Consequently each physical bank has only one read and one write port. This
   * is deliberately compatible with true dual-port FPGA block memories and
@@ -134,29 +134,15 @@ final class ReplicatedAccumulatorBanks(
   val loaded = RegInit(VecInit(Seq.fill(config.batchContexts)(false.B)))
   io.contextLoaded := loaded
 
-  // Loading writes one polynomial half at a time using field masks. The low
-  // and high halves therefore share the same packed address without a staging
-  // register array.
+  // Loading accepts one polynomial half per cycle. A full-width commit
+  // register sits immediately in front of the mirrored memories so loader
+  // control and test-vector arithmetic do not directly drive 128 BRAM write
+  // ports across the middle SLR.
   val loadActive = RegInit(false.B)
   val loadContextReg = RegInit(0.U(contextWidth.W))
   val loadBeat = RegInit(0.U(loadBeatWidth.W))
-  val loadDoneReg = RegInit(false.B)
-  val loadDoneContextReg = RegInit(0.U(contextWidth.W))
   io.loadReady := loadActive
-  io.loadDone := loadDoneReg
-  io.loadDoneContext := loadDoneContextReg
-  loadDoneReg := false.B
 
-  when(io.loadStart) {
-    assert(!loadActive, "accumulator load started while active")
-    assert(io.loadContext < config.batchContexts.U, "invalid load context")
-    assert(!io.prefetchStart, "load and prefetch started together")
-    assert(!io.updateValid, "load started with inverse update data")
-    loadActive := true.B
-    loadContextReg := io.loadContext
-    loadBeat := 0.U
-    loaded(io.loadContext) := false.B
-  }
   when(io.loadValid) {
     assert(io.loadReady, "accumulator load data presented while idle")
   }
@@ -168,37 +154,69 @@ final class ReplicatedAccumulatorBanks(
     loadBeat
   )
   val loadAddress = packedAddress(loadContextReg, loadHalfBeat)
+  val loadFinal = loadFire && loadBeat === (config.loadBeats - 1).U
+
+  val loadCommitValid = RegNext(loadFire, false.B)
+  val loadCommitAddress = RegEnable(
+    loadAddress,
+    0.U(config.addressWidth.W),
+    loadFire
+  )
+  val loadCommitContext = RegEnable(
+    loadContextReg,
+    0.U(contextWidth.W),
+    loadFire
+  )
+  val loadCommitHighHalf = RegEnable(loadHighHalf, false.B, loadFire)
+  val loadCommitFinal = RegEnable(loadFinal, false.B, loadFire)
+  val loadCommitData = Reg(chiselTypeOf(io.load))
+  when(loadFire) {
+    loadCommitData := io.load
+  }
+
+  when(io.loadStart) {
+    assert(!loadActive, "accumulator load started while active")
+    assert(!loadCommitValid, "accumulator load started during a load commit")
+    assert(io.loadContext < config.batchContexts.U, "invalid load context")
+    assert(!io.prefetchStart, "load and prefetch started together")
+    assert(!io.updateValid, "load started with inverse update data")
+    loadActive := true.B
+    loadContextReg := io.loadContext
+    loadBeat := 0.U
+    loaded(io.loadContext) := false.B
+  }
+
+  io.loadDone := loadCommitValid && loadCommitFinal
+  io.loadDoneContext := loadCommitContext
 
   when(loadFire) {
-    when(loadBeat === (config.loadBeats - 1).U) {
+    when(loadFinal) {
       loadActive := false.B
       loadBeat := 0.U
-      loadDoneReg := true.B
-      loadDoneContextReg := loadContextReg
+      // Reads remain blocked by loadCommitValid until the final write lands.
+      // Marking the context here makes contextLoaded align with loadDone in
+      // the following cycle without exposing partially committed storage.
       loaded(loadContextReg) := true.B
     }.otherwise {
       loadBeat := loadBeat + 1.U
     }
   }
 
-  // Forward prefetch issues its first synchronous read on the same edge as
-  // prefetchStart. The complete packed context returns over halfBeats cycles.
+  // Register a forward-prefetch request before driving the 128 mirrored BRAM
+  // address ports. The request context otherwise crosses command arbitration
+  // and the packed-address cone on the same cycle as prefetchStart, producing
+  // a route-dominated path into the distributed BRAM columns. The complete
+  // packed context still returns at one beat per cycle after this one-cycle
+  // request stage.
   val prefetchActive = RegInit(false.B)
   val prefetchContextReg = RegInit(0.U(contextWidth.W))
   val prefetchIssueBeat = RegInit(0.U(halfBeatWidth.W))
-  io.prefetchReady := !prefetchActive && !loadActive && !io.loadStart
+  io.prefetchReady := !prefetchActive && !loadActive && !loadCommitValid &&
+    !io.loadStart
   val prefetchFire = io.prefetchStart && io.prefetchReady
-  val prefetchReadEnable = prefetchFire || prefetchActive
-  val activePrefetchContext = Mux(
-    prefetchActive,
-    prefetchContextReg,
-    io.prefetchContext
-  )
-  val activePrefetchBeat = Mux(
-    prefetchActive,
-    prefetchIssueBeat,
-    0.U
-  )
+  val prefetchReadEnable = prefetchActive
+  val activePrefetchContext = prefetchContextReg
+  val activePrefetchBeat = prefetchIssueBeat
   val prefetchAddress = packedAddress(
     activePrefetchContext,
     activePrefetchBeat
@@ -217,16 +235,34 @@ final class ReplicatedAccumulatorBanks(
     0.U(contextWidth.W),
     prefetchReadEnable
   )
-  io.prefetchValid := prefetchValid
-  io.prefetchBeat := prefetchBeatReg
-  io.prefetchOutputContext := prefetchOutputContextReg
-  io.prefetchDone := prefetchValid &&
-    prefetchBeatReg === (config.halfBeats - 1).U
+  // Register the complete BRAM response before it leaves the memory module.
+  // Vivado can merge this unconditional stage into the RAMB36 output
+  // registers; without it, BRAM clock-to-out directly drives both wide
+  // coefficient buffers and leaves a route-dominated path across the middle
+  // SLR. The eight-beat prefetch still fits inside the command interval.
+  val prefetchOutputWords = RegNext(VecInit(prefetchWords))
+  val prefetchOutputValid = RegNext(prefetchValid, false.B)
+  val prefetchOutputBeat = RegEnable(
+    prefetchBeatReg,
+    0.U(halfBeatWidth.W),
+    prefetchValid
+  )
+  val prefetchResponseContext = RegEnable(
+    prefetchOutputContextReg,
+    0.U(contextWidth.W),
+    prefetchValid
+  )
+  io.prefetchValid := prefetchOutputValid
+  io.prefetchBeat := prefetchOutputBeat
+  io.prefetchOutputContext := prefetchResponseContext
+  io.prefetchDone := prefetchOutputValid &&
+    prefetchOutputBeat === (config.halfBeats - 1).U
   for (component <- 0 until coefficient.components) {
     for (lane <- 0 until coefficient.inverseLanes) {
-      io.prefetchLow(component)(lane) := prefetchWords(lane)(2 * component)
+      io.prefetchLow(component)(lane) :=
+        prefetchOutputWords(lane)(2 * component)
       io.prefetchHigh(component)(lane) :=
-        prefetchWords(lane)(2 * component + 1)
+        prefetchOutputWords(lane)(2 * component + 1)
     }
   }
 
@@ -244,7 +280,7 @@ final class ReplicatedAccumulatorBanks(
     assert(selectedLoaded, "prefetch targets an unloaded context")
     prefetchContextReg := io.prefetchContext
     prefetchActive := true.B
-    prefetchIssueBeat := 1.U
+    prefetchIssueBeat := 0.U
   }.elsewhen(prefetchActive) {
     when(prefetchIssueBeat === (config.halfBeats - 1).U) {
       prefetchActive := false.B
@@ -255,12 +291,14 @@ final class ReplicatedAccumulatorBanks(
   }
 
   // The inverse stream is accepted without bubbles. Its old packed word is
-  // read from the second memory copy, and the Torus-domain sum is written to
-  // both copies on the following edge.
+  // read from the second memory copy, and the Torus-domain sum is registered
+  // before it is written to both copies. The extra stage cuts the BRAM-output
+  // adder away from the two BRAM write inputs while preserving one beat per
+  // cycle.
   val updateActive = RegInit(false.B)
   val updateContextReg = RegInit(0.U(contextWidth.W))
   val updateBeat = RegInit(0.U(halfBeatWidth.W))
-  io.updateReady := !loadActive && !io.loadStart
+  io.updateReady := !loadActive && !loadCommitValid && !io.loadStart
   val updateFire = io.updateValid && io.updateReady
   val activeUpdateContext = Mux(
     updateActive,
@@ -287,10 +325,12 @@ final class ReplicatedAccumulatorBanks(
   )
   val updateLowReg = Reg(chiselTypeOf(io.updateLow))
   val updateHighReg = Reg(chiselTypeOf(io.updateHigh))
-  when(updateFire) {
-    updateLowReg := io.updateLow
-    updateHighReg := io.updateHigh
-  }
+  // These wide registers are the receiving boundary for inverse data crossing
+  // from SLR2. Clock them unconditionally so the narrow update-valid cone
+  // does not become a several-thousand-register CE net spanning SLR1; only
+  // updateWriteValid qualifies their eventual memory write.
+  updateLowReg := io.updateLow
+  updateHighReg := io.updateHigh
 
   when(io.updateValid) {
     assert(
@@ -328,24 +368,21 @@ final class ReplicatedAccumulatorBanks(
       "prefetch and update accessed the same accumulator context"
     )
   }
-  when(loadFire) {
+  when(loadCommitValid) {
     assert(!prefetchReadEnable, "load overlapped a forward prefetch")
-    assert(!updateFire, "load overlapped an inverse update read")
-  }
-  when(loadFire && updateWriteValid) {
-    assert(false.B, "load overlapped an inverse update write")
+    assert(!updateFire, "load commit overlapped an inverse update read")
   }
 
   val loadWords = Seq.tabulate(coefficient.inverseLanes) { lane =>
     val word = Wire(wordType)
     for (component <- 0 until coefficient.components) {
-      word(2 * component) := io.load(component)(lane)
-      word(2 * component + 1) := io.load(component)(lane)
+      word(2 * component) := loadCommitData(component)(lane)
+      word(2 * component + 1) := loadCommitData(component)(lane)
     }
     word
   }
   val loadMask = Seq.tabulate(config.wordFields) { field =>
-    if ((field & 1) == 0) !loadHighHalf else loadHighHalf
+    if ((field & 1) == 0) !loadCommitHighHalf else loadCommitHighHalf
   }
   val updatedWords = Seq.tabulate(coefficient.inverseLanes) { lane =>
     val word = Wire(wordType)
@@ -362,20 +399,53 @@ final class ReplicatedAccumulatorBanks(
     word
   }
 
-  val memoryWriteEnable = loadFire || updateWriteValid
+  val updateCommitValid = RegNext(updateWriteValid, false.B)
+  val updateCommitFinal = RegEnable(
+    updateWriteFinal,
+    false.B,
+    updateWriteValid
+  )
+  val updateCommitAddress = RegEnable(
+    updateWriteAddress,
+    0.U(config.addressWidth.W),
+    updateWriteValid
+  )
+  val updateCommitContext = RegEnable(
+    updateWriteContext,
+    0.U(contextWidth.W),
+    updateWriteValid
+  )
+  val updateCommitWords = Reg(Vec(coefficient.inverseLanes, wordType))
+  when(updateWriteValid) {
+    for (lane <- 0 until coefficient.inverseLanes) {
+      updateCommitWords(lane) := updatedWords(lane)
+    }
+  }
+  when(io.loadStart) {
+    assert(
+      !updateWriteValid && !updateCommitValid,
+      "accumulator load started with an inverse update in flight"
+    )
+  }
+  assert(
+    !(loadCommitValid && updateCommitValid),
+    "load and inverse update committed on the same cycle"
+  )
+
+  val memoryWriteEnable = loadCommitValid || updateCommitValid
   val memoryWriteAddress = Mux(
-    loadFire,
-    loadAddress,
-    updateWriteAddress
+    loadCommitValid,
+    loadCommitAddress,
+    updateCommitAddress
   )
   for (lane <- 0 until coefficient.inverseLanes) {
     val memoryWriteWord = Mux(
-      loadFire,
+      loadCommitValid,
       loadWords(lane),
-      updatedWords(lane)
+      updateCommitWords(lane)
     )
     val memoryWriteMask = Seq.tabulate(config.wordFields) { field =>
-      Mux(loadFire, loadMask(field), true.B)
+      Mux(loadCommitValid, loadMask(field), true.B)
     }
     forwardMemories(lane).write(
       memoryWriteAddress,
@@ -389,6 +459,6 @@ final class ReplicatedAccumulatorBanks(
     )
   }
 
-  io.updateDone := updateWriteValid && updateWriteFinal
-  io.updateDoneContext := updateWriteContext
+  io.updateDone := updateCommitValid && updateCommitFinal
+  io.updateDoneContext := updateCommitContext
 }

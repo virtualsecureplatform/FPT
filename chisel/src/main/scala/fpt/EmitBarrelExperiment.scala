@@ -4,14 +4,15 @@ import circt.stage.ChiselStage
 
 import java.nio.file.Path
 
-/** Experimental barrel-frontend physical accelerator emitter.
+/** U280 windowed-barrel physical accelerator emitter.
   *
   * Identical to `EmitPaperBufferedBlindRotateAccelerator` except the CMUX
-  * coefficient frontend uses the paper's full-width negacyclic barrel
-  * (`ReplicatedBanks`, 14 contexts) instead of the bitwise transposed
-  * working sets. The bitwise frontend's transpose wiring is unroutable on
-  * the U280 at full Set-II parallelism (global congestion level 7), so this
-  * emitter exists to measure the road-tested paper configuration.
+  * coefficient frontend emits the paper barrel's requested stream-width
+  * windows from replicated banks instead of materializing its full-width
+  * mux or using the bitwise transposed working sets. The bitwise frontend's
+  * transpose wiring is unroutable on the U280 at full Set-II parallelism
+  * (global congestion level 7), so this emitter keeps the paper rotation
+  * semantics with a physical structure sized for the consumed lanes.
   */
 object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
   require(
@@ -36,9 +37,17 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
   // Stream-width windowed rotation: the full-width barrel is ~283K LUTs of
   // single-block muxing whose 32K-bit chain also cannot straddle an SLR
   // boundary, so no placement routes it on the U280. The windowed store
-  // reads only the two ring blocks each beat consumes.
+  // selects only the inverse-bank-width spans each beat consumes.
   val engine = baseEngine.copy(
-    coefficient = baseEngine.coefficient.copy(windowedRotator = true)
+    coefficient = baseEngine.coefficient.copy(windowedRotator = true),
+    // The combinational Gauss correction path is over 5 ns when driven by
+    // the real key-buffer BRAM. Four exact products avoid that fabric-heavy
+    // correction network, use eight DSPs instead of the mapped Gauss path's
+    // ten, and pipeline the External Product at its natural synchronous-
+    // memory boundary.
+    externalProduct = baseEngine.externalProduct.copy(
+      multiplier = ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+    )
   )
   val blindRotate = BatchedBlindRotateEngineConfig(
     BatchedCmuxEngineConfig(
@@ -70,5 +79,18 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
   SynthesisEmitter.addBlockRamStyle(
     systemVerilog,
     config.keyMemoryModuleName
+  )
+  // Each 4 x 15,360-bit External Product ping-pong bank otherwise consumes
+  // 8,780 distributed-memory LUTs. Use the U280's otherwise-idle UltraRAM for
+  // the padded twin, but leave the other shallow bank distributed: mapping it
+  // to 213 RAMB36s leaves only seven free BRAM sites in the middle SLR and
+  // stretches the accumulator-bank BRAM-to-BRAM update paths across the die.
+  SynthesisEmitter.useReadClockForMemoryWrites(
+    systemVerilog,
+    "accumulatorMemories_0_4x15361"
+  )
+  SynthesisEmitter.addUltraRamStyle(
+    systemVerilog,
+    "accumulatorMemories_0_4x15361"
   )
 }

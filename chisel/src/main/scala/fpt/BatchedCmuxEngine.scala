@@ -38,6 +38,244 @@ final case class BatchedCmuxEngineConfig(
   val contextWidth: Int = TransformUtil.counterWidth(batchContexts)
 }
 
+private[fpt] final class BatchedCmuxPendingKeyRequest(
+    contextWidth: Int,
+    rowWidth: Int,
+    beatWidth: Int,
+    inputLanes: Int,
+    spectrumWidth: Int
+) extends Bundle {
+  val first = Bool()
+  val tag = UInt(contextWidth.W)
+  val row = UInt(rowWidth.W)
+  val beat = UInt(beatWidth.W)
+  val decomposition = Vec(inputLanes, new ComplexSInt(spectrumWidth))
+}
+
+/** Elastic boundary registers and four-slot SRL FIFO between the transforms.
+  *
+  * The input payload register captures on local readiness, independent of
+  * upstream valid. This makes the wide forward-SLR crossing a pure data-to-D
+  * path: the crossing valid bit only drives one local register instead of the
+  * clock enable of every SRL. Behind it, every payload bit follows the same
+  * enqueue-enabled shift-register chain and the count selects the oldest live
+  * tap. A matching elastic output register keeps that count and tap selector
+  * out of the External Product memory-address cone. The resulting six
+  * credits absorb key-memory latency and a registered External Product
+  * bank-reuse guard without a wide circular-buffer read mux. Input ready is
+  * conservative at the full boundary, which removes the downstream-ready
+  * round trip from the SLL register clock enables.
+  */
+private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
+    contextWidth: Int,
+    rowWidth: Int,
+    beatWidth: Int,
+    inputLanes: Int,
+    spectrumWidth: Int
+) extends Module {
+  private def requestType = new BatchedCmuxPendingKeyRequest(
+    contextWidth,
+    rowWidth,
+    beatWidth,
+    inputLanes,
+    spectrumWidth
+  )
+  val io = IO(new Bundle {
+    val enq = Flipped(Decoupled(requestType))
+    val deq = Decoupled(requestType)
+  })
+
+  val inputBoundary = Reg(requestType)
+  val inputBoundaryValid = RegInit(false.B)
+  // Keep the SRL depth a power of two. Vivado infers the four-deep dynamic
+  // tap as one SRLC32E per payload bit; a five-deep Vec is instead expanded
+  // into five flip-flops per bit, adding roughly 38K placed registers here.
+  val requests = Reg(Vec(4, requestType))
+  val count = RegInit(0.U(3.W))
+  val outputBoundary = Reg(requestType)
+  val outputBoundaryValid = RegInit(false.B)
+
+  io.deq.valid := outputBoundaryValid
+  io.deq.bits := outputBoundary
+  val outputBoundaryReady = !outputBoundaryValid || io.deq.ready
+  val oldest = Mux(count === 0.U, 0.U, count - 1.U)(1, 0)
+  when(outputBoundaryReady) {
+    // As on the input side, loading an arbitrary payload while clearing valid
+    // is harmless and prevents count from becoming a wide payload CE.
+    outputBoundary := requests(oldest)
+    outputBoundaryValid := count =/= 0.U
+  }
+
+  val queueDeqFire = count =/= 0.U && outputBoundaryReady
+  val shiftReady = count =/= 4.U || queueDeqFire
+  val enqFire = inputBoundaryValid && shiftReady
+  // Do not use same-cycle downstream readiness here. If both the SRL and
+  // input boundary are full, transfer the resident boundary word first and
+  // advertise the newly freed credit on the following cycle.
+  io.enq.ready := !inputBoundaryValid || count =/= 4.U
+
+  // When ready is high, an invalid upstream beat can safely overwrite the
+  // payload because its valid bit is cleared at the same edge. Avoiding valid
+  // in this clock enable is what keeps the single crossing control bit from
+  // becoming a 7,000-plus-load net after placement.
+  when(io.enq.ready) {
+    inputBoundary := io.enq.bits
+    inputBoundaryValid := io.enq.valid
+  }.elsewhen(enqFire) {
+    inputBoundaryValid := false.B
+  }
+
+  // Preserve this name for the implementation flow's targeted fanout
+  // replication. Both inputs are local to the pending-request hierarchy.
+  // Shift only on enqueue. Dequeue changes the selected live tap, so every
+  // data bit retains a single common clock enable and a pure shift chain.
+  when(enqFire) {
+    for (stage <- 3 to 1 by -1) {
+      requests(stage) := requests(stage - 1)
+    }
+    requests(0) := inputBoundary
+  }
+  when(enqFire =/= queueDeqFire) {
+    count := Mux(enqFire, count + 1.U, count - 1.U)
+  }
+}
+
+private[fpt] final class BatchedCmuxInverseBeat(
+    tagWidth: Int,
+    lanes: Int,
+    dataWidth: Int
+) extends Bundle {
+  val first = Bool()
+  val tag = UInt(tagWidth.W)
+  val input = Vec(lanes, new ComplexSInt(dataWidth))
+}
+
+private[fpt] final class BatchedCmuxExternalOutputBeat(
+    tagWidth: Int,
+    components: Int,
+    lanes: Int,
+    dataWidth: Int
+) extends Bundle {
+  val first = Bool()
+  val component = UInt(TransformUtil.counterWidth(components).W)
+  val tag = UInt(tagWidth.W)
+  val inputs = Vec(
+    components,
+    Vec(lanes, new ComplexSInt(dataWidth))
+  )
+}
+
+/** Elastic register between the External Product memories and component mux.
+  *
+  * The physical accumulator returns both TRLWE components from the selected
+  * ping-pong bank. Registering that complete word before selecting the
+  * serialized component splits the UltraRAM clock-to-out/bank-select path
+  * from the component mux while retaining one beat per cycle.
+  */
+private[fpt] final class BatchedCmuxExternalOutputPipeline(
+    tagWidth: Int,
+    components: Int,
+    lanes: Int,
+    dataWidth: Int
+) extends Module {
+  private def beatType = new BatchedCmuxExternalOutputBeat(
+    tagWidth,
+    components,
+    lanes,
+    dataWidth
+  )
+  val io = IO(new Bundle {
+    val start = Input(Bool())
+    val outputStart = Output(Bool())
+    val enq = Flipped(Decoupled(beatType))
+    val deq = Decoupled(beatType)
+  })
+
+  io.outputStart := RegNext(io.start, false.B)
+
+  val payload = Reg(beatType)
+  val valid = RegInit(false.B)
+  io.enq.ready := !valid || io.deq.ready
+  io.deq.valid := valid
+  io.deq.bits := payload
+
+  when(io.enq.ready) {
+    valid := io.enq.valid
+    when(io.enq.valid) {
+      payload := io.enq.bits
+    }
+  }
+}
+
+/** Registered External Product to inverse-transform SLR boundary.
+  *
+  * This deliberately uses two explicit aggregate registers instead of a
+  * generic two-entry Queue. At Set-II width Vivado otherwise implements the
+  * Queue payload as thousands of distributed-RAM bits, leaving the first
+  * entry's write input directly on the UltraRAM output path.
+  */
+private[fpt] final class BatchedCmuxInverseBoundary(
+    tagWidth: Int,
+    lanes: Int,
+    dataWidth: Int
+) extends Module {
+  private def beatType = new BatchedCmuxInverseBeat(
+    tagWidth,
+    lanes,
+    dataWidth
+  )
+  val io = IO(new Bundle {
+    val start = Input(Bool())
+    val outputStart = Output(Bool())
+    val enq = Flipped(Decoupled(beatType))
+    val deq = Decoupled(beatType)
+  })
+
+  // External Product asserts start one cycle before its first valid beat.
+  // Delaying both start and data by one cycle preserves that SGen contract.
+  io.outputStart := RegNext(io.start, false.B)
+
+  val head = Reg(beatType)
+  val tail = Reg(beatType)
+  val count = RegInit(0.U(2.W))
+  // The inverse SGen has a fixed, non-backpressurable schedule after its
+  // start lead. Two credits cover that lead, so exposing FIFO fullness to
+  // External Product only creates a false cross-SLR ready path. Keep the
+  // source running and assert the fixed-latency contract explicitly.
+  io.enq.ready := true.B
+  io.deq.valid := count =/= 0.U
+  io.deq.bits := head
+
+  val enqFire = io.enq.valid && io.enq.ready
+  val deqFire = io.deq.valid && io.deq.ready
+  val enqHasSpace = count =/= 2.U || deqFire
+  when(io.enq.valid) {
+    assert(enqHasSpace, "inverse SGen boundary overflow")
+  }
+  val enqStore = enqFire && enqHasSpace
+  when(deqFire && count === 2.U) {
+    head := tail
+  }
+  when(enqStore) {
+    when(deqFire) {
+      when(count === 1.U) {
+        head := io.enq.bits
+      }.elsewhen(count === 2.U) {
+        tail := io.enq.bits
+      }
+    }.otherwise {
+      when(count === 0.U) {
+        head := io.enq.bits
+      }.otherwise {
+        tail := io.enq.bits
+      }
+    }
+  }
+  when(enqStore =/= deqFire) {
+    count := Mux(enqStore, count + 1.U, count - 1.U)
+  }
+}
+
 /** Tagged, multi-context CMUX pipeline.
   *
   * Commands occupy only the forward row-stream interval. Command tags pass
@@ -209,13 +447,30 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
   val forwardTags = Module(
     new Queue(UInt(contextWidth.W), config.batchContexts + 2)
   )
-  coefficients.io.commandValid := io.commandValid && forwardTags.io.enq.ready
+  // A busy context cannot be commanded again until its inverse update has
+  // completed, so at most batchContexts command tags can be live. The tag
+  // FIFO has two additional slots and therefore cannot fill under the legal
+  // command protocol. Keeping its combinational ready out of command
+  // acceptance avoids feeding the dequeue pointer back into the coefficient
+  // prefetch address path. Register the enqueue as well: the transform has
+  // ample latency before its first output, while the extra boundary keeps the
+  // command scheduler's state decode off the distributed-RAM write controls.
+  coefficients.io.commandValid := io.commandValid
   coefficients.io.commandContext := io.commandContext
   coefficients.io.exponent := io.exponent
-  io.commandReady := coefficients.io.commandReady && forwardTags.io.enq.ready
+  io.commandReady := coefficients.io.commandReady
   val commandFire = io.commandValid && io.commandReady
-  forwardTags.io.enq.valid := commandFire
-  forwardTags.io.enq.bits := io.commandContext
+  val forwardTagEnqueueValid = RegNext(commandFire, false.B)
+  val forwardTagEnqueueContext = RegEnable(
+    io.commandContext,
+    0.U(contextWidth.W),
+    commandFire
+  )
+  forwardTags.io.enq.valid := forwardTagEnqueueValid
+  forwardTags.io.enq.bits := forwardTagEnqueueContext
+  when(forwardTagEnqueueValid) {
+    assert(forwardTags.io.enq.ready, "forward tag queue overflow")
+  }
 
   forward.io.start := coefficients.io.transformStart
   forward.io.pairValid := coefficients.io.pairValid
@@ -269,25 +524,29 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
       forwardTransactionBeat % externalConfig.inputFrameBeats.U
     )(TransformUtil.counterWidth(externalConfig.inputFrameBeats) - 1, 0)
 
-    val pendingValid = RegInit(false.B)
-    val pendingFirst = RegInit(false.B)
-    val pendingTag = RegInit(0.U(contextWidth.W))
-    val pendingRow = RegInit(0.U(rowWidth.W))
-    val pendingBeat = RegInit(
-      0.U(TransformUtil.counterWidth(externalConfig.inputFrameBeats).W)
+    // Retain enough forward outputs to cover a registered wrapper request
+    // and the key buffer's synchronous read. Four entries also absorb the
+    // registered External Product bank-reuse guard, keeping the SGen output
+    // at one beat per cycle without a combinational ready bypass.
+    val pendingRequestType = new BatchedCmuxPendingKeyRequest(
+      contextWidth,
+      rowWidth,
+      TransformUtil.counterWidth(externalConfig.inputFrameBeats),
+      externalConfig.inputLanes,
+      externalConfig.spectrum.width
     )
-    val pendingDecomposition = Reg(
-      Vec(
+    val pendingRequests = Module(
+      new BatchedCmuxPendingKeyRequestQueue(
+        contextWidth,
+        rowWidth,
+        TransformUtil.counterWidth(externalConfig.inputFrameBeats),
         externalConfig.inputLanes,
-        new ComplexSInt(externalConfig.spectrum.width)
+        externalConfig.spectrum.width
       )
     )
 
-    val responseFire = pendingValid && io.bootstrappingKeyValid &&
-      external.io.inputReady
-    val pendingReady = !pendingValid || responseFire
     io.keyReadRequestValid := forward.io.outputValid &&
-      forwardTags.io.deq.valid && pendingReady
+      forwardTags.io.deq.valid && pendingRequests.io.enq.ready
     io.keyReadRequestContext := Mux(
       forwardTags.io.deq.valid,
       forwardTags.io.deq.bits,
@@ -296,40 +555,48 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
     io.keyReadRequestRow := requestRow
     io.keyReadRequestBeat := requestBeat
     val requestFire = io.keyReadRequestValid && io.keyReadRequestReady
-    forward.io.outputReady := forwardTags.io.deq.valid && pendingReady &&
-      io.keyReadRequestReady
+    forward.io.outputReady := forwardTags.io.deq.valid &&
+      pendingRequests.io.enq.ready && io.keyReadRequestReady
     forwardTags.io.deq.ready := requestFire && forwardLast
 
+    val request = Wire(pendingRequestType)
+    request.first := forwardFirst
+    request.tag := forwardTags.io.deq.bits
+    request.row := requestRow
+    request.beat := requestBeat
+    request.decomposition := forward.io.output
+    pendingRequests.io.enq.valid := requestFire
+    pendingRequests.io.enq.bits := request
     when(requestFire) {
-      pendingFirst := forwardFirst
-      pendingTag := forwardTags.io.deq.bits
-      pendingRow := requestRow
-      pendingBeat := requestBeat
-      pendingDecomposition := forward.io.output
       when(forwardLast) {
         forwardTransactionBeat := 0.U
       }.otherwise {
         forwardTransactionBeat := forwardTransactionBeat + 1.U
       }
     }
-    when(responseFire =/= requestFire) {
-      pendingValid := requestFire
-    }
 
-    external.io.inputValid := pendingValid && io.bootstrappingKeyValid
-    external.io.inputFirst := pendingValid && pendingFirst
-    external.io.inputTag := pendingTag
-    external.io.decomposition := pendingDecomposition
-    io.bootstrappingKeyReady := pendingValid && external.io.inputReady
-    io.keyContext := pendingTag
+    val pendingHead = pendingRequests.io.deq.bits
+    external.io.inputValid := pendingRequests.io.deq.valid &&
+      io.bootstrappingKeyValid
+    external.io.inputFirst := pendingRequests.io.deq.valid && pendingHead.first
+    external.io.inputTag := pendingHead.tag
+    external.io.decomposition := pendingHead.decomposition
+    io.bootstrappingKeyReady := pendingRequests.io.deq.valid &&
+      external.io.inputReady
+    pendingRequests.io.deq.ready := io.bootstrappingKeyValid &&
+      external.io.inputReady
+    io.keyContext := pendingHead.tag
 
+    val responseFire = pendingRequests.io.deq.valid &&
+      pendingRequests.io.deq.ready
     when(responseFire) {
       assert(
-        external.io.keyRow === pendingRow,
+        external.io.keyRow === pendingHead.row,
         "bootstrapping-key response row does not match External Product"
       )
       for (lane <- 0 until externalConfig.inputLanes) {
-        val expectedPoint = pendingBeat * externalConfig.inputLanes.U + lane.U
+        val expectedPoint = pendingHead.beat *
+          externalConfig.inputLanes.U + lane.U
         assert(
           external.io.pointIndex(lane) === expectedPoint,
           "bootstrapping-key response point does not match External Product"
@@ -354,26 +621,79 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
       new Queue(UInt(contextWidth.W), config.batchContexts + 2)
     )
 
-    // The External Product announces a frame on the cycle before its first
-    // beat, or on the prior frame's final beat for continuous traffic. This
-    // is exactly SGen's one-cycle input-lead contract.
-    external.io.outputReady := inverse.io.inputReady
-    val externalOutputFire = external.io.outputValid &&
-      external.io.outputReady
-    inverse.io.start := external.io.outputStart
-    inverse.io.inputValid := external.io.outputValid &&
+    // First register both External Product components before their serialized
+    // selection. This keeps the memory clock-to-out/bank-select path separate
+    // from the component mux.
+    val externalOutputPipeline = Module(
+      new BatchedCmuxExternalOutputPipeline(
+        contextWidth,
+        externalConfig.outputComponents,
+        externalConfig.outputLanes,
+        externalConfig.accumulator.width
+      )
+    )
+    externalOutputPipeline.io.start := external.io.outputStart
+    externalOutputPipeline.io.enq.valid := external.io.outputValid
+    external.io.outputReady := externalOutputPipeline.io.enq.ready
+    externalOutputPipeline.io.enq.bits.first := external.io.outputFirst
+    externalOutputPipeline.io.enq.bits.component :=
+      external.io.outputComponent
+    externalOutputPipeline.io.enq.bits.tag := external.io.outputTag
+    externalOutputPipeline.io.enq.bits.inputs := external.io.output
+
+    // Register the selected stream again before its SLR1 -> SLR2 crossing.
+    // The start token and data are delayed together, retaining SGen's
+    // one-cycle input-lead contract while removing the External Product state
+    // machine from the inverse core's reset/control cone.
+    val inverseBoundary = Module(
+      new BatchedCmuxInverseBoundary(
+        contextWidth,
+        externalConfig.outputLanes,
+        externalConfig.accumulator.width
+      )
+    )
+    inverseBoundary.io.start := externalOutputPipeline.io.outputStart
+    inverseBoundary.io.enq.valid := externalOutputPipeline.io.deq.valid
+    externalOutputPipeline.io.deq.ready := inverseBoundary.io.enq.ready
+    inverseBoundary.io.enq.bits.first :=
+      externalOutputPipeline.io.deq.bits.first
+    inverseBoundary.io.enq.bits.tag :=
+      externalOutputPipeline.io.deq.bits.tag
+    inverseBoundary.io.enq.bits.input :=
+      externalOutputPipeline.io.deq.bits.inputs(
+        externalOutputPipeline.io.deq.bits.component
+      )
+    inverse.io.start := inverseBoundary.io.outputStart
+    inverse.io.inputValid := inverseBoundary.io.deq.valid &&
       inverse.io.inputReady
-    inverse.io.input := external.io.output(external.io.outputComponent)
+    inverse.io.input := inverseBoundary.io.deq.bits.input
+    inverseBoundary.io.deq.ready := inverse.io.inputReady
     inverse.io.fftTwiddle := 0.U.asTypeOf(inverse.io.fftTwiddle)
     inverse.io.untwist := io.inverseUntwist
     io.inverseUntwistIndex := inverse.io.untwistIndex
 
-    inverseTags.io.enq.valid := externalOutputFire &&
-      external.io.outputFirst
-    inverseTags.io.enq.bits := external.io.outputTag
+    inverseTags.io.enq.valid := inverseBoundary.io.deq.valid &&
+      inverseBoundary.io.deq.ready && inverseBoundary.io.deq.bits.first
+    inverseTags.io.enq.bits := inverseBoundary.io.deq.bits.tag
     when(inverseTags.io.enq.valid) {
       assert(inverseTags.io.enq.ready, "inverse tag queue overflow")
     }
+
+    // The tag is present for at least one complete inverse component before
+    // ComponentJoin emits an update. Capture it beside the coefficient
+    // memories so the tag FIFO's distributed-RAM dequeue pointer cannot feed
+    // the first replicated-BRAM address directly. Serialized component zero
+    // also leaves a complete frame in which to capture the next tag after a
+    // dequeue.
+    val registeredInverseTag = RegEnable(
+      inverseTags.io.deq.bits,
+      0.U(contextWidth.W),
+      inverseTags.io.deq.valid
+    )
+    val registeredInverseTagValid = RegNext(
+      inverseTags.io.deq.valid,
+      false.B
+    )
 
     val componentJoin = Module(
       new InverseComponentJoin(
@@ -387,17 +707,17 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
     componentJoin.io.inputLow := inverse.io.coefficientLow
     componentJoin.io.inputHigh := inverse.io.coefficientHigh
     componentJoin.io.outputReady := coefficients.io.updateReady &&
-      inverseTags.io.deq.valid
+      registeredInverseTagValid
 
     coefficients.io.updateValid := componentJoin.io.outputValid &&
-      inverseTags.io.deq.valid
+      registeredInverseTagValid
     coefficients.io.updateFirst := coefficients.io.updateValid &&
       componentJoin.io.outputFirst
-    coefficients.io.updateContext := inverseTags.io.deq.bits
+    coefficients.io.updateContext := registeredInverseTag
     coefficients.io.updateLow := componentJoin.io.outputLow
     coefficients.io.updateHigh := componentJoin.io.outputHigh
     when(componentJoin.io.outputValid) {
-      assert(inverseTags.io.deq.valid, "missing serialized inverse tag")
+      assert(registeredInverseTagValid, "missing serialized inverse tag")
     }
     inverseTags.io.deq.ready := componentJoin.io.outputValid &&
       componentJoin.io.outputReady && componentJoin.io.outputLast
