@@ -419,7 +419,27 @@ final class PrefetchedBatchedCmuxCoefficientStore(
       currentWindow(half)(lane) := values(windowBeat)
     }
   }
-  val emitCurrent = dataPipe(currentWindow, advance)
+  val emitCurrent =
+    if (config.windowedRotator) {
+      // Keep the first current-window stage as real flip-flops beside the
+      // coefficient-buffer muxes. If this stage is part of the ordinary
+      // ShiftRegister chain, Vivado folds it into thousands of SRLs and the
+      // shared component/buffer selectors must route across the full SRL
+      // placement. Replacing one existing pipe stage with a preserved cut
+      // retains the exact emission latency while giving placement a local
+      // endpoint for every mux output.
+      require(rotatorLatency >= 1)
+      val cut = Module(
+        new PhysicalCutRegister(
+          2 * config.forwardLanes * config.torusWidth
+        )
+      )
+      cut.io.clock := clock
+      cut.io.enable := advance
+      cut.io.inputData := currentWindow.asUInt
+      val cutWindow = cut.io.outputData.asTypeOf(currentWindow)
+      ShiftRegister(cutWindow, rotatorLatency - 1, advance)
+    } else dataPipe(currentWindow, advance)
 
   // Stream-width rotation: each emitted half-window reads one contiguous
   // span of the virtual 2N ring. Select at the accumulator's physical

@@ -2,6 +2,7 @@ package fpt
 
 import chisel3._
 import chiseltest._
+import chiseltest.simulator.VerilatorBackendAnnotation
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -72,7 +73,8 @@ final class WindowedPrefetchedCoefficientStoreSpec
   behavior of "the BRAM-prefetched coefficient frontend"
 
   it should "overlap context prefetch and preserve the CMUX row interval" in {
-    test(new PrefetchedBatchedCmuxCoefficientStore(config, contexts)) { dut =>
+    test(new PrefetchedBatchedCmuxCoefficientStore(config, contexts))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.commandValid.poke(false.B)

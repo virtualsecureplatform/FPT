@@ -18,7 +18,7 @@ set floorplan_mode [lindex $argv 5]
 set force_high_fanout [lindex $argv 6]
 set pre_route_phys_opt [lindex $argv 7]
 if {$input_checkpoint eq "" || $output_dir eq ""} {
-    error "usage: POST_SYNTH_DCP OUTPUT_DIR ?CLOCK_PERIOD_NS? ?PLACE_DIRECTIVE? ?JOBS? ?FLOORPLAN_MODE? ?FORCE_MODE_0_NONE_1_ALL_2_ADDRESS_3_ADDRESS_AND_PENDING? ?PRE_ROUTE_PHYS_OPT_AGGRESSIVE_OR_NONE?"
+    error "usage: POST_SYNTH_DCP OUTPUT_DIR ?CLOCK_PERIOD_NS? ?PLACE_DIRECTIVE? ?JOBS? ?FLOORPLAN_MODE? ?FORCE_MODE_0_NONE_1_ALL_2_ADDRESS_3_ADDRESS_AND_PENDING_4_ADDRESS_AND_COEFFICIENT_SELECTORS? ?PRE_ROUTE_PHYS_OPT_AGGRESSIVE_OR_NONE?"
 }
 if {$clock_period eq ""} { set clock_period 3.333 }
 if {$place_directive eq ""} { set place_directive AltSpreadLogic_high }
@@ -36,8 +36,8 @@ if {$floorplan_mode ni {full transforms-only}} {
     error "FLOORPLAN_MODE must be full or transforms-only: $floorplan_mode"
 }
 if {![string is integer -strict $force_high_fanout] ||
-    $force_high_fanout ni {0 1 2 3}} {
-    error "FORCE_MODE must be 0 (none), 1 (all), 2 (output address only), or 3 (output address and local pending-queue shift): $force_high_fanout"
+    $force_high_fanout ni {0 1 2 3 4}} {
+    error "FORCE_MODE must be 0 (none), 1 (all), 2 (output address only), 3 (output address and local pending-queue shift), or 4 (output address and coefficient selectors): $force_high_fanout"
 }
 if {$pre_route_phys_opt ni {aggressive none}} {
     error "PRE_ROUTE_PHYS_OPT must be aggressive or none: $pre_route_phys_opt"
@@ -148,6 +148,7 @@ if {$force_high_fanout} {
     set coefficient_write_enable_nets {}
     set sample_extract_fanout_nets {}
     set pending_request_enable_nets {}
+    set coefficient_selector_nets {}
     if {$force_high_fanout == 1} {
         # Full mode also targets the decoded prefetch enables and the
         # sample-extraction distributed-memory port. The narrower modes omit
@@ -190,17 +191,32 @@ if {$force_high_fanout} {
             error "Expected 1 pending-request enable net, found [llength $pending_request_enable_nets]"
         }
     }
+    if {$force_high_fanout == 4} {
+        # All 55 selector-driven paths in the address-only v52 top 100 begin
+        # at these local registers and end at the emitCurrent SRLs. The
+        # paths are more than 90% routing delay even after the placer creates
+        # roughly 50--70 replicas per net. Bound their fanout explicitly so
+        # each copy can remain with its local coefficient-buffer muxes.
+        set coefficient_selector_nets [get_nets -hierarchical -quiet \
+            -regexp {^.*/coefficients/(windowBuffer|windowComponent|windowBeat\[[01]\])$}]
+        if {[llength $coefficient_selector_nets] != 4} {
+            error "Expected 4 coefficient window-selector nets, found [llength $coefficient_selector_nets]"
+        }
+    }
 
     set forced_high_fanout_nets [concat \
         $coefficient_write_enable_nets $sample_extract_fanout_nets \
-        $pending_request_enable_nets $external_output_address_nets]
+        $pending_request_enable_nets $coefficient_selector_nets \
+        $external_output_address_nets]
     if {$force_high_fanout == 1} {
         set_property FORCE_MAX_FANOUT 128 $forced_high_fanout_nets
     } elseif {$force_high_fanout == 3} {
         set_property FORCE_MAX_FANOUT 128 $pending_request_enable_nets
+    } elseif {$force_high_fanout == 4} {
+        set_property FORCE_MAX_FANOUT 128 $coefficient_selector_nets
     }
     set_property FORCE_MAX_FANOUT 32 $external_output_address_nets
-    puts "FPT_FORCE_HIGH_FANOUT mode=$force_high_fanout coefficient_nets=[llength $coefficient_write_enable_nets] sample_extract_nets=[llength $sample_extract_fanout_nets] pending_request_nets=[llength $pending_request_enable_nets] external_output_address_nets=2 pending_boundary_nets=0 max_fanout=128 external_address_max_fanout=32"
+    puts "FPT_FORCE_HIGH_FANOUT mode=$force_high_fanout coefficient_nets=[llength $coefficient_write_enable_nets] sample_extract_nets=[llength $sample_extract_fanout_nets] pending_request_nets=[llength $pending_request_enable_nets] coefficient_selector_nets=[llength $coefficient_selector_nets] external_output_address_nets=2 pending_boundary_nets=0 max_fanout=128 external_address_max_fanout=32"
 }
 place_design -directive $place_directive -ultrathreads
 if {$force_high_fanout && [info exists forced_high_fanout_nets] &&
