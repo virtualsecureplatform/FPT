@@ -102,7 +102,11 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
   val outputReadPointer = RegInit(false.B)
   val outputWritePointer = RegInit(false.B)
   val outputCount = RegInit(0.U(2.W))
-  val outputBoundaryValid = outputCount =/= 0.U
+  // Keep nonempty registered instead of decoding outputCount on the dequeue
+  // interface. At this boundary, deq.valid feeds the External Product's
+  // UltraRAM address/control cone; terminating the occupancy decode here
+  // leaves that crossing as a single-register control path.
+  val outputBoundaryValid = RegInit(false.B)
 
   io.deq.valid := outputBoundaryValid
   io.deq.bits := Mux(
@@ -133,6 +137,14 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
       outputEnqFire,
       outputCount + 1.U,
       outputCount - 1.U
+    )
+    // Enqueue-only always makes the FIFO nonempty. Dequeue-only clears the
+    // flag only when removing the last resident word; a full FIFO retains one
+    // word because same-cycle refill is deliberately disabled above.
+    outputBoundaryValid := Mux(
+      outputEnqFire,
+      true.B,
+      outputCount =/= 1.U
     )
   }
 
