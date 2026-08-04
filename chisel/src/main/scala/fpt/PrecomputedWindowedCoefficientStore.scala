@@ -194,51 +194,85 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     )
   )
 
-  // The synchronous transpose read is the registered physical boundary to the
-  // forward SLR. Its scheduler advances only when that beat can advance,
-  // preserving data and the one-cycle-early SGen marker under backpressure.
+  // Keep one elastic stage between the synchronous transpose read and an
+  // explicit physical-cut register. A bare block-RAM read still left its
+  // clock-to-output delay and the SLR crossing in the same cycle as the first
+  // forward-transform logic. The extra cut removes that path without reducing
+  // the one-beat-per-cycle emission rate.
   val emitLeadActive = RegInit(false.B)
   val emitBuffer = RegInit(0.U(digitBufferWidth.W))
   val emitRow = RegInit(0.U(rowWidth.W))
   val emitBeat = RegInit(0.U(forwardBeatWidth.W))
+  val readValid = RegInit(false.B)
+  val readRow = RegInit(0.U(rowWidth.W))
+  val readLast = RegInit(false.B)
+  val leadTransformStart = RegInit(false.B)
+  val readTransformStart = RegInit(false.B)
   val outputValid = RegInit(false.B)
   val outputRow = RegInit(0.U(rowWidth.W))
   val outputLast = RegInit(false.B)
-  val outputTransformStart = RegInit(false.B)
   val digitReadLow = Wire(
     Vec(config.forwardLanes, SInt(config.baseBits.W))
   )
   val digitReadHigh = Wire(
     Vec(config.forwardLanes, SInt(config.baseBits.W))
   )
+  val digitOutputBoundary = Module(
+    new PhysicalCutRegister(
+      2 * config.forwardLanes * config.baseBits
+    )
+  )
+  digitOutputBoundary.io.clock := clock
+  val outputAdvance = !outputValid || io.pairReady
+  val readAdvance = !readValid || outputAdvance
+  digitOutputBoundary.io.enable := outputAdvance && readValid
+  digitOutputBoundary.io.inputData := Cat(
+    digitReadHigh.asUInt,
+    digitReadLow.asUInt
+  )
+  val boundaryDigits = digitOutputBoundary.io.outputData.asTypeOf(
+    Vec(
+      2,
+      Vec(config.forwardLanes, SInt(config.baseBits.W))
+    )
+  )
 
   io.pairValid := outputValid
   io.rowIndex := outputRow
   io.pairLast := outputLast
-  io.transformStart := outputTransformStart
+  // SGen consumes this marker one cycle before the corresponding first beat.
+  // Gate it with the read-to-output transfer so a downstream stall cannot
+  // separate the marker from its data.
+  io.transformStart :=
+    readValid && readTransformStart && outputAdvance
   for (lane <- 0 until config.forwardLanes) {
     io.coefficientLow(lane) :=
-      digitReadLow(lane) << config.forwardFormat.fractionalBits
+      boundaryDigits(0)(lane) << config.forwardFormat.fractionalBits
     io.coefficientHigh(lane) :=
-      digitReadHigh(lane) << config.forwardFormat.fractionalBits
+      boundaryDigits(1)(lane) << config.forwardFormat.fractionalBits
   }
 
-  val emitAdvance = !outputValid || io.pairReady
-  val emitLeadFire = emitLeadActive && emitAdvance
+  val emitLeadFire = emitLeadActive && readAdvance
   val emitBeatLast = emitBeat === (config.forwardBeats - 1).U
   val emitFinalRow = emitRow === (rows - 1).U
   val emitFinalLead = emitLeadFire && emitBeatLast && emitFinalRow
   val emitLaunchFromIdle = !emitLeadActive &&
-    readyDigitBuffers.io.deq.valid && emitAdvance
+    readyDigitBuffers.io.deq.valid && readAdvance
   val emitSwitch = emitFinalLead && readyDigitBuffers.io.deq.valid
   val emitFollowingRow = emitLeadFire && emitBeatLast && !emitFinalRow
   readyDigitBuffers.io.deq.ready := emitLaunchFromIdle || emitSwitch
 
-  when(emitAdvance) {
-    outputValid := emitLeadActive
-    outputRow := emitRow
-    outputLast := emitLeadActive && emitBeatLast
-    outputTransformStart :=
+  when(outputAdvance) {
+    outputValid := readValid
+    outputRow := readRow
+    outputLast := readLast
+  }
+  when(readAdvance) {
+    readValid := emitLeadActive
+    readRow := emitRow
+    readLast := emitLeadActive && emitBeatLast
+    readTransformStart := leadTransformStart
+    leadTransformStart :=
       emitLaunchFromIdle || emitSwitch || emitFollowingRow
   }
 
@@ -323,7 +357,8 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   val drainCanStart = !drainStreaming && !drainOutputValid &&
     !fillOutstanding && memory.io.prefetchReady && hasFreeBuffer &&
     !readySourceBuffers.io.deq.valid && !preprocessActive &&
-    !digitBufferOccupied.asUInt.orR && !emitLeadActive && !outputValid &&
+    !digitBufferOccupied.asUInt.orR && !emitLeadActive && !readValid &&
+    !outputValid &&
     !io.commandValid && io.drainContext < batchContexts.U &&
     !busy(io.drainContext)
   io.drainStartReady := drainCanStart
@@ -684,7 +719,7 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   // A SyncReadMem's output is unspecified on a disabled read. Keep the last
   // issued address active while an output beat is stalled so pairValid always
   // denotes stable coefficient data, including the final beat of a workset.
-  val digitReadEnable = emitLeadFire || outputValid
+  val digitReadEnable = emitLeadFire || readValid
   val digitReadLowWords = digitMemories(0).read(
     Mux(
       emitLeadFire,
@@ -701,10 +736,10 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     ),
     digitReadEnable
   )
-  val outputLevel = rowLevels(outputRow)
+  val readLevel = rowLevels(readRow)
   for (lane <- 0 until config.forwardLanes) {
-    digitReadLow(lane) := digitReadLowWords(lane)(outputLevel)
-    digitReadHigh(lane) := digitReadHighWords(lane)(outputLevel)
+    digitReadLow(lane) := digitReadLowWords(lane)(readLevel)
+    digitReadHigh(lane) := digitReadHighWords(lane)(readLevel)
   }
 
   when(io.updateFirst && io.updateValid) {
@@ -727,7 +762,10 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     assert(!readySourceBuffers.io.deq.valid, "cannot load queued source data")
     assert(!preprocessActive, "cannot load during coefficient preprocessing")
     assert(!digitBufferOccupied.asUInt.orR, "cannot load live digit data")
-    assert(!emitLeadActive && !outputValid, "cannot load during emission")
+    assert(
+      !emitLeadActive && !readValid && !outputValid,
+      "cannot load during emission"
+    )
     assert(!drainStreaming, "cannot load while drain is active")
     assert(!drainOutputValid, "cannot load with a buffered drain beat")
     assert(!io.updateValid, "cannot load with inverse update data")

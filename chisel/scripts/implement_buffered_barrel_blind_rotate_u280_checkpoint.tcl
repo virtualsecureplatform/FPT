@@ -32,8 +32,8 @@ if {![string is double -strict $clock_period] || $clock_period <= 0} {
 if {![string is integer -strict $jobs] || $jobs < 1} {
     error "JOBS must be a positive integer: $jobs"
 }
-if {$floorplan_mode ni {full transforms-only rotator-forward rotator-forward-control}} {
-    error "FLOORPLAN_MODE must be full, transforms-only, rotator-forward, or rotator-forward-control: $floorplan_mode"
+if {$floorplan_mode ni {full transforms-only digit-bram-forward rotator-forward rotator-forward-control}} {
+    error "FLOORPLAN_MODE must be full, transforms-only, digit-bram-forward, rotator-forward, or rotator-forward-control: $floorplan_mode"
 }
 if {![string is integer -strict $force_high_fanout] ||
     $force_high_fanout ni {0 1 2 3 4 5}} {
@@ -89,6 +89,25 @@ dict for {name path} $floorplan_cells {
 create_pblock pb_forward
 resize_pblock pb_forward -add CLOCKREGION_X0Y0:CLOCKREGION_X7Y3
 add_cells_to_pblock pb_forward [dict get $resolved_cells forward]
+
+if {$floorplan_mode eq "digit-bram-forward"} {
+    # The packed coefficient store reads a full forward beat directly from 72
+    # RAMB36s. In the unconstrained v63 placement every RAMB36 landed in SLR1,
+    # while the four worst paths started at those memories and ended in the
+    # forward transform constrained to SLR0. Move only the physical memories
+    # across the boundary; the time-shared rotator and accumulator banks remain
+    # free in SLR1, and the placer can put the RAM outputs next to their SLR0
+    # consumers without dragging the complete coefficient hierarchy with them.
+    set coefficient_digit_brams [get_cells -hierarchical -quiet -filter {
+        REF_NAME == RAMB36E2 &&
+        NAME =~ */coefficients/digitMemories_*/*
+    }]
+    if {[llength $coefficient_digit_brams] != 72} {
+        error "Expected 72 packed coefficient digit RAMB36 cells, found [llength $coefficient_digit_brams]"
+    }
+    add_cells_to_pblock pb_forward $coefficient_digit_brams
+    puts "FPT_DIGIT_BRAM_FORWARD ramb36=[llength $coefficient_digit_brams]"
+}
 
 set coefficient_advance_nets {}
 if {$floorplan_mode in {rotator-forward rotator-forward-control}} {
@@ -216,16 +235,25 @@ if {$floorplan_mode eq "rotator-forward-control"} {
     puts "FPT_ROTATOR_FORWARD_EMIT_BOUNDARY registers=1 sll_registers=1"
 }
 
-# Guide the elastic forward-crossing payload and its valid bit into the U280's
-# dedicated Laguna SLL registers. Vivado ignores USER_SLL_REG when the path
-# does not actually cross an SLR, so this remains safe for unconstrained
-# placement experiments where the pending queue stays beside the transform.
-set guided_sll_registers [get_cells -hierarchical -quiet \
+# Guide the elastic forward-crossing payloads into the U280's dedicated
+# Laguna SLL registers. Vivado ignores USER_SLL_REG when a path does not
+# actually cross an SLR, so these hints remain safe when unconstrained
+# placement keeps a producer beside its consumer. Older checkpoints predate
+# the coefficient digit-output cut and therefore legitimately resolve none.
+set pending_guided_sll_registers [get_cells -hierarchical -quiet \
     -regexp {^.*/pendingRequests/(inputBoundary_.*_reg.*|inputBoundaryValid_reg.*)$}]
+set coefficient_digit_guided_sll_registers [get_cells -hierarchical -quiet \
+    -regexp {^.*/coefficients/digitOutputBoundary/value_reg.*$}]
+if {[llength $coefficient_digit_guided_sll_registers] ni {0 2560}} {
+    error "Expected 0 or 2560 coefficient digit-output registers, found [llength $coefficient_digit_guided_sll_registers]"
+}
+set guided_sll_registers [concat \
+    $pending_guided_sll_registers \
+    $coefficient_digit_guided_sll_registers]
 if {[llength $guided_sll_registers] > 0} {
     set_property USER_SLL_REG TRUE $guided_sll_registers
 }
-puts "FPT_GUIDED_SLL_REGISTERS count=[llength $guided_sll_registers]"
+puts "FPT_GUIDED_SLL_REGISTERS count=[llength $guided_sll_registers] pending=[llength $pending_guided_sll_registers] coefficient_digit=[llength $coefficient_digit_guided_sll_registers]"
 
 set forced_high_fanout_nets {}
 if {$force_high_fanout} {

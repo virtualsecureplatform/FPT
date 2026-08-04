@@ -115,7 +115,9 @@ final class PrecomputedWindowedCoefficientStoreSpec
       var cycle = 0
       var pairCount = 0
       val backpressureCycles = 3
+      val markerBackpressureCycles = 2
       var exercisedBackpressure = false
+      var exercisedMarkerBackpressure = false
       val acceptCycles = ArrayBuffer.empty[Int]
       val firstPairCycles = ArrayBuffer.empty[Int]
       val transformStartCycles = ArrayBuffer.empty[Int]
@@ -179,7 +181,28 @@ final class PrecomputedWindowedCoefficientStoreSpec
       }
       while (pairCount < contexts * commandInterval) {
         val stalledTransaction = contexts - 1
+        val markerStalledPair = stalledTransaction * commandInterval +
+          config.forwardBeats - 1
         val stalledPair = contexts * commandInterval - 1
+        if (
+          !exercisedMarkerBackpressure && pairCount == markerStalledPair &&
+          dut.io.pairValid.peek().litToBoolean
+        ) {
+          dut.io.pairLast.expect(true.B)
+          dut.io.transformStart.expect(true.B)
+          dut.io.pairReady.poke(false.B)
+          dut.io.transformStart.expect(false.B)
+          for (_ <- 0 until markerBackpressureCycles) {
+            dut.io.pairValid.expect(true.B)
+            dut.io.pairLast.expect(true.B)
+            dut.io.transformStart.expect(false.B)
+            dut.clock.step()
+            cycle += 1
+          }
+          dut.io.pairReady.poke(true.B)
+          dut.io.transformStart.expect(true.B)
+          exercisedMarkerBackpressure = true
+        }
         if (
           !exercisedBackpressure && pairCount == stalledPair &&
           dut.io.pairValid.peek().litToBoolean
@@ -229,6 +252,7 @@ final class PrecomputedWindowedCoefficientStoreSpec
           pair(1) - pair(0) should be(commandInterval)
         }
       }
+      exercisedMarkerBackpressure should be(true)
       exercisedBackpressure should be(true)
       transformStartCycles.size should be(contexts * config.components *
         config.levels)
@@ -237,9 +261,15 @@ final class PrecomputedWindowedCoefficientStoreSpec
         transaction <- 0 until contexts
         row <- 0 until rowCount
       } {
+        val markerStallDelay =
+          if (transaction == contexts - 1 && row > 0) {
+            markerBackpressureCycles
+          } else {
+            0
+          }
         transformStartCycles(transaction * config.components * config.levels +
           row) should be(firstPairCycles(transaction) +
-          row * config.forwardBeats - 1)
+          row * config.forwardBeats - 1 + markerStallDelay)
       }
     }
   }
