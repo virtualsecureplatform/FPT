@@ -18,9 +18,14 @@ final case class BatchedCmuxEngineConfig(
       BatchedCoefficientStorage.RegisterArray,
     serializeInverseComponents: Boolean = false,
     useSynchronousExternalProductMemory: Boolean = false,
-    decoupledBootstrappingKey: Boolean = false
+    decoupledBootstrappingKey: Boolean = false,
+    pendingKeyRequestEntries: Int = 4
 ) {
   require(batchContexts >= 2)
+  require(
+    pendingKeyRequestEntries >= 1 && isPow2(pendingKeyRequestEntries),
+    "pending key-request entries must be a positive power of two"
+  )
   require(
     engine.forwardSGen.isDefined && engine.inverseSGen.isDefined,
     "the batched engine requires continuous-flow SGen transforms"
@@ -52,28 +57,32 @@ private[fpt] final class BatchedCmuxPendingKeyRequest(
   val decomposition = Vec(inputLanes, new ComplexSInt(spectrumWidth))
 }
 
-/** Elastic boundary registers and four-slot SRL FIFO between the transforms.
+/** Elastic boundary registers and a configurable FIFO between the transforms.
   *
   * The input payload register captures on local readiness, independent of
   * upstream valid. This makes the wide forward-SLR crossing a pure data-to-D
   * path: the crossing valid bit only drives one local register instead of the
-  * clock enable of every SRL. Behind it, every payload bit follows the same
-  * enqueue-enabled shift-register chain and the count selects the oldest live
-  * tap. A matching two-slot registered output FIFO keeps that count and tap
+  * clock enable of every FIFO bit. Behind it, every payload bit follows the
+  * same enqueue-enabled shift-register chain and the count selects the oldest
+  * live tap. A matching two-slot registered output FIFO keeps that count and tap
   * selector out of the External Product memory-address cone. Its conservative
   * full handling also prevents downstream readiness from driving any wide
-  * payload register enable. The resulting seven credits absorb key-memory
-  * latency and a registered External Product bank-reuse guard. Input ready is
-  * likewise conservative at the full boundary, which removes the
-  * downstream-ready round trip from the SLL register clock enables.
+  * payload register enable. The input boundary, configurable middle entries,
+  * and two output entries absorb key-memory latency and a registered External
+  * Product bank-reuse guard. Input ready is likewise conservative at the full
+  * boundary, which removes the downstream-ready round trip from the SLL
+  * register clock enables.
   */
 private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
     contextWidth: Int,
     rowWidth: Int,
     beatWidth: Int,
     inputLanes: Int,
-    spectrumWidth: Int
+    spectrumWidth: Int,
+    requestEntries: Int = 4
 ) extends Module {
+  require(requestEntries >= 1 && isPow2(requestEntries))
+
   private def requestType = new BatchedCmuxPendingKeyRequest(
     contextWidth,
     rowWidth,
@@ -88,11 +97,14 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
 
   val inputBoundary = Reg(requestType)
   val inputBoundaryValid = RegInit(false.B)
-  // Keep the SRL depth a power of two. Vivado infers the four-deep dynamic
-  // tap as one SRLC32E per payload bit; a five-deep Vec is instead expanded
-  // into five flip-flops per bit, adding roughly 38K placed registers here.
-  val requests = Reg(Vec(4, requestType))
-  val count = RegInit(0.U(3.W))
+  // Keep the depth a power of two. Vivado infers the four-deep dynamic tap as
+  // one SRLC32E per payload bit. A one-entry configuration is intentionally
+  // one ordinary register slice, trading those LUTs for otherwise-spare FFs.
+  val requests = Reg(Vec(requestEntries, requestType))
+  private val requestIndexWidth = TransformUtil.counterWidth(requestEntries)
+  private val requestCountWidth =
+    TransformUtil.counterWidth(requestEntries + 1)
+  val count = RegInit(0.U(requestCountWidth.W))
   // Keep these as two explicit aggregate registers instead of a generic
   // Queue. At Set-II width, a two-entry Queue can become thousands of LUTRAM
   // bits. Circular pointers avoid shifting either payload on dequeue, so the
@@ -119,13 +131,18 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
   // resident word covers that conservative cycle without interrupting the
   // consumer, and the wide write enables remain independent of io.deq.ready.
   val outputEnqReady = outputCount =/= 2.U
-  val oldest = Mux(count === 0.U, 0.U, count - 1.U)(1, 0)
+  val oldest = Mux(count === 0.U, 0.U, count - 1.U)(
+    requestIndexWidth - 1,
+    0
+  )
+  val oldestRequest =
+    if (requestEntries == 1) requests.head else requests(oldest)
   val outputEnqFire = count =/= 0.U && outputEnqReady
   when(outputEnqFire) {
     when(outputWritePointer) {
-      outputBoundary1 := requests(oldest)
+      outputBoundary1 := oldestRequest
     }.otherwise {
-      outputBoundary0 := requests(oldest)
+      outputBoundary0 := oldestRequest
     }
     outputWritePointer := !outputWritePointer
   }
@@ -149,17 +166,20 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
   }
 
   val queueDeqFire = outputEnqFire
-  // Never use a same-cycle dequeue as permission to shift a full SRL. That
-  // shortcut feeds External Product readiness back through queueDeqFire into
-  // every payload bit's clock enable. Waiting for the registered count to
-  // expose the freed slot keeps enqFire entirely local; the input and output
-  // boundary registers retain enough credit to cover the extra cycle.
-  val shiftReady = count =/= 4.U
+  // The four-entry SRL waits for registered occupancy to expose a free tap,
+  // keeping its wide clock enable especially simple. The one-entry physical
+  // slice may refill while its old word moves into the registered output FIFO:
+  // outputEnqReady depends only on registered local occupancy, never directly
+  // on External Product readiness, so this retains one beat per cycle without
+  // recreating a combinational ready path across the SLR boundary.
+  val refillSingleEntry =
+    if (requestEntries == 1) queueDeqFire else false.B
+  val shiftReady = count =/= requestEntries.U || refillSingleEntry
   val enqFire = inputBoundaryValid && shiftReady
   // Do not use same-cycle downstream readiness here. If both the SRL and
   // input boundary are full, hold the boundary word until the registered
   // count exposes a slot, then advertise that local credit.
-  io.enq.ready := !inputBoundaryValid || count =/= 4.U
+  io.enq.ready := !inputBoundaryValid || shiftReady
 
   // When ready is high, an invalid upstream beat can safely overwrite the
   // payload because its valid bit is cleared at the same edge. Avoiding valid
@@ -177,7 +197,7 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
   // Shift only on enqueue. Dequeue changes the selected live tap, so every
   // data bit retains a single common clock enable and a pure shift chain.
   when(enqFire) {
-    for (stage <- 3 to 1 by -1) {
+    for (stage <- requestEntries - 1 to 1 by -1) {
       requests(stage) := requests(stage - 1)
     }
     requests(0) := inputBoundary
@@ -571,10 +591,10 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
       forwardTransactionBeat % externalConfig.inputFrameBeats.U
     )(TransformUtil.counterWidth(externalConfig.inputFrameBeats) - 1, 0)
 
-    // Retain enough forward outputs to cover a registered wrapper request
-    // and the key buffer's synchronous read. Four entries also absorb the
-    // registered External Product bank-reuse guard, keeping the SGen output
-    // at one beat per cycle without a combinational ready bypass.
+    // Retain enough forward outputs to cover a registered wrapper request,
+    // the key buffer's synchronous read, and the registered External Product
+    // bank-reuse guard without a combinational ready bypass. Physical builds
+    // may trade middle entries between SRL LUTs and ordinary register slices.
     val pendingRequestType = new BatchedCmuxPendingKeyRequest(
       contextWidth,
       rowWidth,
@@ -588,7 +608,8 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
         rowWidth,
         TransformUtil.counterWidth(externalConfig.inputFrameBeats),
         externalConfig.inputLanes,
-        externalConfig.spectrum.width
+        externalConfig.spectrum.width,
+        config.pendingKeyRequestEntries
       )
     )
 

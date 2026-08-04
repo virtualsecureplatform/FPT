@@ -246,7 +246,8 @@ final class BlindRotateSampleExtractSpec
         engine = config.cmux.engine.copy(bitwiseBitsPerCycle = Some(2)),
         batchContexts = oracleContexts,
         coefficientStorage = BatchedCoefficientStorage.BitwiseReplicatedBanks,
-        decoupledBootstrappingKey = true
+        decoupledBootstrappingKey = true,
+        pendingKeyRequestEntries = 1
       ),
       domainDimension = oracleDimensions
     )

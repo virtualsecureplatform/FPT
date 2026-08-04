@@ -11,7 +11,9 @@ import java.nio.file.{Files, Path}
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
-private final class BatchedCmuxPendingQueueTimingHarness extends Module {
+private final class BatchedCmuxPendingQueueTimingHarness(
+    requestEntries: Int = 4
+) extends Module {
   val io = IO(new Bundle {
     val enqValid = Input(Bool())
     val enqData = Input(UInt(8.W))
@@ -36,7 +38,8 @@ private final class BatchedCmuxPendingQueueTimingHarness extends Module {
       rowWidth = 3,
       beatWidth = 2,
       inputLanes = 1,
-      spectrumWidth = 8
+      spectrumWidth = 8,
+      requestEntries = requestEntries
     )
   )
   queue.io.enq.valid := io.enqValid
@@ -224,6 +227,55 @@ final class BatchedCmuxEngineSpec
 
       // Drain the remaining ordered payloads at one word per cycle.
       for (value <- 2 until 7) {
+        dut.io.deqValid.expect(true.B)
+        dut.io.deqData.expect(value.U)
+        dut.clock.step()
+      }
+      dut.io.deqValid.expect(false.B)
+    }
+  }
+
+  it should "preserve full-rate draining through a one-entry pending slice" in {
+    test(new BatchedCmuxPendingQueueTimingHarness(requestEntries = 1)) { dut =>
+      dut.io.enqValid.poke(false.B)
+      dut.io.enqData.poke(0.U)
+      dut.io.deqReady.poke(false.B)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+
+      // The two output boundaries, one middle slice, and input boundary hold
+      // four requests while the consumer is stalled.
+      for (value <- 0 until 4) {
+        dut.io.enqValid.poke(true.B)
+        dut.io.enqData.poke(value.U)
+        dut.io.enqReady.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.enqValid.poke(false.B)
+      dut.io.count.expect(1.U)
+      dut.io.outputCount.expect(2.U)
+      dut.io.inputBoundaryValid.expect(true.B)
+      dut.io.shiftReady.expect(false.B)
+      dut.io.deqData.expect(0.U)
+
+      // The conservative output FIFO first registers the freed slot.
+      dut.io.deqReady.poke(true.B)
+      dut.io.outputDeqFire.expect(true.B)
+      dut.io.outputEnqFire.expect(false.B)
+      dut.io.queueDeqFire.expect(false.B)
+      dut.io.shiftReady.expect(false.B)
+      dut.clock.step()
+
+      // On the next cycle, the single middle entry moves forward while the
+      // held input word refills it. The resident output word hides that move,
+      // so all remaining requests drain on adjacent cycles and in order.
+      dut.io.outputEnqFire.expect(true.B)
+      dut.io.outputDeqFire.expect(true.B)
+      dut.io.queueDeqFire.expect(true.B)
+      dut.io.shiftReady.expect(true.B)
+      dut.io.enqFire.expect(true.B)
+      for (value <- 1 until 4) {
         dut.io.deqValid.expect(true.B)
         dut.io.deqData.expect(value.U)
         dut.clock.step()
