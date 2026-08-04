@@ -66,8 +66,8 @@ if rg -q '^module NegacyclicBarrelRotator\(' "$output_file"; then
     echo "Emitted source unexpectedly contains the full-width barrel rotator" >&2
     exit 1
 fi
-if [[ $(rg -c 'ram_style = "block"' "$output_file") != 1 ]]; then
-    echo "Emitted source does not tag exactly the key memory as block RAM" >&2
+if [[ $(rg -c 'ram_style = "block"' "$output_file") != 2 ]]; then
+    echo "Emitted source does not tag exactly the key and digit memories as block RAM" >&2
     exit 1
 fi
 if [[ $(rg -c 'ram_style = "ultra"' "$output_file") != 1 ]]; then

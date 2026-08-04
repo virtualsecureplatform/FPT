@@ -1,0 +1,246 @@
+package fpt
+
+import chisel3._
+import chiseltest._
+import chiseltest.simulator.VerilatorBackendAnnotation
+import org.scalatest.flatspec.AnyFlatSpec
+import org.scalatest.matchers.should.Matchers
+
+import scala.collection.mutable.ArrayBuffer
+
+final class PrecomputedWindowedCoefficientStoreSpec
+    extends AnyFlatSpec
+    with ChiselScalatestTester
+    with Matchers {
+  private val config = CmuxCoefficientConfig(
+    polynomialSize = 16,
+    forwardLanes = 4,
+    inverseLanes = 4,
+    components = 2,
+    levels = 2,
+    baseBits = 3,
+    torusWidth = 8,
+    forwardFormat = FixedFormat(5, 3),
+    inverseFormat = FixedFormat(5, 3),
+    windowedRotator = true
+  )
+  private val contexts = 4
+  private val commandInterval = config.components * config.levels *
+    config.forwardBeats
+  private val torusMask = (BigInt(1) << config.torusWidth) - 1
+
+  private def initial(context: Int, component: Int, index: Int): BigInt =
+    BigInt(context * 97 + component * 53 + index * 29 + 7) & torusMask
+
+  private def expected(
+      context: Int,
+      exponent: Int,
+      component: Int,
+      level: Int,
+      index: Int
+  ): BigInt = {
+    val rotation = exponent & (config.polynomialSize - 1)
+    val sourceIndex = (index - rotation) & (config.polynomialSize - 1)
+    val source = initial(context, component, sourceIndex)
+    val current = initial(context, component, index)
+    val highNegate = (exponent & config.polynomialSize) != 0
+    val wraps = index < rotation
+    val rotated =
+      if (wraps ^ highNegate) (-source) & torusMask else source
+    val biased =
+      (rotated - current + config.decompositionBias) & torusMask
+    val shift = config.torusWidth - (level + 1) * config.baseBits
+    val digit = (biased >> shift) &
+      ((BigInt(1) << config.baseBits) - 1)
+    val centered = digit - (BigInt(1) << (config.baseBits - 1))
+    centered << config.forwardFormat.fractionalBits
+  }
+
+  behavior of "the precomputed windowed coefficient frontend"
+
+  it should "time-share one rotator without changing the CMUX interval" in {
+    test(
+      new PrecomputedWindowedBatchedCmuxCoefficientStore(config, contexts)
+    ).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      dut.io.loadStart.poke(false.B)
+      dut.io.loadValid.poke(false.B)
+      dut.io.commandValid.poke(false.B)
+      dut.io.commandContext.poke(0.U)
+      dut.io.exponent.poke(0.U)
+      dut.io.pairReady.poke(true.B)
+      dut.io.updateValid.poke(false.B)
+      dut.io.updateFirst.poke(false.B)
+      dut.io.updateContext.poke(0.U)
+      dut.io.drainStart.poke(false.B)
+      dut.io.drainReady.poke(false.B)
+      for (component <- 0 until config.components) {
+        for (lane <- 0 until config.inverseLanes) {
+          dut.io.load(component)(lane).poke(0.U)
+          dut.io.updateLow(component)(lane).poke(0.S)
+          dut.io.updateHigh(component)(lane).poke(0.S)
+        }
+      }
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+
+      for (context <- 0 until contexts) {
+        dut.io.loadContext.poke(context.U)
+        dut.io.loadStart.poke(true.B)
+        dut.clock.step()
+        dut.io.loadStart.poke(false.B)
+        dut.io.loadValid.poke(true.B)
+        for (beat <- 0 until config.polynomialBeats) {
+          for (component <- 0 until config.components) {
+            for (lane <- 0 until config.inverseLanes) {
+              val index = beat * config.inverseLanes + lane
+              dut.io.load(component)(lane).poke(
+                initial(context, component, index).U
+              )
+            }
+          }
+          dut.clock.step()
+        }
+        dut.io.loadValid.poke(false.B)
+        dut.io.loadDone.expect(true.B)
+        dut.clock.step()
+      }
+
+      val exponents = Seq(
+        5,
+        config.polynomialSize + 3,
+        0,
+        config.polynomialSize + 11
+      )
+      var cycle = 0
+      var pairCount = 0
+      val backpressureCycles = 3
+      var exercisedBackpressure = false
+      val acceptCycles = ArrayBuffer.empty[Int]
+      val firstPairCycles = ArrayBuffer.empty[Int]
+      val transformStartCycles = ArrayBuffer.empty[Int]
+
+      def observe(): Unit = {
+        if (dut.io.transformStart.peek().litToBoolean) {
+          transformStartCycles += cycle
+        }
+        if (dut.io.pairValid.peek().litToBoolean) {
+          val transaction = pairCount / commandInterval
+          val transactionBeat = pairCount % commandInterval
+          val row = transactionBeat / config.forwardBeats
+          val beat = transactionBeat % config.forwardBeats
+          if (transactionBeat == 0) firstPairCycles += cycle
+          dut.io.rowIndex.expect(row.U)
+          dut.io.pairLast.expect((beat == config.forwardBeats - 1).B)
+          val component = row / config.levels
+          val level = row % config.levels
+          for (lane <- 0 until config.forwardLanes) {
+            val point = beat * config.forwardLanes + lane
+            dut.io.coefficientLow(lane).expect(
+              expected(
+                transaction,
+                exponents(transaction),
+                component,
+                level,
+                point
+              ).S
+            )
+            dut.io.coefficientHigh(lane).expect(
+              expected(
+                transaction,
+                exponents(transaction),
+                component,
+                level,
+                config.points + point
+              ).S
+            )
+          }
+          pairCount += 1
+        }
+      }
+
+      def step(): Unit = {
+        observe()
+        dut.clock.step()
+        cycle += 1
+      }
+
+      for (context <- 0 until contexts) {
+        dut.io.commandContext.poke(context.U)
+        dut.io.exponent.poke(exponents(context).U)
+        while (!dut.io.commandReady.peek().litToBoolean) {
+          step()
+          cycle should be < 100
+        }
+        acceptCycles += cycle
+        dut.io.commandValid.poke(true.B)
+        step()
+        dut.io.commandValid.poke(false.B)
+      }
+      while (pairCount < contexts * commandInterval) {
+        val stalledTransaction = contexts - 1
+        val stalledPair = contexts * commandInterval - 1
+        if (
+          !exercisedBackpressure && pairCount == stalledPair &&
+          dut.io.pairValid.peek().litToBoolean
+        ) {
+          dut.io.pairReady.poke(false.B)
+          for (_ <- 0 until backpressureCycles) {
+            dut.io.pairValid.expect(true.B)
+            dut.io.rowIndex.expect((config.components * config.levels - 1).U)
+            dut.io.pairLast.expect(true.B)
+            for (lane <- 0 until config.forwardLanes) {
+              val point =
+                (config.forwardBeats - 1) * config.forwardLanes + lane
+              dut.io.coefficientLow(lane).expect(
+                expected(
+                  stalledTransaction,
+                  exponents(stalledTransaction),
+                  config.components - 1,
+                  config.levels - 1,
+                  point
+                ).S
+              )
+              dut.io.coefficientHigh(lane).expect(
+                expected(
+                  stalledTransaction,
+                  exponents(stalledTransaction),
+                  config.components - 1,
+                  config.levels - 1,
+                  config.points + point
+                ).S
+              )
+            }
+            dut.clock.step()
+            cycle += 1
+          }
+          dut.io.pairReady.poke(true.B)
+          exercisedBackpressure = true
+        }
+        step()
+        cycle should be < 160
+      }
+
+      acceptCycles.toSeq should be(
+        Seq.tabulate(contexts)(_ * commandInterval)
+      )
+      firstPairCycles.sliding(2).foreach { pair =>
+        withClue(s"firstPairCycles=$firstPairCycles: ") {
+          pair(1) - pair(0) should be(commandInterval)
+        }
+      }
+      exercisedBackpressure should be(true)
+      transformStartCycles.size should be(contexts * config.components *
+        config.levels)
+      val rowCount = config.components * config.levels
+      for {
+        transaction <- 0 until contexts
+        row <- 0 until rowCount
+      } {
+        transformStartCycles(transaction * config.components * config.levels +
+          row) should be(firstPairCycles(transaction) +
+          row * config.forwardBeats - 1)
+      }
+    }
+  }
+}

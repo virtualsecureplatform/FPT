@@ -484,4 +484,17 @@ final class BatchedCmuxEngineSpec
       drainUsesPrefetch = true
     )
   }
+
+  it should "run the same CMUX through one precomputed window rotator" in {
+    exercise(
+      registerConfig.copy(
+        engine = engine.copy(
+          coefficient = coefficient.copy(windowedRotator = true)
+        ),
+        coefficientStorage =
+          BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks
+      ),
+      drainUsesPrefetch = true
+    )
+  }
 }

@@ -7,12 +7,12 @@ import java.nio.file.Path
 /** U280 windowed-barrel physical accelerator emitter.
   *
   * Identical to `EmitPaperBufferedBlindRotateAccelerator` except the CMUX
-  * coefficient frontend emits the paper barrel's requested stream-width
-  * windows from replicated banks instead of materializing its full-width
-  * mux or using the bitwise transposed working sets. The bitwise frontend's
-  * transpose wiring is unroutable on the U280 at full Set-II parallelism
-  * (global congestion level 7), so this emitter keeps the paper rotation
-  * semantics with a physical structure sized for the consumed lanes.
+  * coefficient frontend precomputes the paper barrel's requested stream-width
+  * windows from replicated banks instead of materializing its full-width mux
+  * or using the bitwise transposed working sets. One 128-lane rotator handles
+  * the low and high halves on alternating preprocessing cycles and stores all
+  * gadget levels together. The prior workset emits concurrently, preserving
+  * II=16 without the bitwise frontend's unroutable full-polynomial transpose.
   */
 object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
   require(
@@ -36,8 +36,8 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
   )
   // Stream-width windowed rotation: the full-width barrel is ~283K LUTs of
   // single-block muxing whose 32K-bit chain also cannot straddle an SLR
-  // boundary, so no placement routes it on the U280. The windowed store
-  // selects only the inverse-bank-width spans each beat consumes.
+  // boundary. Precomputing both gadget levels while alternating polynomial
+  // halves lets one inverse-bank-width span aligner serve every emitted pair.
   val engine = baseEngine.copy(
     coefficient = baseEngine.coefficient.copy(windowedRotator = true),
     // The combinational Gauss correction path is over 5 ns when driven by
@@ -58,7 +58,8 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
       // 14 x 16 = 224 cycles and outruns the loader, which backpressures
       // the forward SGen core after ~forward-latency/32 CMUX steps.
       batchContexts = PaperSetII.bitwiseBatchContexts,
-      coefficientStorage = BatchedCoefficientStorage.ReplicatedBanks,
+      coefficientStorage =
+        BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks,
       serializeInverseComponents = true,
       useSynchronousExternalProductMemory = true,
       decoupledBootstrappingKey = true,
@@ -84,6 +85,13 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
   SynthesisEmitter.addBlockRamStyle(
     systemVerilog,
     config.keyMemoryModuleName
+  )
+  // Duplicate the packed transpose so low and high halves can be read while
+  // the next workset is written. Each 48 x 2,560-bit copy maps to 36 RAMB36s,
+  // replacing hundreds of shallow lane-local distributed memories.
+  SynthesisEmitter.addBlockRamStyle(
+    systemVerilog,
+    "digitMemories_48x2560"
   )
   // Each 4 x 15,360-bit External Product ping-pong bank otherwise consumes
   // 8,780 distributed-memory LUTs. Use the U280's otherwise-idle UltraRAM for

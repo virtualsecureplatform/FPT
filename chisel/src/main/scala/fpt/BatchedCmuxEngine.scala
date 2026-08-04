@@ -8,6 +8,8 @@ sealed trait BatchedCoefficientStorage
 object BatchedCoefficientStorage {
   case object RegisterArray extends BatchedCoefficientStorage
   case object ReplicatedBanks extends BatchedCoefficientStorage
+  case object PrecomputedWindowedReplicatedBanks
+      extends BatchedCoefficientStorage
   case object BitwiseReplicatedBanks extends BatchedCoefficientStorage
 }
 
@@ -471,6 +473,13 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
       case BatchedCoefficientStorage.ReplicatedBanks =>
         Module(
           new PrefetchedBatchedCmuxCoefficientStore(
+            coefficientConfig,
+            config.batchContexts
+          )
+        )
+      case BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks =>
+        Module(
+          new PrecomputedWindowedBatchedCmuxCoefficientStore(
             coefficientConfig,
             config.batchContexts
           )
