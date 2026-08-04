@@ -74,6 +74,11 @@ if [[ $(rg -c 'ram_style = "ultra"' "$output_file") != 1 ]]; then
     echo "Emitted source does not tag exactly one External Product memory as UltraRAM" >&2
     exit 1
 fi
+if [[ $(rg -c 'ram_style = "distributed"' "$output_file") != 1 ]] || \
+   ! rg -q '^module FptMultiportedCoefficientScratch #\(' "$output_file"; then
+    echo "Emitted source is missing the multi-read distributed coefficient scratchpad" >&2
+    exit 1
+fi
 if rg -q 'firrtl_black_box_resource_files[.]f' "$output_file"; then
     echo "Emitted source retains CIRCT's non-Verilog resource trailer" >&2
     exit 1
