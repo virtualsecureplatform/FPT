@@ -32,8 +32,8 @@ if {![string is double -strict $clock_period] || $clock_period <= 0} {
 if {![string is integer -strict $jobs] || $jobs < 1} {
     error "JOBS must be a positive integer: $jobs"
 }
-if {$floorplan_mode ni {full transforms-only rotator-forward}} {
-    error "FLOORPLAN_MODE must be full, transforms-only, or rotator-forward: $floorplan_mode"
+if {$floorplan_mode ni {full transforms-only rotator-forward rotator-forward-control}} {
+    error "FLOORPLAN_MODE must be full, transforms-only, rotator-forward, or rotator-forward-control: $floorplan_mode"
 }
 if {![string is integer -strict $force_high_fanout] ||
     $force_high_fanout ni {0 1 2 3 4 5}} {
@@ -91,7 +91,7 @@ resize_pblock pb_forward -add CLOCKREGION_X0Y0:CLOCKREGION_X7Y3
 add_cells_to_pblock pb_forward [dict get $resolved_cells forward]
 
 set coefficient_advance_nets {}
-if {$floorplan_mode eq "rotator-forward"} {
+if {$floorplan_mode in {rotator-forward rotator-forward-control}} {
     # The v52 router found level-7 global congestion in the middle SLR, with
     # the two stream-width rotators contributing more than 54K LUTs there.
     # They ultimately feed the forward transform, so move the rotators and
@@ -168,7 +168,7 @@ add_cells_to_pblock pb_inverse [dict get $resolved_cells inverse]
 # experiments they remain unconstrained so placement can make the same local
 # choice from timing.
 
-if {$floorplan_mode eq "rotator-forward"} {
+if {$floorplan_mode in {rotator-forward rotator-forward-control}} {
     # opt_design otherwise promotes this 89K-load pipeline enable into a
     # BUFGCE owned by the forward-transform hierarchy. With the coefficient
     # selectors left in the middle SLR, the resulting path travels from the
@@ -187,7 +187,7 @@ if {$floorplan_mode eq "rotator-forward"} {
 
 opt_design -directive ExploreWithRemap
 
-if {$floorplan_mode eq "rotator-forward"} {
+if {$floorplan_mode in {rotator-forward rotator-forward-control}} {
     # Re-resolve the optimized segment, then make replication mandatory in
     # both the placer and the explicit post-placement physical-synthesis pass.
     set coefficient_advance_nets [get_nets -hierarchical -quiet \
@@ -197,6 +197,23 @@ if {$floorplan_mode eq "rotator-forward"} {
     }
     set_property FORCE_MAX_FANOUT 128 $coefficient_advance_nets
     puts "FPT_ROTATOR_FORWARD_ADVANCE nets=1 clock_buffer_type=NONE max_fanout=128 force_max_fanout=128"
+}
+
+if {$floorplan_mode eq "rotator-forward-control"} {
+    # pairReady and the replicated advance LUTs are owned by the forward
+    # transform. Place the last pair-valid/emit-active pipeline register at
+    # that boundary as an SLL register, so its one-bit predecessor crosses
+    # the SLR rather than sending the registered source across and back into
+    # every forward-side pipeline clock enable. ExtraNetDelay v54 measured
+    # 4.17 ns of routing on that avoidable round trip.
+    set coefficient_emit_active_boundary [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/emitActive_r_9_reg$}]
+    if {[llength $coefficient_emit_active_boundary] != 1} {
+        error "Expected one final coefficient emit-active register, found [llength $coefficient_emit_active_boundary]"
+    }
+    add_cells_to_pblock pb_forward $coefficient_emit_active_boundary
+    set_property USER_SLL_REG TRUE $coefficient_emit_active_boundary
+    puts "FPT_ROTATOR_FORWARD_EMIT_BOUNDARY registers=1 sll_registers=1"
 }
 
 # Guide the elastic forward-crossing payload and its valid bit into the U280's
