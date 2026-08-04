@@ -94,10 +94,12 @@ if {$floorplan_mode eq "digit-bram-forward"} {
     # The packed coefficient store reads a full forward beat directly from 72
     # RAMB36s. In the unconstrained v63 placement every RAMB36 landed in SLR1,
     # while the four worst paths started at those memories and ended in the
-    # forward transform constrained to SLR0. Move only the physical memories
-    # across the boundary; the time-shared rotator and accumulator banks remain
-    # free in SLR1, and the placer can put the RAM outputs next to their SLR0
-    # consumers without dragging the complete coefficient hierarchy with them.
+    # forward transform constrained to SLR0. Move the physical memories and,
+    # when present, their explicit digit-output cut across the boundary. The
+    # time-shared rotator and accumulator banks remain free in SLR1, while both
+    # sides of the read boundary stay local to the forward SLR. Leaving the cut
+    # unconstrained made the v67 floorplan reserve 15,429 SLLs even though its
+    # BRAM producer and forward consumer were already constrained to SLR0.
     set coefficient_digit_brams [get_cells -hierarchical -quiet -filter {
         REF_NAME == RAMB36E2 &&
         NAME =~ */coefficients/digitMemories_*/*
@@ -105,8 +107,14 @@ if {$floorplan_mode eq "digit-bram-forward"} {
     if {[llength $coefficient_digit_brams] != 72} {
         error "Expected 72 packed coefficient digit RAMB36 cells, found [llength $coefficient_digit_brams]"
     }
-    add_cells_to_pblock pb_forward $coefficient_digit_brams
-    puts "FPT_DIGIT_BRAM_FORWARD ramb36=[llength $coefficient_digit_brams]"
+    set coefficient_digit_boundary_registers [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/digitOutputBoundary/value_reg.*$}]
+    if {[llength $coefficient_digit_boundary_registers] ni {0 2560}} {
+        error "Expected 0 or 2560 coefficient digit-output registers, found [llength $coefficient_digit_boundary_registers]"
+    }
+    add_cells_to_pblock pb_forward [concat \
+        $coefficient_digit_brams $coefficient_digit_boundary_registers]
+    puts "FPT_DIGIT_BRAM_FORWARD ramb36=[llength $coefficient_digit_brams] boundary_registers=[llength $coefficient_digit_boundary_registers]"
 }
 
 set coefficient_advance_nets {}
