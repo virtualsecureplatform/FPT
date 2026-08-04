@@ -59,12 +59,13 @@ private[fpt] final class BatchedCmuxPendingKeyRequest(
   * path: the crossing valid bit only drives one local register instead of the
   * clock enable of every SRL. Behind it, every payload bit follows the same
   * enqueue-enabled shift-register chain and the count selects the oldest live
-  * tap. A matching elastic output register keeps that count and tap selector
-  * out of the External Product memory-address cone. The resulting six
-  * credits absorb key-memory latency and a registered External Product
-  * bank-reuse guard without a wide circular-buffer read mux. Input ready is
-  * conservative at the full boundary, which removes the downstream-ready
-  * round trip from the SLL register clock enables.
+  * tap. A matching two-slot registered output FIFO keeps that count and tap
+  * selector out of the External Product memory-address cone. Its conservative
+  * full handling also prevents downstream readiness from driving any wide
+  * payload register enable. The resulting seven credits absorb key-memory
+  * latency and a registered External Product bank-reuse guard. Input ready is
+  * likewise conservative at the full boundary, which removes the
+  * downstream-ready round trip from the SLL register clock enables.
   */
 private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
     contextWidth: Int,
@@ -92,21 +93,50 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
   // into five flip-flops per bit, adding roughly 38K placed registers here.
   val requests = Reg(Vec(4, requestType))
   val count = RegInit(0.U(3.W))
-  val outputBoundary = Reg(requestType)
-  val outputBoundaryValid = RegInit(false.B)
+  // Keep these as two explicit aggregate registers instead of a generic
+  // Queue. At Set-II width, a two-entry Queue can become thousands of LUTRAM
+  // bits. Circular pointers avoid shifting either payload on dequeue, so the
+  // downstream ready path only reaches the narrow occupancy and read pointer.
+  val outputBoundary0 = Reg(requestType)
+  val outputBoundary1 = Reg(requestType)
+  val outputReadPointer = RegInit(false.B)
+  val outputWritePointer = RegInit(false.B)
+  val outputCount = RegInit(0.U(2.W))
+  val outputBoundaryValid = outputCount =/= 0.U
 
   io.deq.valid := outputBoundaryValid
-  io.deq.bits := outputBoundary
-  val outputBoundaryReady = !outputBoundaryValid || io.deq.ready
+  io.deq.bits := Mux(
+    outputReadPointer,
+    outputBoundary1,
+    outputBoundary0
+  )
+  val outputDeqFire = outputBoundaryValid && io.deq.ready
+  // Do not refill a full output FIFO from a same-cycle dequeue. Its second
+  // resident word covers that conservative cycle without interrupting the
+  // consumer, and the wide write enables remain independent of io.deq.ready.
+  val outputEnqReady = outputCount =/= 2.U
   val oldest = Mux(count === 0.U, 0.U, count - 1.U)(1, 0)
-  when(outputBoundaryReady) {
-    // As on the input side, loading an arbitrary payload while clearing valid
-    // is harmless and prevents count from becoming a wide payload CE.
-    outputBoundary := requests(oldest)
-    outputBoundaryValid := count =/= 0.U
+  val outputEnqFire = count =/= 0.U && outputEnqReady
+  when(outputEnqFire) {
+    when(outputWritePointer) {
+      outputBoundary1 := requests(oldest)
+    }.otherwise {
+      outputBoundary0 := requests(oldest)
+    }
+    outputWritePointer := !outputWritePointer
+  }
+  when(outputDeqFire) {
+    outputReadPointer := !outputReadPointer
+  }
+  when(outputEnqFire =/= outputDeqFire) {
+    outputCount := Mux(
+      outputEnqFire,
+      outputCount + 1.U,
+      outputCount - 1.U
+    )
   }
 
-  val queueDeqFire = count =/= 0.U && outputBoundaryReady
+  val queueDeqFire = outputEnqFire
   // Never use a same-cycle dequeue as permission to shift a full SRL. That
   // shortcut feeds External Product readiness back through queueDeqFire into
   // every payload bit's clock enable. Waiting for the registered count to

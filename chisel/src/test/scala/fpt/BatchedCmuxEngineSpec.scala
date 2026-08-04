@@ -14,12 +14,17 @@ import scala.jdk.CollectionConverters._
 private final class BatchedCmuxPendingQueueTimingHarness extends Module {
   val io = IO(new Bundle {
     val enqValid = Input(Bool())
+    val enqData = Input(UInt(8.W))
     val enqReady = Output(Bool())
     val deqReady = Input(Bool())
     val deqValid = Output(Bool())
+    val deqData = Output(UInt(8.W))
     val count = Output(UInt(3.W))
+    val outputCount = Output(UInt(2.W))
     val inputBoundaryValid = Output(Bool())
     val outputBoundaryValid = Output(Bool())
+    val outputEnqFire = Output(Bool())
+    val outputDeqFire = Output(Bool())
     val queueDeqFire = Output(Bool())
     val shiftReady = Output(Bool())
     val enqFire = Output(Bool())
@@ -36,12 +41,17 @@ private final class BatchedCmuxPendingQueueTimingHarness extends Module {
   )
   queue.io.enq.valid := io.enqValid
   queue.io.enq.bits := 0.U.asTypeOf(queue.io.enq.bits)
+  queue.io.enq.bits.decomposition(0).real := io.enqData.asSInt
   io.enqReady := queue.io.enq.ready
   queue.io.deq.ready := io.deqReady
   io.deqValid := queue.io.deq.valid
+  io.deqData := queue.io.deq.bits.decomposition(0).real.asUInt
   io.count := expose(queue.count)
+  io.outputCount := expose(queue.outputCount)
   io.inputBoundaryValid := expose(queue.inputBoundaryValid)
   io.outputBoundaryValid := expose(queue.outputBoundaryValid)
+  io.outputEnqFire := expose(queue.outputEnqFire)
+  io.outputDeqFire := expose(queue.outputDeqFire)
   io.queueDeqFire := expose(queue.queueDeqFire)
   io.shiftReady := expose(queue.shiftReady)
   io.enqFire := expose(queue.enqFire)
@@ -157,41 +167,68 @@ final class BatchedCmuxEngineSpec
 
   behavior of "the tagged batched CMUX engine"
 
-  it should "keep a full pending queue's SRL enable local" in {
+  it should "keep a full pending queue's wide enables local" in {
     test(new BatchedCmuxPendingQueueTimingHarness) { dut =>
       dut.io.enqValid.poke(false.B)
+      dut.io.enqData.poke(0.U)
       dut.io.deqReady.poke(false.B)
       dut.reset.poke(true.B)
       dut.clock.step(2)
       dut.reset.poke(false.B)
 
-      // The output boundary, four SRL entries, and input boundary hold six
-      // requests while the consumer is stalled.
-      for (_ <- 0 until 6) {
+      // The two output boundaries, four SRL entries, and input boundary hold
+      // seven requests while the consumer is stalled.
+      for (value <- 0 until 7) {
         dut.io.enqValid.poke(true.B)
+        dut.io.enqData.poke(value.U)
         dut.io.enqReady.expect(true.B)
         dut.clock.step()
       }
       dut.io.enqValid.poke(false.B)
       dut.io.count.expect(4.U)
+      dut.io.outputCount.expect(2.U)
       dut.io.inputBoundaryValid.expect(true.B)
       dut.io.outputBoundaryValid.expect(true.B)
       dut.io.shiftReady.expect(false.B)
       dut.io.enqFire.expect(false.B)
+      dut.io.deqData.expect(0.U)
 
-      // Releasing the consumer dequeues the output boundary, but must not
-      // feed that combinational readiness into the wide SRL clock enable.
+      // Releasing the consumer dequeues one output slot, but must not feed
+      // that combinational readiness into either wide FIFO write enable or
+      // the SRL clock enable.
       dut.io.deqReady.poke(true.B)
-      dut.io.queueDeqFire.expect(true.B)
+      dut.io.outputDeqFire.expect(true.B)
+      dut.io.outputEnqFire.expect(false.B)
+      dut.io.queueDeqFire.expect(false.B)
       dut.io.shiftReady.expect(false.B)
       dut.io.enqFire.expect(false.B)
       dut.clock.step()
 
-      // The registered occupancy change exposes the slot on the next cycle.
+      // The registered output occupancy exposes a slot on the next cycle.
+      // Its resident second word keeps the output valid while the SRL refills
+      // the other slot, preserving one dequeue per cycle.
+      dut.io.outputCount.expect(1.U)
+      dut.io.deqValid.expect(true.B)
+      dut.io.deqData.expect(1.U)
+      dut.io.outputEnqFire.expect(true.B)
+      dut.io.outputDeqFire.expect(true.B)
+      dut.io.queueDeqFire.expect(true.B)
+      dut.clock.step()
+
+      // The SRL occupancy change exposes its input slot one cycle later.
       dut.io.count.expect(3.U)
+      dut.io.outputCount.expect(1.U)
       dut.io.inputBoundaryValid.expect(true.B)
       dut.io.shiftReady.expect(true.B)
       dut.io.enqFire.expect(true.B)
+
+      // Drain the remaining ordered payloads at one word per cycle.
+      for (value <- 2 until 7) {
+        dut.io.deqValid.expect(true.B)
+        dut.io.deqData.expect(value.U)
+        dut.clock.step()
+      }
+      dut.io.deqValid.expect(false.B)
     }
   }
 

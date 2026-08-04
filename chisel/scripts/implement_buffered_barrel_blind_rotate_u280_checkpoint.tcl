@@ -300,32 +300,33 @@ if {$force_high_fanout} {
         }
     }
     if {$force_high_fanout == 5} {
-        # Once the coefficient selectors are localized, all six worst v52
-        # paths end at the 7,688 output-boundary clock enables. Replicate the
-        # final local enable cone so External Product readiness crosses the
-        # hierarchy at modest fanout instead of routing to every payload bit.
-        # Recover the net from those CE pins rather than a synthesized net
-        # name, which changes when unrelated preserved registers perturb
-        # Vivado's logic packing.
+        # The two-slot pending-request output FIFO has one 7,685-load local
+        # clock enable per payload bank. Replicate both enable cones so each
+        # bank's write control can be placed with its payload registers. The
+        # enables depend only on registered local occupancy and the write
+        # pointer; downstream External Product readiness only updates the
+        # narrow read pointer and occupancy. Recover the nets from their CE
+        # pins rather than synthesized names, which change when unrelated
+        # preserved registers perturb Vivado's logic packing.
         set pending_output_registers [get_cells -hierarchical -quiet \
-            -regexp {^.*/pendingRequests/outputBoundary_.*_reg.*$}]
-        if {[llength $pending_output_registers] < 7000} {
-            error "Expected at least 7000 pending-request output registers, found [llength $pending_output_registers]"
+            -regexp {^.*/pendingRequests/outputBoundary[01]_.*_reg.*$}]
+        if {[llength $pending_output_registers] < 14000} {
+            error "Expected at least 14000 pending-request output registers, found [llength $pending_output_registers]"
         }
         set pending_output_ce_pins [get_pins -quiet \
             -of_objects $pending_output_registers -filter {REF_PIN_NAME == CE}]
-        set pending_output_candidate_nets [get_nets -quiet \
-            -of_objects $pending_output_ce_pins]
+        set pending_output_candidate_nets [lsort -unique [get_nets -quiet \
+            -of_objects $pending_output_ce_pins]]
         foreach candidate_net $pending_output_candidate_nets {
             set candidate_ce_pins [get_pins -quiet -of_objects $candidate_net \
                 -filter {REF_PIN_NAME == CE}]
             if {[llength $candidate_ce_pins] >= 7000} {
                 lappend pending_output_enable_nets $candidate_net
-                set pending_output_ce_loads [llength $candidate_ce_pins]
+                incr pending_output_ce_loads [llength $candidate_ce_pins]
             }
         }
-        if {[llength $pending_output_enable_nets] != 1} {
-            error "Expected 1 pending-request output-boundary enable net with at least 7000 CE loads, found [llength $pending_output_enable_nets] among [llength $pending_output_candidate_nets] candidates"
+        if {[llength $pending_output_enable_nets] != 2} {
+            error "Expected 2 pending-request output-boundary enable nets with at least 7000 CE loads, found [llength $pending_output_enable_nets] among [llength $pending_output_candidate_nets] candidates"
         }
     }
 
