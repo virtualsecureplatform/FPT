@@ -348,12 +348,16 @@ if {$force_high_fanout} {
     puts "FPT_FORCE_HIGH_FANOUT mode=$force_high_fanout coefficient_nets=[llength $coefficient_write_enable_nets] sample_extract_nets=[llength $sample_extract_fanout_nets] pending_request_nets=[llength $pending_request_enable_nets] coefficient_selector_nets=[llength $coefficient_selector_nets] pending_output_nets=[llength $pending_output_enable_nets] pending_output_ce_loads=$pending_output_ce_loads coefficient_advance_nets=[llength $coefficient_advance_nets] external_output_address_nets=2 max_fanout=128 external_address_max_fanout=32"
 }
 place_design -directive $place_directive -ultrathreads
-if {$force_high_fanout && [info exists forced_high_fanout_nets] &&
+if {$force_high_fanout in {1 3 4 5} &&
+    [info exists forced_high_fanout_nets] &&
     [llength $forced_high_fanout_nets] > 0} {
-    # The in-placer VHFN pass can still skip a forced net when only a subset
-    # of its loads is timing-critical. Run the explicit physical-synthesis
-    # command as well so every selected control is replicated regardless of
-    # its provisional slack.
+    # The in-placer VHFN pass can still skip one of the additional controls
+    # selected by modes 1, 3, 4, and 5 when only a subset of its loads is
+    # timing-critical. Run the explicit physical-synthesis command for those
+    # modes so every selected control is replicated regardless of provisional
+    # slack. Mode 2 deliberately stops after the in-placer pass: on v55 its
+    # redundant address-only replication added four cells and degraded WNS
+    # from -1.279 ns to -1.356 ns.
     phys_opt_design -force_replication_on_nets $forced_high_fanout_nets
 }
 write_checkpoint -force [file join $output_dir raw_place.dcp]
