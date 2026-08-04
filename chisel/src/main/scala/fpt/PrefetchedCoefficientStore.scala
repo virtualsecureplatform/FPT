@@ -89,6 +89,21 @@ final class PrefetchedBatchedCmuxCoefficientStore(
   val fillOutstanding = RegInit(false.B)
   val fillBuffer = RegInit(0.U(bufferWidth.W))
   val fillIsDrain = RegInit(false.B)
+  val currentWindowMemory =
+    if (config.windowedRotator)
+      Some(Module(new PrefetchedCurrentWindowMemory(config, bufferCount)))
+    else None
+
+  currentWindowMemory.foreach { windowMemory =>
+    // Drain reads stream from the original register buffer and do not consume
+    // this duplicate current-window cache.
+    windowMemory.io.fillValid := memory.io.prefetchValid && !fillIsDrain
+    windowMemory.io.fillBuffer := fillBuffer
+    windowMemory.io.fillBeat := memory.io.prefetchBeat
+    windowMemory.io.fillLow := memory.io.prefetchLow
+    windowMemory.io.fillHigh := memory.io.prefetchHigh
+    windowMemory.io.fillLast := memory.io.prefetchDone && !fillIsDrain
+  }
 
   // Accept external commands at exactly the transform row-stream interval.
   // The cooldown also prevents both prefetch buffers from being consumed by
@@ -177,12 +192,20 @@ final class PrefetchedBatchedCmuxCoefficientStore(
     }
   }
 
-  readyBuffers.io.enq.valid := memory.io.prefetchDone && !fillIsDrain
+  // The BRAM-backed current-window cache serializes the two component writes.
+  // Do not expose a filled buffer until its final write commits one cycle
+  // after the accumulator's last prefetch response.
+  val fillComplete = currentWindowMemory
+    .map(windowMemory =>
+      Mux(fillIsDrain, memory.io.prefetchDone, windowMemory.io.fillCommitted)
+    )
+    .getOrElse(memory.io.prefetchDone)
+  readyBuffers.io.enq.valid := fillComplete && !fillIsDrain
   readyBuffers.io.enq.bits := fillBuffer
   when(readyBuffers.io.enq.valid) {
     assert(readyBuffers.io.enq.ready, "prefetched buffer queue overflow")
   }
-  when(memory.io.prefetchDone) {
+  when(fillComplete) {
     fillOutstanding := false.B
     when(fillIsDrain) {
       drainStreaming := true.B
@@ -407,39 +430,38 @@ final class PrefetchedBatchedCmuxCoefficientStore(
   val decompositionLevel =
     if (config.windowedRotator) RegEnable(emitLevel, advance)
     else emitLevel
-  val currentWindow = Wire(
-    Vec(2, Vec(config.forwardLanes, UInt(config.torusWidth.W)))
-  )
-  for (half <- 0 until 2) {
-    for (lane <- 0 until config.forwardLanes) {
-      val values = VecInit((0 until config.forwardBeats).map { beat =>
-        selectedPolynomial(
-          half * config.points + beat * config.forwardLanes + lane
-        )
-      })
-      currentWindow(half)(lane) := values(windowBeat)
-    }
+  val currentWindow = currentWindowMemory match {
+    case Some(windowMemory) =>
+      // The synchronous block-memory read and its embedded output register
+      // replace the physical cut that previously followed an 8,192-bit
+      // register-array mux. Both stages hold while the stream stalls.
+      windowMemory.io.readEnable := advance
+      windowMemory.io.readBuffer := windowBuffer
+      windowMemory.io.readComponent := windowComponent
+      windowMemory.io.readBeat := windowBeat
+      windowMemory.io.output
+    case None =>
+      val selected = Wire(
+        Vec(2, Vec(config.forwardLanes, UInt(config.torusWidth.W)))
+      )
+      for (half <- 0 until 2) {
+        for (lane <- 0 until config.forwardLanes) {
+          val values = VecInit((0 until config.forwardBeats).map { beat =>
+            selectedPolynomial(
+              half * config.points + beat * config.forwardLanes + lane
+            )
+          })
+          selected(half)(lane) := values(windowBeat)
+        }
+      }
+      selected
   }
   val emitCurrent =
     if (config.windowedRotator) {
-      // Keep the first current-window stage as real flip-flops beside the
-      // coefficient-buffer muxes. If this stage is part of the ordinary
-      // ShiftRegister chain, Vivado folds it into thousands of SRLs and the
-      // shared component/buffer selectors must route across the full SRL
-      // placement. Replacing one existing pipe stage with a preserved cut
-      // retains the exact emission latency while giving placement a local
-      // endpoint for every mux output.
-      require(rotatorLatency >= 1)
-      val cut = Module(
-        new PhysicalCutRegister(
-          2 * config.forwardLanes * config.torusWidth
-        )
-      )
-      cut.io.clock := clock
-      cut.io.enable := advance
-      cut.io.inputData := currentWindow.asUInt
-      val cutWindow = cut.io.outputData.asTypeOf(currentWindow)
-      ShiftRegister(cutWindow, rotatorLatency - 1, advance)
+      // The cache read supplies two registered stages. Keep the remaining
+      // stages unchanged so the subtrahend stays aligned with the rotator.
+      require(rotatorLatency >= 2)
+      ShiftRegister(currentWindow, rotatorLatency - 2, advance)
     } else dataPipe(currentWindow, advance)
 
   // Stream-width rotation: each emitted half-window reads one contiguous
