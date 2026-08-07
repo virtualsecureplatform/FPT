@@ -429,4 +429,174 @@ final class ExternalProductSpec
       }
     }
   }
+
+  /** Two identical accumulators, one with the physically registered drain.
+    *
+    * The registered variant must present exactly the reference stream one
+    * cycle later on every drain pin while every accumulation-side and
+    * bookkeeping pin stays cycle-identical, proving the pinned read-word
+    * capture changes physical structure only.
+    */
+  private final class RegisteredDrainEquivalenceHarness(
+      config: ExternalProductConfig,
+      tagWidth: Int
+  ) extends Module {
+    private def instance(registeredRead: Boolean) = Module(
+      new DoubleBufferedExternalProductAccumulator(
+        config,
+        tagWidth,
+        serializeComponents = true,
+        useSynchronousMemory = true,
+        registeredReadOutput = registeredRead
+      )
+    )
+    val reference = instance(false)
+    val registered = instance(true)
+
+    val io = IO(new Bundle {
+      val inputValid = Input(Bool())
+      val inputFirst = Input(Bool())
+      val inputTag = Input(UInt(tagWidth.W))
+      val decomposition = Input(
+        Vec(config.inputLanes, new ComplexSInt(config.spectrum.width))
+      )
+      val bootstrappingKey = Input(
+        Vec(
+          config.outputComponents,
+          Vec(
+            config.inputLanes,
+            new ComplexSInt(config.bootstrappingKey.width)
+          )
+        )
+      )
+      val inputReady = Output(Bool())
+      val done = Output(Bool())
+      val busy = Output(Bool())
+    })
+
+    for (dut <- Seq(reference, registered)) {
+      dut.io.inputValid := io.inputValid
+      dut.io.inputFirst := io.inputFirst
+      dut.io.inputTag := io.inputTag
+      dut.io.decomposition := io.decomposition
+      dut.io.bootstrappingKey := io.bootstrappingKey
+      dut.io.outputReady := true.B
+    }
+    io.inputReady := reference.io.inputReady
+    io.done := reference.io.done
+    io.busy := reference.io.busy
+
+    chisel3.assert(
+      registered.io.inputReady === reference.io.inputReady,
+      "registered drain must not disturb accumulation readiness"
+    )
+    chisel3.assert(registered.io.keyRow === reference.io.keyRow)
+    for (lane <- 0 until config.inputLanes) {
+      chisel3.assert(registered.io.pointIndex(lane) === reference.io.pointIndex(lane))
+    }
+    chisel3.assert(registered.io.done === reference.io.done)
+    when(reference.io.done) {
+      chisel3.assert(registered.io.doneTag === reference.io.doneTag)
+    }
+    chisel3.assert(registered.io.busy === reference.io.busy)
+
+    val delayedValid = RegNext(reference.io.outputValid, false.B)
+    chisel3.assert(
+      registered.io.outputValid === delayedValid,
+      "registered drain valid must lag the reference by exactly one cycle"
+    )
+    chisel3.assert(
+      registered.io.outputStart === RegNext(reference.io.outputStart, false.B)
+    )
+    val delayedFirst = RegNext(reference.io.outputFirst, false.B)
+    val delayedLast = RegNext(reference.io.outputLast, false.B)
+    val delayedComponent = RegNext(reference.io.outputComponent)
+    val delayedTag = RegNext(reference.io.outputTag)
+    val delayedOutput = RegNext(reference.io.output)
+    when(delayedValid) {
+      chisel3.assert(registered.io.outputFirst === delayedFirst)
+      chisel3.assert(registered.io.outputLast === delayedLast)
+      chisel3.assert(registered.io.outputComponent === delayedComponent)
+      chisel3.assert(registered.io.outputTag === delayedTag)
+      for (component <- 0 until config.outputComponents) {
+        for (lane <- 0 until config.outputLanes) {
+          chisel3.assert(
+            registered.io.output(component)(lane).real ===
+              delayedOutput(component)(lane).real,
+            "registered drain data must equal the delayed reference"
+          )
+          chisel3.assert(
+            registered.io.output(component)(lane).imag ===
+              delayedOutput(component)(lane).imag,
+            "registered drain data must equal the delayed reference"
+          )
+        }
+      }
+    }
+  }
+
+  it should "register the drain as a pure one-cycle delay" in {
+    val physicalConfig = ExternalProductConfig(
+      points = 8,
+      inputLanes = 2,
+      outputLanes = 1,
+      rows = 4,
+      outputComponents = 2,
+      spectrum = FixedFormat(18, 12),
+      bootstrappingKey = FixedFormat(8, 19),
+      accumulator = FixedFormat(27, 3),
+      multiplier =
+        ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+    )
+    test(
+      new RegisteredDrainEquivalenceHarness(physicalConfig, tagWidth = 2)
+    ).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      dut.io.inputValid.poke(false.B)
+      dut.io.inputFirst.poke(false.B)
+      dut.io.inputTag.poke(0.U)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+
+      var doneCount = 0
+      var cycles = 0
+      def stepChecked(): Unit = {
+        if (dut.io.done.peek().litToBoolean) { doneCount += 1 }
+        dut.clock.step()
+        cycles += 1
+        cycles should be <= 400
+      }
+
+      for (transaction <- 0 until 3) {
+        for (row <- 0 until physicalConfig.rows) {
+          for (beat <- 0 until physicalConfig.inputFrameBeats) {
+            dut.io.inputValid.poke(true.B)
+            dut.io.inputFirst.poke((row == 0 && beat == 0).B)
+            dut.io.inputTag.poke((transaction % 4).U)
+            for (lane <- 0 until physicalConfig.inputLanes) {
+              val point = beat * physicalConfig.inputLanes + lane
+              dut.io.decomposition(lane).real
+                .poke((transaction * 37 + row * 101 + point * 17 - 211).S)
+              dut.io.decomposition(lane).imag
+                .poke((transaction * 29 + row * 47 - point * 23 + 91).S)
+              for (component <- 0 until physicalConfig.outputComponents) {
+                dut.io.bootstrappingKey(component)(lane).real
+                  .poke((component * 73 + row * 13 - point * 5 + 19).S)
+                dut.io.bootstrappingKey(component)(lane).imag
+                  .poke((component * -61 + row * 7 + point * 11 - 3).S)
+              }
+            }
+            while (!dut.io.inputReady.peek().litToBoolean) { stepChecked() }
+            stepChecked()
+          }
+        }
+        dut.io.inputValid.poke(false.B)
+        dut.io.inputFirst.poke(false.B)
+      }
+
+      while (doneCount < 3) { stepChecked() }
+      dut.clock.step(4)
+      dut.io.busy.expect(false.B)
+    }
+  }
 }

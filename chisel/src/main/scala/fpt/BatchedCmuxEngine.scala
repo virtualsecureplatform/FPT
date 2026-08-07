@@ -358,6 +358,16 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
   private val base = config.engine
   private val coefficientConfig = base.coefficient
   private val externalConfig = base.externalProduct
+  // The synchronous pipelined-DSP accumulator registers its drain internally
+  // (raw UltraRAM words captured before bank/group selection), so the engine
+  // must not add its own output pipeline stage and must never stall the
+  // drain. Only the serialized inverse path provides that always-ready
+  // consumer contract.
+  private val registeredExternalRead =
+    config.useSynchronousExternalProductMemory &&
+      config.serializeInverseComponents &&
+      externalConfig.multiplier ==
+        ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
   private val contextWidth = config.contextWidth
   private val rowWidth = TransformUtil.counterWidth(externalConfig.rows)
   private val forwardTransactionBeats = externalConfig.rows *
@@ -508,7 +518,8 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
       externalConfig,
       contextWidth,
       serializeComponents = config.serializeInverseComponents,
-      useSynchronousMemory = config.useSynchronousExternalProductMemory
+      useSynchronousMemory = config.useSynchronousExternalProductMemory,
+      registeredReadOutput = registeredExternalRead
     )
   )
 
@@ -698,27 +709,7 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
       new Queue(UInt(contextWidth.W), config.batchContexts + 2)
     )
 
-    // First register both External Product components before their serialized
-    // selection. This keeps the memory clock-to-out/bank-select path separate
-    // from the component mux.
-    val externalOutputPipeline = Module(
-      new BatchedCmuxExternalOutputPipeline(
-        contextWidth,
-        externalConfig.outputComponents,
-        externalConfig.outputLanes,
-        externalConfig.accumulator.width
-      )
-    )
-    externalOutputPipeline.io.start := external.io.outputStart
-    externalOutputPipeline.io.enq.valid := external.io.outputValid
-    external.io.outputReady := externalOutputPipeline.io.enq.ready
-    externalOutputPipeline.io.enq.bits.first := external.io.outputFirst
-    externalOutputPipeline.io.enq.bits.component :=
-      external.io.outputComponent
-    externalOutputPipeline.io.enq.bits.tag := external.io.outputTag
-    externalOutputPipeline.io.enq.bits.inputs := external.io.output
-
-    // Register the selected stream again before its SLR1 -> SLR2 crossing.
+    // Register the selected stream before its SLR1 -> SLR2 crossing.
     // The start token and data are delayed together, retaining SGen's
     // one-cycle input-lead contract while removing the External Product state
     // machine from the inverse core's reset/control cone.
@@ -729,17 +720,52 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
         externalConfig.accumulator.width
       )
     )
-    inverseBoundary.io.start := externalOutputPipeline.io.outputStart
-    inverseBoundary.io.enq.valid := externalOutputPipeline.io.deq.valid
-    externalOutputPipeline.io.deq.ready := inverseBoundary.io.enq.ready
-    inverseBoundary.io.enq.bits.first :=
-      externalOutputPipeline.io.deq.bits.first
-    inverseBoundary.io.enq.bits.tag :=
-      externalOutputPipeline.io.deq.bits.tag
-    inverseBoundary.io.enq.bits.input :=
-      externalOutputPipeline.io.deq.bits.inputs(
-        externalOutputPipeline.io.deq.bits.component
+    if (registeredExternalRead) {
+      // The accumulator already presents a registered drain (raw UltraRAM
+      // words captured ahead of the bank and group selects), replacing the
+      // engine-side output pipeline stage cycle for cycle. Selecting the
+      // serialized component here still happens between two registers: the
+      // accumulator's read-word capture and the boundary's entry registers.
+      inverseBoundary.io.start := external.io.outputStart
+      inverseBoundary.io.enq.valid := external.io.outputValid
+      external.io.outputReady := inverseBoundary.io.enq.ready
+      inverseBoundary.io.enq.bits.first := external.io.outputFirst
+      inverseBoundary.io.enq.bits.tag := external.io.outputTag
+      inverseBoundary.io.enq.bits.input :=
+        external.io.output(external.io.outputComponent)
+    } else {
+      // First register both External Product components before their
+      // serialized selection. This keeps the memory clock-to-out/bank-select
+      // path separate from the component mux.
+      val externalOutputPipeline = Module(
+        new BatchedCmuxExternalOutputPipeline(
+          contextWidth,
+          externalConfig.outputComponents,
+          externalConfig.outputLanes,
+          externalConfig.accumulator.width
+        )
       )
+      externalOutputPipeline.io.start := external.io.outputStart
+      externalOutputPipeline.io.enq.valid := external.io.outputValid
+      external.io.outputReady := externalOutputPipeline.io.enq.ready
+      externalOutputPipeline.io.enq.bits.first := external.io.outputFirst
+      externalOutputPipeline.io.enq.bits.component :=
+        external.io.outputComponent
+      externalOutputPipeline.io.enq.bits.tag := external.io.outputTag
+      externalOutputPipeline.io.enq.bits.inputs := external.io.output
+
+      inverseBoundary.io.start := externalOutputPipeline.io.outputStart
+      inverseBoundary.io.enq.valid := externalOutputPipeline.io.deq.valid
+      externalOutputPipeline.io.deq.ready := inverseBoundary.io.enq.ready
+      inverseBoundary.io.enq.bits.first :=
+        externalOutputPipeline.io.deq.bits.first
+      inverseBoundary.io.enq.bits.tag :=
+        externalOutputPipeline.io.deq.bits.tag
+      inverseBoundary.io.enq.bits.input :=
+        externalOutputPipeline.io.deq.bits.inputs(
+          externalOutputPipeline.io.deq.bits.component
+        )
+    }
     inverse.io.start := inverseBoundary.io.outputStart
     inverse.io.inputValid := inverseBoundary.io.deq.valid &&
       inverse.io.inputReady

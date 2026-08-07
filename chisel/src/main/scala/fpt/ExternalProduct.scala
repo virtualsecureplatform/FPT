@@ -318,11 +318,19 @@ final class DoubleBufferedExternalProductAccumulator(
     val config: ExternalProductConfig,
     val tagWidth: Int,
     val serializeComponents: Boolean = false,
-    val useSynchronousMemory: Boolean = false
+    val useSynchronousMemory: Boolean = false,
+    val registeredReadOutput: Boolean = false
 ) extends Module {
   import TransformUtil._
   require(tagWidth >= 1)
   require(!serializeComponents || config.outputComponents >= 2)
+  require(
+    !registeredReadOutput ||
+      (useSynchronousMemory &&
+        config.multiplier ==
+          ExternalProductMultiplier.ExactPipelinedSchoolbookDsp),
+    "registered read output requires the synchronous pipelined-DSP profile"
+  )
 
   private val rowWidth = counterWidth(config.rows)
   private val inputBeatWidth = counterWidth(config.inputFrameBeats)
@@ -688,23 +696,25 @@ final class DoubleBufferedExternalProductAccumulator(
     val outputReadResponse = RegInit(false.B)
     val outputReadBank = RegInit(0.U(1.W))
     val outputReadGroup = RegInit(0.U(math.max(1, groupBits).W))
-    io.outputValid := outputHeldValid || outputReadResponse
-    io.outputFirst := io.outputValid && outputComponent === 0.U &&
-      outputBeat === 0.U
-    val outputFrameLast = io.outputValid &&
+    // The drain state machine always advances on these undelayed signals.
+    // Without registeredReadOutput they drive the io pins directly; with it
+    // the io view is the same stream delayed one cycle behind the physically
+    // registered read words.
+    val internalOutputValid = outputHeldValid || outputReadResponse
+    val internalOutputFirst = internalOutputValid &&
+      outputComponent === 0.U && outputBeat === 0.U
+    val outputFrameLast = internalOutputValid &&
       outputBeat === (config.outputFrameBeats - 1).U
-    io.outputLast := outputFrameLast &&
+    val internalOutputLast = outputFrameLast &&
       outputComponent === (config.outputComponents - 1).U
-    io.outputComponent := outputComponent
-    io.outputTag := bankTags(outputBank)
     io.done := doneReg
     io.doneTag := doneTagReg
     io.busy := inputActive || outputActive || bankReady.asUInt.orR
     doneReg := false.B
 
-    val outputFire = io.outputValid && io.outputReady
+    val outputFire = internalOutputValid && io.outputReady
     val finalOutputBeat = outputFire &&
-      (if (serializeComponents) io.outputLast else outputFrameLast)
+      (if (serializeComponents) internalOutputLast else outputFrameLast)
     releasingWriteBank := finalOutputBeat && outputBank === writeBank
     val readyNext = Wire(Vec(bufferCount, Bool()))
     readyNext := bankReady
@@ -739,7 +749,7 @@ final class DoubleBufferedExternalProductAccumulator(
       0.U,
       outputBeat + 1.U
     )
-    io.outputStart := outputReadIssue &&
+    val internalOutputStart = outputReadIssue &&
       (startingRead || nextFrameRead)
 
     val productWord = Wire(memoryWordType)
@@ -849,13 +859,34 @@ final class DoubleBufferedExternalProductAccumulator(
           )
     }
 
-    val firstPendingPreviousWord = VecInit(memoryReadWords)(
-      firstPendingWriteBank
-    ).asTypeOf(memoryWordType)
-    val pendingPreviousWord = ShiftRegister(
-      firstPendingPreviousWord,
-      remainingProductCycles
-    )
+    // UltraRAM clock-to-out consumes most of a 300 MHz cycle by itself, so
+    // the read word cannot afford even the ping-pong bank select before its
+    // first register. Capture each bank's raw word in a physically pinned
+    // register and select afterwards. The multiplier pipeline already spends
+    // idle cycles on this path, so accumulation latency is unchanged; the
+    // pinned module keeps retiming from pulling the select back through.
+    val registeredReadWords = Option.when(usePipelinedProduct) {
+      memoryReadWords.map { word =>
+        val cut = Module(new PhysicalCutRegister(memoryWordWidth))
+        cut.io.clock := clock
+        cut.io.enable := true.B
+        cut.io.inputData := word
+        cut.io.outputData
+      }
+    }
+
+    val pendingPreviousWord = registeredReadWords match {
+      case Some(words) =>
+        val previousWordBank = RegNext(firstPendingWriteBank)
+        val registeredPreviousWord = VecInit(words)(previousWordBank)
+          .asTypeOf(memoryWordType)
+        ShiftRegister(registeredPreviousWord, remainingProductCycles - 1)
+      case None =>
+        val firstPendingPreviousWord = VecInit(memoryReadWords)(
+          firstPendingWriteBank
+        ).asTypeOf(memoryWordType)
+        ShiftRegister(firstPendingPreviousWord, remainingProductCycles)
+    }
     val accumulatedWord = Wire(memoryWordType)
     for (component <- 0 until config.outputComponents) {
       for (group <- 0 until config.outputGroupsPerInputBeat) {
@@ -940,17 +971,51 @@ final class DoubleBufferedExternalProductAccumulator(
       outputReadBank := issueBank
       outputReadGroup := beatGroup(issueBeat)
     }
-    val outputWord = VecInit(memoryReadWords)(outputReadBank)
-      .asTypeOf(memoryWordType)
-    for (component <- 0 until config.outputComponents) {
-      for (lane <- 0 until config.outputLanes) {
-        val groups = VecInit(
-          (0 until config.outputGroupsPerInputBeat).map(group =>
-            outputWord(component)(group)(lane)
+    def connectOutputWord(word: Vec[Vec[Vec[ComplexSInt]]], group: UInt): Unit =
+      for (component <- 0 until config.outputComponents) {
+        for (lane <- 0 until config.outputLanes) {
+          val groups = VecInit(
+            (0 until config.outputGroupsPerInputBeat).map(g =>
+              word(component)(g)(lane)
+            )
           )
-        )
-        io.output(component)(lane) := groups(outputReadGroup)
+          io.output(component)(lane) := groups(group)
+        }
       }
+    if (registeredReadOutput) {
+      // Present the drain stream one cycle late, aligned with the pinned
+      // read-word registers, so the ping-pong bank and group selects only
+      // ever see registered data. The internal state machine above is
+      // untouched; the consumer must therefore never stall this delayed
+      // view, which BatchedCmuxEngine guarantees by pairing this profile
+      // with its always-ready inverse boundary.
+      val registeredOutputBank = RegNext(outputReadBank)
+      val registeredOutputGroup = RegNext(outputReadGroup)
+      val outputWord = VecInit(registeredReadWords.get)(registeredOutputBank)
+        .asTypeOf(memoryWordType)
+      connectOutputWord(outputWord, registeredOutputGroup)
+      io.outputValid := RegNext(internalOutputValid, false.B)
+      io.outputFirst := RegNext(internalOutputFirst, false.B)
+      io.outputLast := RegNext(internalOutputLast, false.B)
+      io.outputComponent := RegNext(outputComponent)
+      io.outputTag := RegNext(bankTags(outputBank))
+      io.outputStart := RegNext(internalOutputStart, false.B)
+      when(io.outputValid) {
+        assert(
+          io.outputReady,
+          "registered External Product drain assumes an always-ready consumer"
+        )
+      }
+    } else {
+      val outputWord = VecInit(memoryReadWords)(outputReadBank)
+        .asTypeOf(memoryWordType)
+      connectOutputWord(outputWord, outputReadGroup)
+      io.outputValid := internalOutputValid
+      io.outputFirst := internalOutputFirst
+      io.outputLast := internalOutputLast
+      io.outputComponent := outputComponent
+      io.outputTag := bankTags(outputBank)
+      io.outputStart := internalOutputStart
     }
     when(outputFire) {
       outputHeldValid := false.B

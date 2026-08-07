@@ -4,34 +4,45 @@ import chisel3._
 import chisel3.experimental.IntParam
 import chisel3.util._
 
-/** Shallow source workset with one write and several synchronous reads.
+/** Source workset with one write and several synchronous reads.
   *
   * A window request needs the three accumulator blocks covering the rotated
   * span plus the two blocks covering the unrotated forward beat. Expressing
   * those reads from a `Reg(Vec(...))` turns the complete workset into flip-
   * flops and builds a wide arbitrary selector in front of every lane. This
-  * explicitly multiported distributed memory instead lets Vivado replicate a
-  * small LUTRAM image once per read port. All ports share the packed prefetch
-  * write, so source-buffer fill still takes one beat per cycle.
+  * memory uses one block-RAM replica per read. Placement splits the three
+  * rotated-span replicas into the middle SLR and the two current-beat replicas
+  * into the forward SLR. That removes the congested LUTRAM write-enable fabric
+  * without letting all five replicas pull the coefficient datapath into the
+  * inverse SLR. The two current-beat replicas receive the same serialized
+  * write one cycle later through a register bank at the SLR boundary. Buffer
+  * hand-off already waits for that staged tail, so source-buffer fill retains
+  * one component word per cycle without changing the visible contents.
   */
 private[fpt] final class MultiportedCoefficientScratch(
     val depth: Int,
     val addressWidth: Int,
     val wordWidth: Int,
-    val readPorts: Int
+    val readPorts: Int,
+    val blockReadPorts: Int,
+    val directWritePorts: Int
 ) extends BlackBox(
       Map(
         "DEPTH" -> IntParam(depth),
         "ADDRESS_WIDTH" -> IntParam(addressWidth),
         "WORD_WIDTH" -> IntParam(wordWidth),
-        "READ_PORTS" -> IntParam(readPorts)
+        "READ_PORTS" -> IntParam(readPorts),
+        "BLOCK_READ_PORTS" -> IntParam(blockReadPorts),
+        "DIRECT_WRITE_PORTS" -> IntParam(directWritePorts)
       )
     )
     with HasBlackBoxInline {
-  require(depth >= 2 && isPow2(depth))
-  require(addressWidth == log2Ceil(depth))
+  require(depth >= 2)
+  require(addressWidth == TransformUtil.counterWidth(depth))
   require(wordWidth >= 1)
   require(readPorts >= 1)
+  require(blockReadPorts >= 0 && blockReadPorts <= readPorts)
+  require(directWritePorts >= 0 && directWritePorts <= readPorts)
 
   override def desiredName: String = "FptMultiportedCoefficientScratch"
 
@@ -51,7 +62,9 @@ private[fpt] final class MultiportedCoefficientScratch(
       |  parameter integer DEPTH = 2,
       |  parameter integer ADDRESS_WIDTH = 1,
       |  parameter integer WORD_WIDTH = 1,
-      |  parameter integer READ_PORTS = 1
+      |  parameter integer READ_PORTS = 1,
+      |  parameter integer BLOCK_READ_PORTS = 0,
+      |  parameter integer DIRECT_WRITE_PORTS = READ_PORTS
       |) (
       |  input  wire                                  clock,
       |  input  wire                                  writeEnable,
@@ -61,26 +74,84 @@ private[fpt] final class MultiportedCoefficientScratch(
       |  input  wire [READ_PORTS*ADDRESS_WIDTH-1:0]   readAddresses,
       |  output wire [READ_PORTS*WORD_WIDTH-1:0]      outputData
       |);
-      |  (* ram_style = "distributed" *)
-      |  reg [WORD_WIDTH-1:0] memory [0:DEPTH-1];
-      |  reg [WORD_WIDTH-1:0] readData [0:READ_PORTS-1];
-      |  integer readPort;
-      |
-      |  always @(posedge clock) begin
-      |    if (writeEnable)
-      |      memory[writeAddress] <= inputData;
-      |    for (readPort = 0; readPort < READ_PORTS; readPort = readPort + 1)
-      |      if (readEnables[readPort])
-      |        readData[readPort] <=
-      |          memory[readAddresses[readPort*ADDRESS_WIDTH +: ADDRESS_WIDTH]];
-      |  end
-      |
-      |  genvar outputPort;
       |  generate
-      |    for (outputPort = 0; outputPort < READ_PORTS;
-      |         outputPort = outputPort + 1) begin : pack_outputs
-      |      assign outputData[outputPort*WORD_WIDTH +: WORD_WIDTH] =
-      |        readData[outputPort];
+      |    if (DIRECT_WRITE_PORTS < READ_PORTS) begin : staged_write_boundary
+      |      reg                                  currentWriteEnable = 1'b0;
+      |      reg [ADDRESS_WIDTH-1:0]              currentWriteAddress;
+      |      (* DONT_TOUCH = "yes" *)
+      |      reg [WORD_WIDTH-1:0]                 currentWriteData;
+      |
+      |      always @(posedge clock) begin
+      |        currentWriteEnable <= writeEnable;
+      |        if (writeEnable) begin
+      |          currentWriteAddress <= writeAddress;
+      |          currentWriteData <= inputData;
+      |        end
+      |      end
+      |    end
+      |  endgenerate
+      |
+      |  genvar memoryPort;
+      |  generate
+      |    for (memoryPort = 0; memoryPort < BLOCK_READ_PORTS;
+      |         memoryPort = memoryPort + 1) begin : block_read_memories
+      |      (* ram_style = "block" *)
+      |      reg [WORD_WIDTH-1:0] memory [0:DEPTH-1];
+      |      reg [WORD_WIDTH-1:0] readData;
+      |
+      |      if (memoryPort < DIRECT_WRITE_PORTS) begin : direct_write
+      |        always @(posedge clock) begin
+      |          if (writeEnable)
+      |            memory[writeAddress] <= inputData;
+      |          if (readEnables[memoryPort])
+      |            readData <= memory[
+      |              readAddresses[memoryPort*ADDRESS_WIDTH +: ADDRESS_WIDTH]
+      |            ];
+      |        end
+      |      end else begin : staged_write
+      |        always @(posedge clock) begin
+      |          if (staged_write_boundary.currentWriteEnable)
+      |            memory[staged_write_boundary.currentWriteAddress] <=
+      |              staged_write_boundary.currentWriteData;
+      |          if (readEnables[memoryPort])
+      |            readData <= memory[
+      |              readAddresses[memoryPort*ADDRESS_WIDTH +: ADDRESS_WIDTH]
+      |            ];
+      |        end
+      |      end
+      |
+      |      assign outputData[memoryPort*WORD_WIDTH +: WORD_WIDTH] =
+      |        readData;
+      |    end
+      |    for (memoryPort = BLOCK_READ_PORTS; memoryPort < READ_PORTS;
+      |         memoryPort = memoryPort + 1) begin : distributed_read_memories
+      |      (* ram_style = "distributed" *)
+      |      reg [WORD_WIDTH-1:0] memory [0:DEPTH-1];
+      |      reg [WORD_WIDTH-1:0] readData;
+      |
+      |      if (memoryPort < DIRECT_WRITE_PORTS) begin : direct_write
+      |        always @(posedge clock) begin
+      |          if (writeEnable)
+      |            memory[writeAddress] <= inputData;
+      |          if (readEnables[memoryPort])
+      |            readData <= memory[
+      |              readAddresses[memoryPort*ADDRESS_WIDTH +: ADDRESS_WIDTH]
+      |            ];
+      |        end
+      |      end else begin : staged_write
+      |        always @(posedge clock) begin
+      |          if (staged_write_boundary.currentWriteEnable)
+      |            memory[staged_write_boundary.currentWriteAddress] <=
+      |              staged_write_boundary.currentWriteData;
+      |          if (readEnables[memoryPort])
+      |            readData <= memory[
+      |              readAddresses[memoryPort*ADDRESS_WIDTH +: ADDRESS_WIDTH]
+      |            ];
+      |        end
+      |      end
+      |
+      |      assign outputData[memoryPort*WORD_WIDTH +: WORD_WIDTH] =
+      |        readData;
       |    end
       |  endgenerate
       |endmodule
@@ -123,8 +194,12 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   private val polynomialBeatWidth = counterWidth(config.polynomialBeats)
   private val commandInterval = rows * config.forwardBeats
   private val cooldownWidth = counterWidth(commandInterval)
-  private val bufferCount = 2
-  private val bufferWidth = 1
+  // Three source buffers: one being preprocessed, one whose serialized fill
+  // is completing, and one so the next command's fill can start before the
+  // previous fill's staged tail has landed. The component-serialized write
+  // port is fully busy during command bursts, so fills must chain seamlessly.
+  private val bufferCount = 3
+  private val bufferWidth = counterWidth(bufferCount)
   // One workset emits, one is being written by the rotator pipeline, and a
   // third must be allocated when the next 16-beat preprocessing interval
   // starts. Two buffers create an every-other-command bubble because the
@@ -162,14 +237,31 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   private val outputBlocks = outputLanes / blockLanes
   private val spanBlocks = outputBlocks + 1
   private val spanSize = spanBlocks * blockLanes
-  private val sourceScratchDepth = bufferCount * memoryConfig.halfBeats
+  // Address the scratch by component instead of packing every component into
+  // one word: all five read ports want a single component per cycle, so the
+  // packed layout only multiplied the read wiring and the post-read muxing.
+  private val sourceScratchDepth =
+    bufferCount * config.components * memoryConfig.halfBeats
   private val sourceScratchAddressWidth = counterWidth(sourceScratchDepth)
-  private val sourceScratchFields = config.components * halfCount
+  private val sourceScratchFields = halfCount
   private val sourceScratchWordWidth =
     blockLanes * sourceScratchFields * config.torusWidth
   private val sourceScratchReadPorts = spanBlocks + outputBlocks
+  require(
+    config.components <= sourceScratchReadPorts,
+    "the diagnostic drain reads every component through its own scratch port"
+  )
+  require(
+    config.components * memoryConfig.halfBeats <= commandInterval,
+    "the component-serialized fill throughput must sustain the command burst"
+  )
 
-  val memory = Module(new ReplicatedAccumulatorBanks(memoryConfig))
+  val memory = Module(
+    new ReplicatedAccumulatorBanks(
+      memoryConfig,
+      prefetchStride = config.components
+    )
+  )
   memory.io.loadStart := io.loadStart
   memory.io.loadContext := io.loadContext
   memory.io.loadValid := io.loadValid
@@ -191,15 +283,18 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   val busy = RegInit(VecInit(Seq.fill(batchContexts)(false.B)))
   io.contextBusy := busy
 
-  // Pack all components and polynomial halves for one inverse-width block
-  // into a single shallow word. The paper configuration has five read ports:
-  // three consecutive blocks for rotation and two for the current beat.
+  // Pack the polynomial halves for one inverse-width block into a single
+  // shallow word, with the component in the read address. The paper
+  // configuration has five read ports: three consecutive blocks for rotation
+  // and two for the current beat, all reading one component per cycle.
   val sourceScratch = Module(
     new MultiportedCoefficientScratch(
       sourceScratchDepth,
       sourceScratchAddressWidth,
       sourceScratchWordWidth,
-      sourceScratchReadPorts
+      sourceScratchReadPorts,
+      sourceScratchReadPorts,
+      spanBlocks
     )
   )
   sourceScratch.io.clock := clock
@@ -220,38 +315,74 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   val fillOutstanding = RegInit(false.B)
   val fillBuffer = RegInit(0.U(bufferWidth.W))
   val fillIsDrain = RegInit(false.B)
+  // One queued fill keeps the scratch write port busy across back-to-back
+  // commands: the banks buffer the queued prefetch request and stream its
+  // beats seamlessly after the active fill's last beat.
+  val queuedFillValid = RegInit(false.B)
+  val queuedFillBuffer = RegInit(0.U(bufferWidth.W))
+  val queuedFillIsDrain = RegInit(false.B)
+  // The final beat's staged component words land one cycle after
+  // prefetchDone, so fill completion is observed one cycle later.
+  val fillComplete = RegNext(memory.io.prefetchDone, false.B)
 
-  private def sourceScratchAddress(buffer: UInt, beat: UInt): UInt = {
+  private def sourceScratchAddress(
+      buffer: UInt,
+      component: UInt,
+      beat: UInt
+  ): UInt = {
     val halfBeat = beat(memoryConfig.halfBeatWidth - 1, 0)
-    (buffer * memoryConfig.halfBeats.U + halfBeat)(
-      sourceScratchAddressWidth - 1,
-      0
-    )
+    ((buffer * config.components.U + component) * memoryConfig.halfBeats.U +
+      halfBeat)(sourceScratchAddressWidth - 1, 0)
   }
 
-  val sourceScratchWriteWord = Wire(
-    Vec(
-      blockLanes,
-      Vec(
-        config.components,
-        Vec(halfCount, UInt(config.torusWidth.W))
-      )
-    )
-  )
-  for (lane <- 0 until blockLanes) {
-    for (component <- 0 until config.components) {
-      sourceScratchWriteWord(lane)(component)(0) :=
-        memory.io.prefetchLow(component)(lane)
-      sourceScratchWriteWord(lane)(component)(1) :=
-        memory.io.prefetchHigh(component)(lane)
+  private def scratchWordType =
+    Vec(blockLanes, Vec(halfCount, UInt(config.torusWidth.W)))
+
+  private def prefetchComponentWord(component: Int): UInt = {
+    val word = Wire(scratchWordType)
+    for (lane <- 0 until blockLanes) {
+      word(lane)(0) := memory.io.prefetchLow(component)(lane)
+      word(lane)(1) := memory.io.prefetchHigh(component)(lane)
     }
+    word.asUInt
   }
-  sourceScratch.io.writeEnable := memory.io.prefetchValid
-  sourceScratch.io.writeAddress := sourceScratchAddress(
-    fillBuffer,
-    memory.io.prefetchBeat
+
+  // The banks deliver one prefetch beat every `components` cycles, so the
+  // single scratch write port commits one component word per cycle: the
+  // first component lands with the live beat and the remaining ones follow
+  // from this staging register in the guaranteed gap before the next beat.
+  val pendingFillWords = Reg(
+    Vec(math.max(config.components - 1, 1), UInt(sourceScratchWordWidth.W))
   )
-  sourceScratch.io.inputData := sourceScratchWriteWord.asUInt
+  val pendingFillBeat = Reg(UInt(memoryConfig.halfBeatWidth.W))
+  val pendingFillRemaining = RegInit(0.U(componentWidth.W))
+  when(memory.io.prefetchValid) {
+    assert(
+      pendingFillRemaining === 0.U,
+      "scratch fill serialization overrun"
+    )
+    for (component <- 1 until config.components) {
+      pendingFillWords(component - 1) := prefetchComponentWord(component)
+    }
+    pendingFillBeat := memory.io.prefetchBeat
+    pendingFillRemaining := (config.components - 1).U
+  }.elsewhen(pendingFillRemaining =/= 0.U) {
+    pendingFillRemaining := pendingFillRemaining - 1.U
+  }
+  val pendingFillComponent =
+    (config.components.U - pendingFillRemaining)(componentWidth - 1, 0)
+  sourceScratch.io.writeEnable := memory.io.prefetchValid ||
+    pendingFillRemaining =/= 0.U
+  sourceScratch.io.writeAddress := Mux(
+    memory.io.prefetchValid,
+    sourceScratchAddress(fillBuffer, 0.U, memory.io.prefetchBeat),
+    sourceScratchAddress(fillBuffer, pendingFillComponent, pendingFillBeat)
+  )
+  sourceScratch.io.inputData := Mux(
+    memory.io.prefetchValid,
+    prefetchComponentWord(0),
+    pendingFillWords(pendingFillComponent - 1.U)
+  )
 
   // Completed prefetches wait here until the serialized preprocessor can
   // claim a digit buffer. Source buffers remain occupied while queued.
@@ -273,7 +404,7 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
       (memory.io.updateDone &&
         memory.io.updateDoneContext === io.commandContext))
   io.commandReady := commandCooldown === 0.U &&
-    memory.io.prefetchReady && !fillOutstanding && hasFreeBuffer &&
+    memory.io.prefetchReady && !queuedFillValid && hasFreeBuffer &&
     commandAvailable
   val commandFire = io.commandValid && io.commandReady
   when(commandFire) {
@@ -491,7 +622,8 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   sourceReleaseBuffer := ShiftRegister(preprocessSourceBuffer, 2)
 
   val drainCanStart = !drainStreaming && !drainOutputValid &&
-    !fillOutstanding && memory.io.prefetchReady && hasFreeBuffer &&
+    !fillOutstanding && !queuedFillValid &&
+    memory.io.prefetchReady && hasFreeBuffer &&
     !readySourceBuffers.io.deq.valid && !preprocessActive &&
     !digitBufferOccupied.asUInt.orR && !emitLeadActive && !readValid &&
     !outputValid &&
@@ -510,10 +642,27 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     io.commandContext,
     io.drainContext
   )
+  // Promotion runs textually before allocation so a fill starting on the
+  // same edge as a completion keeps its last-connect priority.
+  when(fillComplete) {
+    when(queuedFillValid) {
+      fillBuffer := queuedFillBuffer
+      fillIsDrain := queuedFillIsDrain
+      queuedFillValid := false.B
+    }.otherwise {
+      fillOutstanding := false.B
+    }
+  }
   when(commandFire || drainFire) {
-    fillOutstanding := true.B
-    fillBuffer := freeBuffer
-    fillIsDrain := drainFire
+    when(fillOutstanding && !(fillComplete && !queuedFillValid)) {
+      queuedFillValid := true.B
+      queuedFillBuffer := freeBuffer
+      queuedFillIsDrain := drainFire
+    }.otherwise {
+      fillOutstanding := true.B
+      fillBuffer := freeBuffer
+      fillIsDrain := drainFire
+    }
     when(commandFire) {
       bufferExponent(freeBuffer) := io.exponent
     }.otherwise {
@@ -525,13 +674,16 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     assert(fillOutstanding, "prefetch data returned without an owner")
   }
 
-  readySourceBuffers.io.enq.valid := memory.io.prefetchDone && !fillIsDrain
+  // The buffer is handed to the preprocessor one cycle after prefetchDone;
+  // the earliest following scratch read then sees the committed tail write.
+  // The drain hand-off below stays on the raw edge: its early beat-zero
+  // read and the sequential beats that follow never overtake the tail.
+  readySourceBuffers.io.enq.valid := fillComplete && !fillIsDrain
   readySourceBuffers.io.enq.bits := fillBuffer
   when(readySourceBuffers.io.enq.valid) {
     assert(readySourceBuffers.io.enq.ready, "source buffer queue overflow")
   }
   when(memory.io.prefetchDone) {
-    fillOutstanding := false.B
     when(fillIsDrain) {
       drainStreaming := true.B
       drainBuffer := fillBuffer
@@ -612,6 +764,7 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   for (block <- 0 until spanBlocks) {
     preprocessScratchReadAddresses(block) := sourceScratchAddress(
       selectionSourceBuffer,
+      selectionComponent,
       spanBlockIndices(block)
     )
   }
@@ -619,6 +772,7 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     preprocessScratchReadAddresses(spanBlocks + block) :=
       sourceScratchAddress(
         selectionSourceBuffer,
+        selectionComponent,
         currentBlockIndices(block)
       )
   }
@@ -627,7 +781,7 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     Vec(sourceScratchReadPorts, UInt(sourceScratchWordWidth.W))
   )
   val sourceScratchReadWords = VecInit(
-    sourceScratchReadData.map(_.asTypeOf(chiselTypeOf(sourceScratchWriteWord)))
+    sourceScratchReadData.map(_.asTypeOf(scratchWordType))
   )
   val candidateValid = RegNext(selectionValid, false.B)
   val candidateOffset = RegNext(offset)
@@ -642,16 +796,12 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
 
   val candidateSpan = VecInit((0 until spanBlocks).flatMap { block =>
     (0 until blockLanes).map { lane =>
-      sourceScratchReadWords(block)(lane)(candidateComponent)(
-        candidateSpanHalves(block)
-      )
+      sourceScratchReadWords(block)(lane)(candidateSpanHalves(block))
     }
   })
   val candidateCurrent = VecInit((0 until outputBlocks).flatMap { block =>
     (0 until blockLanes).map { lane =>
-      sourceScratchReadWords(spanBlocks + block)(lane)(candidateComponent)(
-        candidateHalf.asUInt
-      )
+      sourceScratchReadWords(spanBlocks + block)(lane)(candidateHalf.asUInt)
     }
   })
 
@@ -885,7 +1035,10 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   }
   when(io.loadStart) {
     assert(!busy(io.loadContext), "cannot load an in-flight context")
-    assert(!fillOutstanding, "cannot load during an accumulator prefetch")
+    assert(
+      !fillOutstanding && !queuedFillValid,
+      "cannot load during an accumulator prefetch"
+    )
     assert(!readySourceBuffers.io.deq.valid, "cannot load queued source data")
     assert(!preprocessActive, "cannot load during coefficient preprocessing")
     assert(!digitBufferOccupied.asUInt.orR, "cannot load live digit data")
@@ -898,9 +1051,10 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     assert(!io.updateValid, "cannot load with inverse update data")
   }
 
-  // Read-only diagnostic drain reuses scratch read port zero while coefficient
-  // preprocessing is idle. A read-valid stage plus the elastic output register
-  // preserve one beat per cycle and keep scratch data stable across stalls.
+  // Read-only diagnostic drain reuses one scratch read port per component
+  // while coefficient preprocessing is idle. A read-valid stage plus the
+  // elastic output register preserve one beat per cycle and keep scratch
+  // data stable across stalls.
   io.drainValid := drainOutputValid
   io.drainDone := drainDoneReg
   io.drainDoneContext := drainDoneContextReg
@@ -921,18 +1075,22 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   val drainIssueHalfBeat =
     drainIssueBeat(memoryConfig.halfBeatWidth - 1, 0)
   val drainIssueFire = drainIssueActive && drainReadAdvance
-  val drainScratchAddress = sourceScratchAddress(
-    drainIssueBuffer,
-    drainIssueHalfBeat
-  )
-  val drainScratchWord = sourceScratchReadWords(0)
+  val drainScratchAddresses = VecInit((0 until config.components).map {
+    component =>
+      sourceScratchAddress(
+        drainIssueBuffer,
+        component.U,
+        drainIssueHalfBeat
+      )
+  })
 
   for (component <- 0 until config.components) {
+    val drainScratchWord = sourceScratchReadWords(component)
     for (lane <- 0 until config.inverseLanes) {
       io.drain(component)(lane) := drainOutput(component)(lane)
       when(drainOutputAdvance && drainReadValid) {
         drainOutput(component)(lane) :=
-          drainScratchWord(lane)(component)(drainReadHigh.asUInt)
+          drainScratchWord(lane)(drainReadHigh.asUInt)
       }
     }
   }
@@ -972,9 +1130,13 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     VecInit(Seq.fill(sourceScratchReadPorts)(selectionValid))
   )
   when(drainIssueFire) {
-    activeScratchReadAddresses(0) := drainScratchAddress
+    for (component <- 0 until config.components) {
+      activeScratchReadAddresses(component) := drainScratchAddresses(component)
+    }
   }
-  activeScratchReadEnables(0) := selectionValid || drainIssueFire
+  for (component <- 0 until config.components) {
+    activeScratchReadEnables(component) := selectionValid || drainIssueFire
+  }
   sourceScratch.io.readAddresses := activeScratchReadAddresses.asUInt
   sourceScratch.io.readEnables := activeScratchReadEnables.asUInt
 }

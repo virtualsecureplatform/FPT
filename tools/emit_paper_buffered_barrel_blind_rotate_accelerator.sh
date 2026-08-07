@@ -66,17 +66,20 @@ if rg -q '^module NegacyclicBarrelRotator\(' "$output_file"; then
     echo "Emitted source unexpectedly contains the full-width barrel rotator" >&2
     exit 1
 fi
-if [[ $(rg -c 'ram_style = "block"' "$output_file") != 2 ]]; then
-    echo "Emitted source does not tag exactly the key and digit memories as block RAM" >&2
+if [[ $(rg -c 'ram_style = "block"' "$output_file") != 3 ]]; then
+    echo "Emitted source does not tag exactly the key, digit, and multi-read coefficient scratch memories as block RAM" >&2
+    exit 1
+fi
+if [[ $(rg -c 'ram_style = "distributed"' "$output_file") != 1 ]]; then
+    echo "Emitted source does not retain exactly one distributed-memory fallback branch in the coefficient scratch module" >&2
     exit 1
 fi
 if [[ $(rg -c 'ram_style = "ultra"' "$output_file") != 1 ]]; then
     echo "Emitted source does not tag exactly one External Product memory as UltraRAM" >&2
     exit 1
 fi
-if [[ $(rg -c 'ram_style = "distributed"' "$output_file") != 1 ]] || \
-   ! rg -q '^module FptMultiportedCoefficientScratch #\(' "$output_file"; then
-    echo "Emitted source is missing the multi-read distributed coefficient scratchpad" >&2
+if ! rg -q '^module FptMultiportedCoefficientScratch #\(' "$output_file"; then
+    echo "Emitted source is missing the multi-read coefficient scratchpad" >&2
     exit 1
 fi
 if rg -q 'firrtl_black_box_resource_files[.]f' "$output_file"; then

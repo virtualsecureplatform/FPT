@@ -32,8 +32,8 @@ if {![string is double -strict $clock_period] || $clock_period <= 0} {
 if {![string is integer -strict $jobs] || $jobs < 1} {
     error "JOBS must be a positive integer: $jobs"
 }
-if {$floorplan_mode ni {full transforms-only digit-bram-forward rotator-forward rotator-forward-control}} {
-    error "FLOORPLAN_MODE must be full, transforms-only, digit-bram-forward, rotator-forward, or rotator-forward-control: $floorplan_mode"
+if {$floorplan_mode ni {full transforms-only digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split rotator-forward rotator-forward-control}} {
+    error "FLOORPLAN_MODE must be full, transforms-only, digit-bram-forward, digit-bram-forward-scratch-middle, digit-bram-forward-scratch-split, rotator-forward, or rotator-forward-control: $floorplan_mode"
 }
 if {![string is integer -strict $force_high_fanout] ||
     $force_high_fanout ni {0 1 2 3 4 5}} {
@@ -90,7 +90,7 @@ create_pblock pb_forward
 resize_pblock pb_forward -add CLOCKREGION_X0Y0:CLOCKREGION_X7Y3
 add_cells_to_pblock pb_forward [dict get $resolved_cells forward]
 
-if {$floorplan_mode eq "digit-bram-forward"} {
+if {$floorplan_mode in {digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split}} {
     # The packed coefficient store reads a full forward beat directly from 72
     # RAMB36s. In the unconstrained v63 placement every RAMB36 landed in SLR1,
     # while the four worst paths started at those memories and ended in the
@@ -115,6 +115,92 @@ if {$floorplan_mode eq "digit-bram-forward"} {
     add_cells_to_pblock pb_forward [concat \
         $coefficient_digit_brams $coefficient_digit_boundary_registers]
     puts "FPT_DIGIT_BRAM_FORWARD ramb36=[llength $coefficient_digit_brams] boundary_registers=[llength $coefficient_digit_boundary_registers]"
+}
+
+if {$floorplan_mode eq "digit-bram-forward-scratch-middle"} {
+    # The all-BRAM v73 scratch removed the LUTRAM hotspot, but all 285
+    # unconstrained replicas landed in SLR2 and pulled the coefficient window
+    # away from the digit memories in SLR0. The hybrid scratch uses RAMB36 only
+    # for its three span reads (171 cells). Keep those macros in SLR1: they fit
+    # alongside the existing 455 RAMB36 placement and leave one SLR crossing
+    # on both the scratch-to-window and window-to-digit boundaries.
+    set coefficient_scratch_brams [get_cells -hierarchical -quiet -filter {
+        REF_NAME == RAMB36E2 &&
+        NAME =~ */coefficients/sourceScratch/block_read_memories*
+    }]
+    if {[llength $coefficient_scratch_brams] != 171} {
+        error "Expected 171 hybrid coefficient scratch RAMB36 cells, found [llength $coefficient_scratch_brams]"
+    }
+    create_pblock pb_scratch_middle
+    resize_pblock pb_scratch_middle -add CLOCKREGION_X0Y4:CLOCKREGION_X7Y7
+    add_cells_to_pblock pb_scratch_middle $coefficient_scratch_brams
+    puts "FPT_SCRATCH_BRAM_MIDDLE ramb36=[llength $coefficient_scratch_brams]"
+}
+
+if {$floorplan_mode eq "digit-bram-forward-scratch-split"} {
+    # v73 removed the scratch LUTRAM congestion, but placing all 285 RAMB36s
+    # in SLR2 pulled the coefficient window two SLRs away from the digit RAMs.
+    # v74 kept only the three span replicas in SLR1; its two remaining LUTRAM
+    # replicas still owned as much as 25% of the congested regions. Use BRAM
+    # for all five ports, but split them at the registered consumer boundary:
+    # span reads and their 6144-bit cut stay in SLR1, while current-beat reads
+    # and their 4096-bit cut stay with the digit/forward side in SLR0.
+    set coefficient_scratch_brams [get_cells -hierarchical -quiet -filter {
+        REF_NAME == RAMB36E2 &&
+        NAME =~ */coefficients/sourceScratch/block_read_memories*
+    }]
+    if {[llength $coefficient_scratch_brams] != 285} {
+        error "Expected 285 coefficient scratch RAMB36 cells, found [llength $coefficient_scratch_brams]"
+    }
+
+    set coefficient_scratch_span_brams {}
+    set coefficient_scratch_current_brams {}
+    foreach scratch_bram $coefficient_scratch_brams {
+        set scratch_name [get_property NAME $scratch_bram]
+        if {[regexp {sourceScratch/block_read_memories\[[0-2]\]} $scratch_name]} {
+            lappend coefficient_scratch_span_brams $scratch_bram
+        } elseif {[regexp {sourceScratch/block_read_memories\[[34]\]} $scratch_name]} {
+            lappend coefficient_scratch_current_brams $scratch_bram
+        } else {
+            error "Unexpected coefficient scratch RAMB36 name: $scratch_name"
+        }
+    }
+    if {[llength $coefficient_scratch_span_brams] != 171} {
+        error "Expected 171 span-read scratch RAMB36 cells, found [llength $coefficient_scratch_span_brams]"
+    }
+    if {[llength $coefficient_scratch_current_brams] != 114} {
+        error "Expected 114 current-read scratch RAMB36 cells, found [llength $coefficient_scratch_current_brams]"
+    }
+
+    set coefficient_span_boundary_registers [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/selectedSpanBoundary/value_reg.*$}]
+    if {[llength $coefficient_span_boundary_registers] != 6144} {
+        error "Expected 6144 selected-span boundary registers, found [llength $coefficient_span_boundary_registers]"
+    }
+    set coefficient_current_boundary_registers [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/currentBoundary/value_reg.*$}]
+    if {[llength $coefficient_current_boundary_registers] != 4096} {
+        error "Expected 4096 current-beat boundary registers, found [llength $coefficient_current_boundary_registers]"
+    }
+    set coefficient_scratch_write_launch_registers [get_cells -hierarchical -quiet \
+        -regexp {^.*/coefficients/sourceScratch/staged_write_boundary[.]currentWriteData_reg.*$}]
+    if {[llength $coefficient_scratch_write_launch_registers] ni {0 4096}} {
+        error "Expected 0 or 4096 scratch-write launch registers, found [llength $coefficient_scratch_write_launch_registers]"
+    }
+
+    create_pblock pb_scratch_middle
+    resize_pblock pb_scratch_middle -add CLOCKREGION_X0Y4:CLOCKREGION_X7Y7
+    add_cells_to_pblock pb_scratch_middle [concat \
+        $coefficient_scratch_span_brams \
+        $coefficient_span_boundary_registers \
+        $coefficient_scratch_write_launch_registers]
+    add_cells_to_pblock pb_forward [concat \
+        $coefficient_scratch_current_brams \
+        $coefficient_current_boundary_registers]
+    if {[llength $coefficient_scratch_write_launch_registers] > 0} {
+        set_property USER_SLL_REG TRUE $coefficient_scratch_write_launch_registers
+    }
+    puts "FPT_SCRATCH_BRAM_SPLIT span_ramb36=[llength $coefficient_scratch_span_brams] current_ramb36=[llength $coefficient_scratch_current_brams] span_boundary_registers=[llength $coefficient_span_boundary_registers] current_boundary_registers=[llength $coefficient_current_boundary_registers] write_launch_registers=[llength $coefficient_scratch_write_launch_registers]"
 }
 
 set coefficient_advance_nets {}

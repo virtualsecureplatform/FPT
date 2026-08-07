@@ -48,8 +48,10 @@ final case class ReplicatedAccumulatorBanksConfig(
   * avoids expanding every batch context into flip-flops.
   */
 final class ReplicatedAccumulatorBanks(
-    val config: ReplicatedAccumulatorBanksConfig
+    val config: ReplicatedAccumulatorBanksConfig,
+    val prefetchStride: Int = 1
 ) extends Module {
+  require(prefetchStride >= 1)
   private val coefficient = config.coefficient
   private val contextWidth = config.contextWidth
   private val halfBeatWidth = config.halfBeatWidth
@@ -211,10 +213,21 @@ final class ReplicatedAccumulatorBanks(
   val prefetchActive = RegInit(false.B)
   val prefetchContextReg = RegInit(0.U(contextWidth.W))
   val prefetchIssueBeat = RegInit(0.U(halfBeatWidth.W))
-  io.prefetchReady := !prefetchActive && !loadActive && !loadCommitValid &&
-    !io.loadStart
+  // With a paced stride the issue engine holds one pending request so the
+  // next prefetch chains seamlessly behind the active one, keeping the beat
+  // stream gapless across back-to-back commands.
+  val pendingPrefetchValid = RegInit(false.B)
+  val pendingPrefetchContext = RegInit(0.U(contextWidth.W))
+  io.prefetchReady := (if (prefetchStride == 1) !prefetchActive
+                       else !pendingPrefetchValid) &&
+    !loadActive && !loadCommitValid && !io.loadStart
   val prefetchFire = io.prefetchStart && io.prefetchReady
-  val prefetchReadEnable = prefetchActive
+  // A stride above one paces the beat stream so a consumer with a narrower
+  // write port can commit each beat in pieces between arrivals.
+  val prefetchPhase = RegInit(0.U(TransformUtil.counterWidth(prefetchStride).W))
+  val prefetchReadEnable =
+    if (prefetchStride == 1) prefetchActive
+    else prefetchActive && prefetchPhase === 0.U
   val activePrefetchContext = prefetchContextReg
   val activePrefetchBeat = prefetchIssueBeat
   val prefetchAddress = packedAddress(
@@ -278,15 +291,47 @@ final class ReplicatedAccumulatorBanks(
       "invalid prefetch context"
     )
     assert(selectedLoaded, "prefetch targets an unloaded context")
-    prefetchContextReg := io.prefetchContext
-    prefetchActive := true.B
-    prefetchIssueBeat := 0.U
-  }.elsewhen(prefetchActive) {
-    when(prefetchIssueBeat === (config.halfBeats - 1).U) {
-      prefetchActive := false.B
+  }
+  if (prefetchStride == 1) {
+    when(prefetchFire) {
+      prefetchContextReg := io.prefetchContext
+      prefetchActive := true.B
       prefetchIssueBeat := 0.U
-    }.otherwise {
-      prefetchIssueBeat := prefetchIssueBeat + 1.U
+    }.elsewhen(prefetchActive) {
+      when(prefetchIssueBeat === (config.halfBeats - 1).U) {
+        prefetchActive := false.B
+        prefetchIssueBeat := 0.U
+      }.otherwise {
+        prefetchIssueBeat := prefetchIssueBeat + 1.U
+      }
+    }
+  } else {
+    val prefetchLastIssueSlot = prefetchActive &&
+      prefetchPhase === (prefetchStride - 1).U &&
+      prefetchIssueBeat === (config.halfBeats - 1).U
+    when(prefetchFire) {
+      pendingPrefetchValid := true.B
+      pendingPrefetchContext := io.prefetchContext
+    }
+    when(!prefetchActive || prefetchLastIssueSlot) {
+      when(pendingPrefetchValid) {
+        prefetchActive := true.B
+        prefetchContextReg := pendingPrefetchContext
+        prefetchIssueBeat := 0.U
+        prefetchPhase := 0.U
+        pendingPrefetchValid := false.B
+      }.elsewhen(prefetchLastIssueSlot) {
+        prefetchActive := false.B
+        prefetchIssueBeat := 0.U
+        prefetchPhase := 0.U
+      }
+    }.elsewhen(prefetchActive) {
+      when(prefetchPhase === (prefetchStride - 1).U) {
+        prefetchPhase := 0.U
+        prefetchIssueBeat := prefetchIssueBeat + 1.U
+      }.otherwise {
+        prefetchPhase := prefetchPhase + 1.U
+      }
     }
   }
 
