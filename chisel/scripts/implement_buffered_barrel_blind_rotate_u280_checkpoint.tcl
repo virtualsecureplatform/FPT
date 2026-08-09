@@ -32,15 +32,15 @@ if {![string is double -strict $clock_period] || $clock_period <= 0} {
 if {![string is integer -strict $jobs] || $jobs < 1} {
     error "JOBS must be a positive integer: $jobs"
 }
-if {$floorplan_mode ni {full transforms-only digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split rotator-forward rotator-forward-control}} {
-    error "FLOORPLAN_MODE must be full, transforms-only, digit-bram-forward, digit-bram-forward-scratch-middle, digit-bram-forward-scratch-split, rotator-forward, or rotator-forward-control: $floorplan_mode"
+if {$floorplan_mode ni {full transforms-only digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward rotator-forward rotator-forward-control}} {
+    error "FLOORPLAN_MODE must be full, transforms-only, digit-bram-forward, digit-bram-forward-scratch-middle, digit-bram-forward-scratch-split, digit-bram-forward-scratch-launch-forward, rotator-forward, or rotator-forward-control: $floorplan_mode"
 }
 if {![string is integer -strict $force_high_fanout] ||
     $force_high_fanout ni {0 1 2 3 4 5}} {
     error "FORCE_MODE must be 0 (none), 1 (all), 2 (output address only), 3 (output address and local pending-queue shift), 4 (output address and coefficient selectors), or 5 (output address and pending-queue output boundary): $force_high_fanout"
 }
-if {$pre_route_phys_opt ni {aggressive none}} {
-    error "PRE_ROUTE_PHYS_OPT must be aggressive or none: $pre_route_phys_opt"
+if {$pre_route_phys_opt ni {aggressive none place-probe}} {
+    error "PRE_ROUTE_PHYS_OPT must be aggressive, none, or place-probe: $pre_route_phys_opt"
 }
 
 set top BufferedBlindRotateAccelerator
@@ -90,7 +90,7 @@ create_pblock pb_forward
 resize_pblock pb_forward -add CLOCKREGION_X0Y0:CLOCKREGION_X7Y3
 add_cells_to_pblock pb_forward [dict get $resolved_cells forward]
 
-if {$floorplan_mode in {digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split}} {
+if {$floorplan_mode in {digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward}} {
     # The packed coefficient store reads a full forward beat directly from 72
     # RAMB36s. In the unconstrained v63 placement every RAMB36 landed in SLR1,
     # while the four worst paths started at those memories and ended in the
@@ -137,7 +137,7 @@ if {$floorplan_mode eq "digit-bram-forward-scratch-middle"} {
     puts "FPT_SCRATCH_BRAM_MIDDLE ramb36=[llength $coefficient_scratch_brams]"
 }
 
-if {$floorplan_mode eq "digit-bram-forward-scratch-split"} {
+if {$floorplan_mode in {digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward}} {
     # v73 removed the scratch LUTRAM congestion, but placing all 285 RAMB36s
     # in SLR2 pulled the coefficient window two SLRs away from the digit RAMs.
     # v74 kept only the three span replicas in SLR1; its two remaining LUTRAM
@@ -192,15 +192,21 @@ if {$floorplan_mode eq "digit-bram-forward-scratch-split"} {
     resize_pblock pb_scratch_middle -add CLOCKREGION_X0Y4:CLOCKREGION_X7Y7
     add_cells_to_pblock pb_scratch_middle [concat \
         $coefficient_scratch_span_brams \
-        $coefficient_span_boundary_registers \
-        $coefficient_scratch_write_launch_registers]
+        $coefficient_span_boundary_registers]
     add_cells_to_pblock pb_forward [concat \
         $coefficient_scratch_current_brams \
         $coefficient_current_boundary_registers]
     if {[llength $coefficient_scratch_write_launch_registers] > 0} {
+        if {$floorplan_mode eq "digit-bram-forward-scratch-launch-forward"} {
+            add_cells_to_pblock pb_forward \
+                $coefficient_scratch_write_launch_registers
+        } else {
+            add_cells_to_pblock pb_scratch_middle \
+                $coefficient_scratch_write_launch_registers
+        }
         set_property USER_SLL_REG TRUE $coefficient_scratch_write_launch_registers
     }
-    puts "FPT_SCRATCH_BRAM_SPLIT span_ramb36=[llength $coefficient_scratch_span_brams] current_ramb36=[llength $coefficient_scratch_current_brams] span_boundary_registers=[llength $coefficient_span_boundary_registers] current_boundary_registers=[llength $coefficient_current_boundary_registers] write_launch_registers=[llength $coefficient_scratch_write_launch_registers]"
+    puts "FPT_SCRATCH_BRAM_SPLIT mode=$floorplan_mode span_ramb36=[llength $coefficient_scratch_span_brams] current_ramb36=[llength $coefficient_scratch_current_brams] span_boundary_registers=[llength $coefficient_span_boundary_registers] current_boundary_registers=[llength $coefficient_current_boundary_registers] write_launch_registers=[llength $coefficient_scratch_write_launch_registers]"
 }
 
 set coefficient_advance_nets {}
@@ -485,6 +491,12 @@ if {$force_high_fanout in {1 3 4 5} &&
 write_checkpoint -force [file join $output_dir raw_place.dcp]
 report_design_analysis -congestion \
     -file [file join $output_dir raw_place_congestion.rpt]
+if {$pre_route_phys_opt eq "place-probe"} {
+    puts "FPT_CHECKPOINT_PLACE directive=$place_directive floorplan=$floorplan_mode force_high_fanout=$force_high_fanout wns_ns=NA"
+    puts "FPT_CHECKPOINT_STOP stage=raw_place_probe"
+    close_design
+    exit 0
+}
 report_timing_summary \
     -file [file join $output_dir raw_place_timing_summary.rpt]
 report_timing -delay_type max -max_paths 100 -nworst 1 \
