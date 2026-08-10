@@ -32,8 +32,8 @@ if {![string is double -strict $clock_period] || $clock_period <= 0} {
 if {![string is integer -strict $jobs] || $jobs < 1} {
     error "JOBS must be a positive integer: $jobs"
 }
-if {$floorplan_mode ni {full transforms-only digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward rotator-forward rotator-forward-control}} {
-    error "FLOORPLAN_MODE must be full, transforms-only, digit-bram-forward, digit-bram-forward-scratch-middle, digit-bram-forward-scratch-split, digit-bram-forward-scratch-launch-forward, rotator-forward, or rotator-forward-control: $floorplan_mode"
+if {$floorplan_mode ni {full transforms-only digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward digit-bram-forward-scratch-launch-forward-striped rotator-forward rotator-forward-control}} {
+    error "FLOORPLAN_MODE must be full, transforms-only, digit-bram-forward, digit-bram-forward-scratch-middle, digit-bram-forward-scratch-split, digit-bram-forward-scratch-launch-forward, digit-bram-forward-scratch-launch-forward-striped, rotator-forward, or rotator-forward-control: $floorplan_mode"
 }
 if {![string is integer -strict $force_high_fanout] ||
     $force_high_fanout ni {0 1 2 3 4 5}} {
@@ -90,7 +90,7 @@ create_pblock pb_forward
 resize_pblock pb_forward -add CLOCKREGION_X0Y0:CLOCKREGION_X7Y3
 add_cells_to_pblock pb_forward [dict get $resolved_cells forward]
 
-if {$floorplan_mode in {digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward}} {
+if {$floorplan_mode in {digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward digit-bram-forward-scratch-launch-forward-striped}} {
     # The packed coefficient store reads a full forward beat directly from 72
     # RAMB36s. In the unconstrained v63 placement every RAMB36 landed in SLR1,
     # while the four worst paths started at those memories and ended in the
@@ -137,7 +137,7 @@ if {$floorplan_mode eq "digit-bram-forward-scratch-middle"} {
     puts "FPT_SCRATCH_BRAM_MIDDLE ramb36=[llength $coefficient_scratch_brams]"
 }
 
-if {$floorplan_mode in {digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward}} {
+if {$floorplan_mode in {digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward digit-bram-forward-scratch-launch-forward-striped}} {
     # v73 removed the scratch LUTRAM congestion, but placing all 285 RAMB36s
     # in SLR2 pulled the coefficient window two SLRs away from the digit RAMs.
     # v74 kept only the three span replicas in SLR1; its two remaining LUTRAM
@@ -197,7 +197,7 @@ if {$floorplan_mode in {digit-bram-forward-scratch-split digit-bram-forward-scra
         $coefficient_scratch_current_brams \
         $coefficient_current_boundary_registers]
     if {[llength $coefficient_scratch_write_launch_registers] > 0} {
-        if {$floorplan_mode eq "digit-bram-forward-scratch-launch-forward"} {
+        if {$floorplan_mode in {digit-bram-forward-scratch-launch-forward digit-bram-forward-scratch-launch-forward-striped}} {
             add_cells_to_pblock pb_forward \
                 $coefficient_scratch_write_launch_registers
         } else {
@@ -354,6 +354,37 @@ if {[llength $guided_sll_registers] > 0} {
     set_property USER_SLL_REG TRUE $guided_sll_registers
 }
 puts "FPT_GUIDED_SLL_REGISTERS count=[llength $guided_sll_registers] pending=[llength $pending_guided_sll_registers] coefficient_digit=[llength $coefficient_digit_guided_sll_registers]"
+
+if {$floorplan_mode eq "digit-bram-forward-scratch-launch-forward-striped"} {
+    proc fpt_add_x_stripes {prefix cells y_low y_high parent_pblock} {
+        set sorted_cells [lsort $cells]
+        set cell_count [llength $sorted_cells]
+        for {set x 0} {$x < 8} {incr x} {
+            set pblock_name ${prefix}${x}
+            if {[llength [get_pblocks -quiet $pblock_name]] == 0} {
+                create_pblock $pblock_name
+                resize_pblock $pblock_name -add \
+                    CLOCKREGION_X${x}Y${y_low}:CLOCKREGION_X${x}Y${y_high}
+                if {$parent_pblock ne ""} {
+                    set_property PARENT [get_pblocks $parent_pblock] \
+                        [get_pblocks $pblock_name]
+                }
+            }
+            set first [expr {($cell_count * $x) / 8}]
+            set last [expr {(($cell_count * ($x + 1)) / 8) - 1}]
+            set stripe_cells [lrange $sorted_cells $first $last]
+            add_cells_to_pblock [get_pblocks $pblock_name] $stripe_cells
+            puts "FPT_X_STRIPE prefix=$prefix x=$x count=[llength $stripe_cells] y_low=$y_low y_high=$y_high"
+        }
+    }
+
+    fpt_add_x_stripes pb_pending_cross_x \
+        $pending_guided_sll_registers 4 7 ""
+    fpt_add_x_stripes pb_forward_cross_x \
+        $coefficient_digit_guided_sll_registers 0 3 pb_forward
+    fpt_add_x_stripes pb_forward_cross_x \
+        $coefficient_scratch_write_launch_registers 0 3 pb_forward
+}
 
 set forced_high_fanout_nets {}
 if {$force_high_fanout} {
