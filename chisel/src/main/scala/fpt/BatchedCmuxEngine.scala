@@ -21,7 +21,8 @@ final case class BatchedCmuxEngineConfig(
     serializeInverseComponents: Boolean = false,
     useSynchronousExternalProductMemory: Boolean = false,
     decoupledBootstrappingKey: Boolean = false,
-    pendingKeyRequestEntries: Int = 4
+    pendingKeyRequestEntries: Int = 4,
+    pendingKeyRequestGearbox2x: Boolean = false
 ) {
   require(batchContexts >= 2)
   require(
@@ -59,6 +60,141 @@ private[fpt] final class BatchedCmuxPendingKeyRequest(
   val decomposition = Vec(inputLanes, new ComplexSInt(spectrumWidth))
 }
 
+/** Two-beat related-clock gearbox for a wide SLR crossing.
+  *
+  * `fastClock` must be exactly 2x `clock`, with every slow rising edge aligned
+  * to a fast rising edge. A slow-domain word is held for a full slow cycle;
+  * the fast launch register transmits its low and high halves on consecutive
+  * fast cycles. A second fast register captures the physical crossing before
+  * the word is reconstructed. The fixed pipeline can accept one word per slow
+  * cycle. A credit counter reserves capacity in the existing downstream queue
+  * for every word still in flight, avoiding a second wide receive memory.
+  *
+  * The preserved `txLaunch` and `rxCapture` instances are the only intended
+  * wide SLR crossing. The implementation flow applies USER_SLL_REG to both
+  * banks and places them on opposite sides of the SLR0/SLR1 boundary.
+  */
+private[fpt] final class RelatedClockSllGearbox2x(
+    width: Int,
+    credits: Int
+) extends Module {
+  require(width >= 2)
+  require(credits >= 4)
+
+  private val halfWidth = (width + 1) / 2
+  private val paddedWidth = 2 * halfWidth
+  private val countWidth = log2Ceil(credits + 1)
+
+  val io = IO(new Bundle {
+    val fastClock = Input(Clock())
+    val fastReset = Input(Bool())
+    val enq = Flipped(Decoupled(UInt(width.W)))
+    val retire = Input(Bool())
+    val receiveReady = Input(Bool())
+    val outputValid = Output(Bool())
+    val output = Output(UInt(width.W))
+  })
+
+  // `outstanding` reserves slots in the downstream pending-request queue. It
+  // includes both resident words and words still in the fixed pipeline, so a
+  // downstream stall cannot overrun the deserializer without duplicating the
+  // queue's wide storage here.
+  val outstanding = RegInit(0.U(countWidth.W))
+  io.enq.ready := outstanding =/= credits.U || io.retire
+  val inputFire = io.enq.valid && io.enq.ready
+  when(inputFire =/= io.retire) {
+    outstanding := Mux(inputFire, outstanding + 1.U, outstanding - 1.U)
+  }
+
+  val paddedInput =
+    if (paddedWidth == width) io.enq.bits
+    else Cat(0.U((paddedWidth - width).W), io.enq.bits)
+  // Capture the bus every slow cycle and qualify it only with txWordValid.
+  // A RegEnable here creates one 7,689-load CE net whose producer is in the
+  // receiving SLR; that control crossing erased the routing benefit of the
+  // serialized data crossing in the first placement experiment.
+  val txWord = RegNext(paddedInput, 0.U(paddedWidth.W))
+  // This valid pulse remains stable across the two fast edges that serialize
+  // the word because updates occur only on the aligned slow edge.
+  val txWordValid = RegNext(inputFire, false.B)
+
+  val fastPhase = withClockAndReset(io.fastClock, io.fastReset) {
+    val phase = RegInit(true.B)
+    phase := !phase
+    phase
+  }
+  // The alternating phase sends one lower and one upper half per slow cycle.
+  // The tag travels with the payload so the receive boundary only accepts an
+  // assembled word when the upper half is aligned to its slow sampling edge.
+  val selectedHalf = Mux(
+    fastPhase,
+    txWord(halfWidth - 1, 0),
+    txWord(paddedWidth - 1, halfWidth)
+  )
+  val selectedUpper = !fastPhase
+  val crossingWidth = halfWidth + 2
+  // Capture the half-selector locally before approaching the Laguna column.
+  // The related slow-to-fast transfer then ends in an ordinary SLR0 slice;
+  // the potentially long route into the physical SLL launch bank is a
+  // same-clock 500 MHz register-to-register path without sibling-clock skew.
+  val preLaunch = withClock(io.fastClock) {
+    Reg(UInt(crossingWidth.W))
+  }
+  withClock(io.fastClock) {
+    preLaunch := Cat(selectedUpper, txWordValid, selectedHalf)
+  }
+  val txLaunch = Module(new PhysicalCutRegister(crossingWidth))
+  txLaunch.io.clock := io.fastClock
+  txLaunch.io.enable := true.B
+  txLaunch.io.inputData := preLaunch
+
+  // Keep the physical crossing strictly register-to-register. USER_SLL_REG
+  // is ignored if combinational logic or multi-SLR fanout appears here.
+  val rxCapture = Module(new PhysicalCutRegister(crossingWidth))
+  rxCapture.io.clock := io.fastClock
+  rxCapture.io.enable := true.B
+  rxCapture.io.inputData := txLaunch.io.outputData
+
+  val capturedHalf = rxCapture.io.outputData(halfWidth - 1, 0)
+  val capturedValid = rxCapture.io.outputData(halfWidth)
+  val capturedUpper = rxCapture.io.outputData(halfWidth + 1)
+  // This bank is overwritten on every fast edge, and captureWarmup prevents
+  // the slow side from observing it until the physical pipeline is primed.
+  // Leaving it unreset removes reset muxing and fanout from 3,845 dense bits.
+  val previousHalf = withClock(io.fastClock) {
+    Reg(UInt(halfWidth.W))
+  }
+  val captureWarmup = withClockAndReset(
+    io.fastClock,
+    io.fastReset
+  ) {
+    RegInit(0.U(3.W))
+  }
+  withClockAndReset(io.fastClock, io.fastReset) {
+    when(captureWarmup =/= 5.U) {
+      captureWarmup := captureWarmup + 1.U
+    }
+    // This bank deliberately writes on every fast edge. Avoiding a conditional
+    // update removes a 3,845-load 500 MHz CE net.
+  }
+  withClock(io.fastClock) {
+    previousHalf := capturedHalf
+  }
+
+  // The added pre-launch stage shifts the receive stream by one fast edge. At
+  // an aligned slow edge rxCapture presents the low half and previousHalf the
+  // preceding upper half. Assemble directly into the queue's existing slow
+  // input boundary; a separate 7,690-bit fast holding bank and toggle
+  // synchronizer only add congestion under the related-clock contract.
+  io.outputValid :=
+    captureWarmup === 5.U && capturedValid && !capturedUpper
+  io.output := Cat(previousHalf, capturedHalf)(width - 1, 0)
+  when(io.outputValid) {
+    assert(io.receiveReady, "related-clock gearbox exhausted queue credits")
+  }
+  assert(!(io.retire && outstanding === 0.U))
+}
+
 /** Elastic boundary registers and a configurable FIFO between the transforms.
   *
   * The input payload register captures on local readiness, independent of
@@ -81,7 +217,8 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
     beatWidth: Int,
     inputLanes: Int,
     spectrumWidth: Int,
-    requestEntries: Int = 4
+    requestEntries: Int = 4,
+    useGearbox2x: Boolean = false
 ) extends Module {
   require(requestEntries >= 1 && isPow2(requestEntries))
 
@@ -93,9 +230,40 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
     spectrumWidth
   )
   val io = IO(new Bundle {
+    val fastClock =
+      if (useGearbox2x) Some(Input(Clock())) else None
+    val fastReset =
+      if (useGearbox2x) Some(Input(Bool())) else None
     val enq = Flipped(Decoupled(requestType))
     val deq = Decoupled(requestType)
   })
+
+  val ingress = Wire(Decoupled(requestType))
+  val gearbox =
+    if (useGearbox2x)
+      Some(
+        Module(
+          new RelatedClockSllGearbox2x(
+            requestType.getWidth,
+            requestEntries + 3
+          )
+        )
+      )
+    else None
+  if (useGearbox2x) {
+    gearbox.get.io.fastClock := io.fastClock.get
+    gearbox.get.io.fastReset := io.fastReset.get
+    gearbox.get.io.enq.valid := io.enq.valid
+    gearbox.get.io.enq.bits := io.enq.bits.asUInt
+    io.enq.ready := gearbox.get.io.enq.ready
+    ingress.valid := gearbox.get.io.outputValid
+    ingress.bits := gearbox.get.io.output.asTypeOf(requestType)
+    gearbox.get.io.receiveReady := ingress.ready
+  } else {
+    ingress.valid := io.enq.valid
+    ingress.bits := io.enq.bits
+    io.enq.ready := ingress.ready
+  }
 
   val inputBoundary = Reg(requestType)
   val inputBoundaryValid = RegInit(false.B)
@@ -129,6 +297,9 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
     outputBoundary0
   )
   val outputDeqFire = outputBoundaryValid && io.deq.ready
+  if (useGearbox2x) {
+    gearbox.get.io.retire := outputDeqFire
+  }
   // Do not refill a full output FIFO from a same-cycle dequeue. Its second
   // resident word covers that conservative cycle without interrupting the
   // consumer, and the wide write enables remain independent of io.deq.ready.
@@ -181,15 +352,15 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
   // Do not use same-cycle downstream readiness here. If both the SRL and
   // input boundary are full, hold the boundary word until the registered
   // count exposes a slot, then advertise that local credit.
-  io.enq.ready := !inputBoundaryValid || shiftReady
+  ingress.ready := !inputBoundaryValid || shiftReady
 
   // When ready is high, an invalid upstream beat can safely overwrite the
   // payload because its valid bit is cleared at the same edge. Avoiding valid
   // in this clock enable is what keeps the single crossing control bit from
   // becoming a 7,000-plus-load net after placement.
-  when(io.enq.ready) {
-    inputBoundary := io.enq.bits
-    inputBoundaryValid := io.enq.valid
+  when(ingress.ready) {
+    inputBoundary := ingress.bits
+    inputBoundaryValid := ingress.valid
   }.elsewhen(enqFire) {
     inputBoundaryValid := false.B
   }
@@ -380,6 +551,10 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
   )
 
   val io = IO(new Bundle {
+    val pendingFastClock =
+      if (config.pendingKeyRequestGearbox2x) Some(Input(Clock())) else None
+    val pendingFastReset =
+      if (config.pendingKeyRequestGearbox2x) Some(Input(Bool())) else None
     val loadStart = Input(Bool())
     val loadContext = Input(UInt(contextWidth.W))
     val loadValid = Input(Bool())
@@ -629,9 +804,14 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
         TransformUtil.counterWidth(externalConfig.inputFrameBeats),
         externalConfig.inputLanes,
         externalConfig.spectrum.width,
-        config.pendingKeyRequestEntries
+        config.pendingKeyRequestEntries,
+        config.pendingKeyRequestGearbox2x
       )
     )
+    if (config.pendingKeyRequestGearbox2x) {
+      pendingRequests.io.fastClock.get := io.pendingFastClock.get
+      pendingRequests.io.fastReset.get := io.pendingFastReset.get
+    }
 
     io.keyReadRequestValid := forward.io.outputValid &&
       forwardTags.io.deq.valid && pendingRequests.io.enq.ready

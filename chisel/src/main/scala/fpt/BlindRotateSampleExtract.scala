@@ -21,6 +21,10 @@ final class BatchedBlindRotateSampleExtractEngine(
   private val rowWidth = TransformUtil.counterWidth(external.rows)
 
   val io = IO(new Bundle {
+    val pendingFastClock =
+      if (config.cmux.pendingKeyRequestGearbox2x) Some(Input(Clock())) else None
+    val pendingFastReset =
+      if (config.cmux.pendingKeyRequestGearbox2x) Some(Input(Bool())) else None
     val inputStart = Input(Bool())
     val inputStartReady = Output(Bool())
     val inputContext = Input(UInt(contextWidth.W))
@@ -97,6 +101,10 @@ final class BatchedBlindRotateSampleExtractEngine(
   })
 
   private val blindRotate = Module(new BatchedBlindRotateEngine(config))
+  if (config.cmux.pendingKeyRequestGearbox2x) {
+    blindRotate.io.pendingFastClock.get := io.pendingFastClock.get
+    blindRotate.io.pendingFastReset.get := io.pendingFastReset.get
+  }
   private val sampleExtract = Module(
     new SampleExtractIndexZero(
       SampleExtractConfig(

@@ -63,9 +63,27 @@ final class BufferedBlindRotateAccelerator(
     val done = Output(Bool())
   })
 
-  val engine = Module(
-    new BufferedBatchedBlindRotateSampleExtractEngine(config)
-  )
+  private val pendingClock =
+    if (blindConfig.cmux.pendingKeyRequestGearbox2x) {
+      val generator = Module(new U280PendingClockDoubler250To500)
+      generator.io.clockIn := clock
+      generator.io.resetIn := reset.asBool
+      Some(generator)
+    } else None
+  val engine = if (blindConfig.cmux.pendingKeyRequestGearbox2x) {
+    withClockAndReset(
+      pendingClock.get.io.slowClock,
+      pendingClock.get.io.slowReset
+    ) {
+      Module(new BufferedBatchedBlindRotateSampleExtractEngine(config))
+    }
+  } else {
+    Module(new BufferedBatchedBlindRotateSampleExtractEngine(config))
+  }
+  if (blindConfig.cmux.pendingKeyRequestGearbox2x) {
+    engine.io.pendingFastClock.get := pendingClock.get.io.fastClock
+    engine.io.pendingFastReset.get := pendingClock.get.io.fastReset
+  }
 
   engine.io.inputStart := io.inputStart
   io.inputStartReady := engine.io.inputStartReady

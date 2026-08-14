@@ -56,6 +56,10 @@ final class BatchedBlindRotateEngine(
   private val rowWidth = counterWidth(external.rows)
 
   val io = IO(new Bundle {
+    val pendingFastClock =
+      if (cmuxConfig.pendingKeyRequestGearbox2x) Some(Input(Clock())) else None
+    val pendingFastReset =
+      if (cmuxConfig.pendingKeyRequestGearbox2x) Some(Input(Bool())) else None
     val inputStart = Input(Bool())
     val inputStartReady = Output(Bool())
     val inputContext = Input(UInt(contextWidth.W))
@@ -139,6 +143,10 @@ final class BatchedBlindRotateEngine(
   })
 
   val cmux = Module(new BatchedCmuxEngine(cmuxConfig))
+  if (cmuxConfig.pendingKeyRequestGearbox2x) {
+    cmux.io.pendingFastClock.get := io.pendingFastClock.get
+    cmux.io.pendingFastReset.get := io.pendingFastReset.get
+  }
   val exponentMemory = SyncReadMem(
     config.batchContexts * config.domainDimension,
     UInt(config.exponentWidth.W)

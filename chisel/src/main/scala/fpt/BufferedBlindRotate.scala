@@ -55,6 +55,14 @@ final class BufferedBatchedBlindRotateSampleExtractEngine(
   private val rowWidth = TransformUtil.counterWidth(external.rows)
 
   val io = IO(new Bundle {
+    val pendingFastClock =
+      if (blindConfig.cmux.pendingKeyRequestGearbox2x)
+        Some(Input(Clock()))
+      else None
+    val pendingFastReset =
+      if (blindConfig.cmux.pendingKeyRequestGearbox2x)
+        Some(Input(Bool()))
+      else None
     val inputStart = Input(Bool())
     val inputStartReady = Output(Bool())
     val inputContext = Input(UInt(contextWidth.W))
@@ -136,6 +144,10 @@ final class BufferedBatchedBlindRotateSampleExtractEngine(
   val blindRotate = Module(
     new BatchedBlindRotateSampleExtractEngine(blindConfig)
   )
+  if (blindConfig.cmux.pendingKeyRequestGearbox2x) {
+    blindRotate.io.pendingFastClock.get := io.pendingFastClock.get
+    blindRotate.io.pendingFastReset.get := io.pendingFastReset.get
+  }
   val keyBuffer = Module(
     new BootstrappingKeyPingPongBuffer(config.keyBuffer)
   )

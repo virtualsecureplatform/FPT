@@ -39,13 +39,12 @@ if {![string is integer -strict $force_high_fanout] ||
     $force_high_fanout ni {0 1 2 3 4 5}} {
     error "FORCE_MODE must be 0 (none), 1 (all), 2 (output address only), 3 (output address and local pending-queue shift), 4 (output address and coefficient selectors), or 5 (output address and pending-queue output boundary): $force_high_fanout"
 }
-if {$pre_route_phys_opt ni {aggressive none place-probe}} {
-    error "PRE_ROUTE_PHYS_OPT must be aggressive, none, or place-probe: $pre_route_phys_opt"
+if {$pre_route_phys_opt ni {aggressive none place-probe place-timing-probe}} {
+    error "PRE_ROUTE_PHYS_OPT must be aggressive, none, place-probe, or place-timing-probe: $pre_route_phys_opt"
 }
 
 set top BufferedBlindRotateAccelerator
 set clock_port clock
-set clock_root BUFGCE_X0Y144
 set input_checkpoint [file normalize $input_checkpoint]
 set output_dir [file normalize $output_dir]
 if {![file isfile $input_checkpoint]} {
@@ -56,10 +55,11 @@ set_param general.maxThreads $jobs
 
 open_checkpoint $input_checkpoint
 fpt_require_u280_clock $clock_period $clock_port
-if {[llength [get_sites -quiet $clock_root]] != 1} {
-    error "Clock-root site $clock_root is not present on the checkpoint part"
-}
-set_property HD.CLK_SRC $clock_root [get_ports $clock_port]
+set accelerator_clock \
+    [fpt_require_u280_related_slow_clock $clock_period]
+set pending_fast_clock \
+    [fpt_require_u280_related_fast_clock $clock_period]
+set has_pending_fast_clock [expr {$pending_fast_clock ne ""}]
 
 set floorplan_cells [dict create \
     forward {engine/blindRotate/blindRotate/cmux/forward} \
@@ -86,9 +86,99 @@ dict for {name path} $floorplan_cells {
     dict set resolved_cells $name [lindex $cells 0]
 }
 
+set pending_gearbox_tx_word_registers [get_cells -hierarchical -quiet \
+    -regexp {^.*/pendingRequests/gearbox/txWord_reg.*$}]
+set pending_gearbox_pre_launch_registers [get_cells -hierarchical -quiet \
+    -regexp {^.*/pendingRequests/gearbox/preLaunch_reg.*$}]
+set pending_gearbox_tx_launch_registers [get_cells -hierarchical -quiet \
+    -regexp {^.*/pendingRequests/gearbox/txLaunch/value_reg.*$}]
+set pending_gearbox_rx_capture_registers [get_cells -hierarchical -quiet \
+    -regexp {^.*/pendingRequests/gearbox/rxCapture/value_reg.*$}]
+set pending_gearbox_crossing_count \
+    [llength $pending_gearbox_tx_launch_registers]
+if {$has_pending_fast_clock} {
+    if {[llength $pending_gearbox_tx_word_registers] < 7689} {
+        error "Expected at least 7689 pending gearbox holding registers, found [llength $pending_gearbox_tx_word_registers]"
+    }
+    if {[llength $pending_gearbox_pre_launch_registers] != $pending_gearbox_crossing_count} {
+        error "Expected $pending_gearbox_crossing_count pending gearbox pre-launch registers, found [llength $pending_gearbox_pre_launch_registers]"
+    }
+    if {$pending_gearbox_crossing_count < 3846 || \
+        [llength $pending_gearbox_rx_capture_registers] != $pending_gearbox_crossing_count} {
+        error "Unexpected pending gearbox SLL banks: tx=$pending_gearbox_crossing_count rx=[llength $pending_gearbox_rx_capture_registers]"
+    }
+    set_property USER_SLL_REG TRUE [concat \
+        $pending_gearbox_tx_launch_registers \
+        $pending_gearbox_rx_capture_registers]
+    puts "FPT_PENDING_GEARBOX crossing_bits=$pending_gearbox_crossing_count tx_word=[llength $pending_gearbox_tx_word_registers] user_sll_tx=$pending_gearbox_crossing_count user_sll_rx=[llength $pending_gearbox_rx_capture_registers]"
+
+}
+
 create_pblock pb_forward
 resize_pblock pb_forward -add CLOCKREGION_X0Y0:CLOCKREGION_X7Y3
 add_cells_to_pblock pb_forward [dict get $resolved_cells forward]
+if {$has_pending_fast_clock} {
+    add_cells_to_pblock pb_forward [concat \
+        $pending_gearbox_tx_word_registers \
+        $pending_gearbox_pre_launch_registers \
+        $pending_gearbox_tx_launch_registers]
+    create_pblock pb_pending_gearbox_rx
+    resize_pblock pb_pending_gearbox_rx -add \
+        CLOCKREGION_X0Y4:CLOCKREGION_X7Y7
+    add_cells_to_pblock pb_pending_gearbox_rx \
+        $pending_gearbox_rx_capture_registers
+
+    # Co-locate each serialized lane with both halves of its slow holding word
+    # and use the matching stripe for its receive register. This distributes
+    # the new flop banks across the boundary and bounds the 2 ns launch path.
+    for {set x 0} {$x < 8} {incr x} {
+        set tx_stripe {}
+        foreach cell $pending_gearbox_tx_word_registers {
+            set cell_name [get_property NAME $cell]
+            if {![regexp {\[([0-9]+)\]$} $cell_name -> bit]} {
+                error "Unexpected pending gearbox holding-register name: $cell_name"
+            }
+            set lane [expr {$bit < 3845 ? $bit : $bit - 3845}]
+            if {[expr {$lane % 8}] == $x} { lappend tx_stripe $cell }
+        }
+        foreach cell $pending_gearbox_tx_launch_registers {
+            set cell_name [get_property NAME $cell]
+            if {![regexp {\[([0-9]+)\]$} $cell_name -> bit]} {
+                error "Unexpected pending gearbox launch-register name: $cell_name"
+            }
+            if {[expr {$bit % 8}] == $x} { lappend tx_stripe $cell }
+        }
+        foreach cell $pending_gearbox_pre_launch_registers {
+            set cell_name [get_property NAME $cell]
+            if {![regexp {\[([0-9]+)\]$} $cell_name -> bit]} {
+                error "Unexpected pending gearbox pre-launch-register name: $cell_name"
+            }
+            if {[expr {$bit % 8}] == $x} { lappend tx_stripe $cell }
+        }
+        set rx_stripe {}
+        foreach cell $pending_gearbox_rx_capture_registers {
+            set cell_name [get_property NAME $cell]
+            if {![regexp {\[([0-9]+)\]$} $cell_name -> bit]} {
+                error "Unexpected pending gearbox capture-register name: $cell_name"
+            }
+            if {[expr {$bit % 8}] == $x} { lappend rx_stripe $cell }
+        }
+        create_pblock pb_pending_gearbox_tx_x${x}
+        resize_pblock pb_pending_gearbox_tx_x${x} -add \
+            CLOCKREGION_X${x}Y0:CLOCKREGION_X${x}Y3
+        set_property PARENT [get_pblocks pb_forward] \
+            [get_pblocks pb_pending_gearbox_tx_x${x}]
+        add_cells_to_pblock pb_pending_gearbox_tx_x${x} $tx_stripe
+
+        create_pblock pb_pending_gearbox_rx_x${x}
+        resize_pblock pb_pending_gearbox_rx_x${x} -add \
+            CLOCKREGION_X${x}Y4:CLOCKREGION_X${x}Y7
+        set_property PARENT [get_pblocks pb_pending_gearbox_rx] \
+            [get_pblocks pb_pending_gearbox_rx_x${x}]
+        add_cells_to_pblock pb_pending_gearbox_rx_x${x} $rx_stripe
+        puts "FPT_PENDING_GEARBOX_STRIPE x=$x tx=[llength $tx_stripe] rx=[llength $rx_stripe]"
+    }
+}
 
 if {$floorplan_mode in {digit-bram-forward digit-bram-forward-scratch-middle digit-bram-forward-scratch-split digit-bram-forward-scratch-launch-forward digit-bram-forward-scratch-launch-forward-striped}} {
     # The packed coefficient store reads a full forward beat directly from 72
@@ -263,13 +353,15 @@ if {$floorplan_mode eq "full"} {
     set middle_cells [list \
         [dict get $resolved_cells coefficients] \
         [dict get $resolved_cells external] \
-        [dict get $resolved_cells pending_requests] \
         [dict get $resolved_cells forward_tags] \
         [dict get $resolved_cells inverse_boundary] \
         [dict get $resolved_cells inverse_tags] \
         [dict get $resolved_cells key_buffer] \
         [dict get $resolved_cells key_requests] \
         [dict get $resolved_cells sample_extract]]
+    if {!$has_pending_fast_clock} {
+        lappend middle_cells [dict get $resolved_cells pending_requests]
+    }
     if {[dict exists $resolved_cells external_output]} {
         lappend middle_cells [dict get $resolved_cells external_output]
     }
@@ -349,11 +441,13 @@ if {[llength $coefficient_digit_guided_sll_registers] ni {0 2560}} {
 }
 set guided_sll_registers [concat \
     $pending_guided_sll_registers \
+    $pending_gearbox_tx_launch_registers \
+    $pending_gearbox_rx_capture_registers \
     $coefficient_digit_guided_sll_registers]
 if {[llength $guided_sll_registers] > 0} {
     set_property USER_SLL_REG TRUE $guided_sll_registers
 }
-puts "FPT_GUIDED_SLL_REGISTERS count=[llength $guided_sll_registers] pending=[llength $pending_guided_sll_registers] coefficient_digit=[llength $coefficient_digit_guided_sll_registers]"
+puts "FPT_GUIDED_SLL_REGISTERS count=[llength $guided_sll_registers] pending=[llength $pending_guided_sll_registers] gearbox_tx=[llength $pending_gearbox_tx_launch_registers] gearbox_rx=[llength $pending_gearbox_rx_capture_registers] coefficient_digit=[llength $coefficient_digit_guided_sll_registers]"
 
 if {$floorplan_mode eq "digit-bram-forward-scratch-launch-forward-striped"} {
     proc fpt_add_x_stripes {prefix cells y_low y_high parent_pblock} {
@@ -539,6 +633,41 @@ if {[llength $placed_paths] > 0} {
         [get_property SLACK [lindex $placed_paths 0]]]
 }
 puts "FPT_CHECKPOINT_PLACE directive=$place_directive floorplan=$floorplan_mode force_high_fanout=$force_high_fanout wns_ns=$placed_wns"
+
+if {$has_pending_fast_clock} {
+    foreach {label from_clock to_clock} [list \
+        slow_slow $accelerator_clock $accelerator_clock \
+        fast_fast $pending_fast_clock $pending_fast_clock \
+        slow_fast $accelerator_clock $pending_fast_clock \
+        fast_slow $pending_fast_clock $accelerator_clock] {
+        set clock_paths [get_timing_paths -delay_type max -max_paths 1 -nworst 1 \
+            -from [get_clocks $from_clock] -to [get_clocks $to_clock]]
+        if {[llength $clock_paths] == 1} {
+            set clock_path [lindex $clock_paths 0]
+            puts "FPT_CHECKPOINT_CLOCK_PATH label=$label slack_ns=[format %.3f [get_property SLACK $clock_path]] start=[get_property STARTPOINT_PIN $clock_path] end=[get_property ENDPOINT_PIN $clock_path]"
+        }
+    }
+
+    set pending_gearbox_tx_laguna 0
+    set pending_gearbox_rx_laguna 0
+    foreach cell $pending_gearbox_tx_launch_registers {
+        if {[string match "LAGUNA*" [get_property SITE $cell]]} {
+            incr pending_gearbox_tx_laguna
+        }
+    }
+    foreach cell $pending_gearbox_rx_capture_registers {
+        if {[string match "LAGUNA*" [get_property SITE $cell]]} {
+            incr pending_gearbox_rx_laguna
+        }
+    }
+    puts "FPT_PENDING_GEARBOX_PLACED tx_laguna=$pending_gearbox_tx_laguna/[llength $pending_gearbox_tx_launch_registers] rx_laguna=$pending_gearbox_rx_laguna/[llength $pending_gearbox_rx_capture_registers]"
+}
+
+if {$pre_route_phys_opt eq "place-timing-probe"} {
+    puts "FPT_CHECKPOINT_STOP stage=raw_place_probe"
+    close_design
+    exit 0
+}
 
 # Run the normal post-placement physical optimization before asking the
 # router to absorb the remaining delay.  On this dense three-SLR design the

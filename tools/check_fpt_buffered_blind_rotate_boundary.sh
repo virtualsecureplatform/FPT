@@ -24,7 +24,7 @@ fi
 # not repeat input/output or the range.  Retain both while walking the ANSI
 # header and count every identifier independently.
 read -r top_ports top_port_bits key_ports key_port_bits key_data_ports \
-    key_data_bits input_ports input_port_bits < <(
+    key_data_bits input_ports input_port_bits fast_clock_ports < <(
     awk '
         /^module BufferedBlindRotateAccelerator\(/ {
             inside = 1
@@ -68,12 +68,15 @@ read -r top_ports top_port_bits key_ports key_port_bits key_data_ports \
                     input_ports++
                     input_bits += width
                 }
+                if (name == "io_pendingFastClock") {
+                    fast_clock_ports++
+                }
             }
         }
         END {
             print top_ports + 0, top_bits + 0, key_ports + 0, key_bits + 0,
                 key_data_ports + 0, key_data_bits + 0, input_ports + 0,
-                input_bits + 0
+                input_bits + 0, fast_clock_ports + 0
         }
     ' "$source_file"
 )
@@ -84,6 +87,13 @@ cache_modules=$(rg -c '^module BootstrappingKeyPingPongBuffer\(' \
     "$source_file" || true)
 cache_instances=$(rg -c '^  BootstrappingKeyPingPongBuffer keyBuffer \(' \
     "$source_file" || true)
+clock_doubler_modules=$(rg -c \
+    '^module FptU280PendingClockDoubler250To500 \(' \
+    "$source_file" || true)
+clock_doubler_instances=$(rg -c \
+    '^  FptU280PendingClockDoubler250To500 pendingClock \(' \
+    "$source_file" || true)
+mmcm_instances=$(rg -c '^  MMCME4_ADV #\(' "$source_file" || true)
 memory_declarations=$(rg -c \
     "^  \\(\\* ram_style = \"block\" \\*\\) reg \
 \\[$((FPT_PROFILE_BK_WIDTH * 512 - 1)):0\\] Memory\\[0:31\\];" \
@@ -101,7 +111,12 @@ done
 expected_key_data_bits=$((32 * FPT_PROFILE_BK_WIDTH))
 expected_key_port_bits=$((889 + expected_key_data_bits - 864))
 expected_top_port_bits=$((1012 + expected_key_data_bits - 864))
-if [[ $top_modules != 1 || $top_ports != 60 || \
+expected_top_ports=60
+if [[ $fast_clock_ports != 0 ]]; then
+    echo "Pending gearbox clock must be generated internally; found $fast_clock_ports external ports" >&2
+    exit 1
+fi
+if [[ $top_modules != 1 || $top_ports != "$expected_top_ports" || \
       $top_port_bits != "$expected_top_port_bits" || \
       $key_ports != 39 || $key_port_bits != "$expected_key_port_bits" || \
       $key_data_ports != 32 || \
@@ -111,8 +126,9 @@ if [[ $top_modules != 1 || $top_ports != 60 || \
     exit 1
 fi
 if [[ $cache_modules != 1 || $cache_instances != 1 || \
-      $memory_declarations != 1 ]]; then
-    echo "Unexpected FPT key-cache structure: cache_modules=$cache_modules cache_instances=$cache_instances memory_declarations=$memory_declarations" >&2
+      $clock_doubler_modules != 1 || $clock_doubler_instances != 1 || \
+      $mmcm_instances != 1 || $memory_declarations != 1 ]]; then
+    echo "Unexpected FPT physical structure: cache_modules=$cache_modules cache_instances=$cache_instances clock_doubler_modules=$clock_doubler_modules clock_doubler_instances=$clock_doubler_instances mmcm_instances=$mmcm_instances memory_declarations=$memory_declarations" >&2
     exit 1
 fi
 
@@ -129,6 +145,9 @@ write_metrics() {
     printf 'key_component_bits\t%s\n' "$FPT_PROFILE_BK_WIDTH"
     printf 'top_ports\t%s\n' "$top_ports"
     printf 'top_port_bits\t%s\n' "$top_port_bits"
+    printf 'pending_fast_clock_ports\t%s\n' "$fast_clock_ports"
+    printf 'pending_clock_doubler_instances\t%s\n' "$clock_doubler_instances"
+    printf 'pending_mmcm_instances\t%s\n' "$mmcm_instances"
     printf 'key_data_ports\t%s\n' "$key_data_ports"
     printf 'key_data_bits\t%s\n' "$key_data_bits"
     printf 'key_interface_bits\t%s\n' "$key_port_bits"

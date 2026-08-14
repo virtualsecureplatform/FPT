@@ -322,6 +322,16 @@ vivado -mode batch \
   build/vivado-buffered-barrel-blind-rotate-300mhz 3.333
 ```
 
+The paper emitter keeps a single 250 MHz reference-clock interface. An
+UltraScale+ MMCM generates compensated 250 MHz and 500 MHz sibling clocks for
+the main accelerator and a two-beat gearbox,
+reducing the pending-key-request SLR payload from 7,689 to 3,847 wires without
+an unsafe external related-clock assumption. Fast-domain reset remains
+asserted until the MMCM locks and is then released synchronously. The flow
+adds a local 500 MHz pre-launch stage, then places the preserved launch and
+capture banks on opposite sides of the SLR0/SLR1 boundary and marks both banks
+`USER_SLL_REG`.
+
 The flow uses a middle-SLR clock root, keeps the two transforms in separate
 SLRs, co-locates the selector, External Product, and key cache in the middle
 SLR, and rejects negative setup slack, incomplete routes, or serious DRC

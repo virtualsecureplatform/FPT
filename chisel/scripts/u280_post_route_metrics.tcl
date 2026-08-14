@@ -32,6 +32,50 @@ proc fpt_require_u280_clock {clock_period clock_port} {
     return $implemented_period
 }
 
+# Validate the MMCM-generated 2x gearbox clock as a genuinely related timing
+# clock. Selecting the unique generated 2x clock by timing properties avoids
+# depending on hierarchy names that synthesis may legally flatten or rebuild.
+proc fpt_require_u280_mmcm_clock {expected_period output_pin_name} {
+    set matching_clocks {}
+    foreach candidate [get_clocks -quiet] {
+        set candidate_period [get_property PERIOD $candidate]
+        if {![get_property IS_GENERATED $candidate] || \
+            ![string is double -strict $candidate_period] || \
+            abs($candidate_period - $expected_period) > 0.0005} {
+            continue
+        }
+        foreach source_pin [get_property SOURCE_PINS $candidate] {
+            if {[file tail $source_pin] eq $output_pin_name} {
+                lappend matching_clocks $candidate
+            }
+        }
+    }
+    if {[llength $matching_clocks] != 1} {
+        error "Expected one $expected_period ns MMCM $output_pin_name clock, found [llength $matching_clocks]"
+    }
+    set generated_clock [lindex $matching_clocks 0]
+    set master_clock [get_property MASTER_CLOCK $generated_clock]
+    if {[get_property NAME $master_clock] ne "ap_clk"} {
+        error "MMCM $output_pin_name clock is not generated from ap_clk"
+    }
+    set slow_waveform [get_property WAVEFORM [get_clocks ap_clk]]
+    set generated_waveform [get_property WAVEFORM $generated_clock]
+    if {abs([lindex $slow_waveform 0] - \
+        [lindex $generated_waveform 0]) > 0.0005} {
+        error "ap_clk and MMCM $output_pin_name rising edges are not phase aligned"
+    }
+    return [get_property NAME $generated_clock]
+}
+
+proc fpt_require_u280_related_slow_clock {clock_period} {
+    return [fpt_require_u280_mmcm_clock $clock_period CLKOUT1]
+}
+
+proc fpt_require_u280_related_fast_clock {clock_period} {
+    return [fpt_require_u280_mmcm_clock \
+        [expr {$clock_period / 2.0}] CLKOUT0]
+}
+
 proc fpt_collect_u280_metrics {clock_period clock_port drc_name} {
     set implemented_period \
         [fpt_require_u280_clock $clock_period $clock_port]
