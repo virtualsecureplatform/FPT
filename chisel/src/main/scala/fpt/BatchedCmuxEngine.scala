@@ -26,8 +26,9 @@ final case class BatchedCmuxEngineConfig(
 ) {
   require(batchContexts >= 2)
   require(
-    pendingKeyRequestEntries >= 1 && isPow2(pendingKeyRequestEntries),
-    "pending key-request entries must be a positive power of two"
+    pendingKeyRequestEntries >= 0 &&
+      (pendingKeyRequestEntries == 0 || isPow2(pendingKeyRequestEntries)),
+    "pending key-request entries must be zero or a positive power of two"
   )
   require(
     engine.forwardSGen.isDefined && engine.inverseSGen.isDefined,
@@ -79,7 +80,7 @@ private[fpt] final class RelatedClockSllGearbox2x(
     credits: Int
 ) extends Module {
   require(width >= 2)
-  require(credits >= 4)
+  require(credits >= 3)
 
   private val halfWidth = (width + 1) / 2
   private val paddedWidth = 2 * halfWidth
@@ -220,7 +221,10 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
     requestEntries: Int = 4,
     useGearbox2x: Boolean = false
 ) extends Module {
-  require(requestEntries >= 1 && isPow2(requestEntries))
+  require(
+    requestEntries >= 0 &&
+      (requestEntries == 0 || isPow2(requestEntries))
+  )
 
   private def requestType = new BatchedCmuxPendingKeyRequest(
     contextWidth,
@@ -267,11 +271,15 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
 
   val inputBoundary = Reg(requestType)
   val inputBoundaryValid = RegInit(false.B)
-  // Keep the depth a power of two. Vivado infers the four-deep dynamic tap as
-  // one SRLC32E per payload bit. A one-entry configuration is intentionally
-  // one ordinary register slice, trading those LUTs for otherwise-spare FFs.
-  val requests = Reg(Vec(requestEntries, requestType))
-  private val requestIndexWidth = TransformUtil.counterWidth(requestEntries)
+  // Keep a nonzero depth a power of two. Vivado infers the four-deep dynamic
+  // tap as one SRLC32E per payload bit. A one-entry configuration is one
+  // ordinary register slice. Depth zero connects the input skid directly to
+  // the two-entry output FIFO and removes one complete Set-II payload bank.
+  val requests =
+    if (requestEntries > 0) Some(Reg(Vec(requestEntries, requestType)))
+    else None
+  private val requestIndexWidth =
+    TransformUtil.counterWidth(requestEntries.max(1))
   private val requestCountWidth =
     TransformUtil.counterWidth(requestEntries + 1)
   val count = RegInit(0.U(requestCountWidth.W))
@@ -309,8 +317,14 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
     0
   )
   val oldestRequest =
-    if (requestEntries == 1) requests.head else requests(oldest)
-  val outputEnqFire = count =/= 0.U && outputEnqReady
+    if (requestEntries == 0) inputBoundary
+    else if (requestEntries == 1) requests.get.head
+    else requests.get(oldest)
+  val outputEnqFire =
+    if (requestEntries == 0)
+      inputBoundaryValid && outputEnqReady
+    else
+      count =/= 0.U && outputEnqReady
   when(outputEnqFire) {
     when(outputWritePointer) {
       outputBoundary1 := oldestRequest
@@ -339,15 +353,18 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
   }
 
   val queueDeqFire = outputEnqFire
-  // The four-entry SRL waits for registered occupancy to expose a free tap,
-  // keeping its wide clock enable especially simple. The one-entry physical
-  // slice may refill while its old word moves into the registered output FIFO:
-  // outputEnqReady depends only on registered local occupancy, never directly
-  // on External Product readiness, so this retains one beat per cycle without
-  // recreating a combinational ready path across the SLR boundary.
+  // A nonzero middle waits for registered occupancy to expose a free tap,
+  // keeping its wide clock enable especially simple. A one-entry physical
+  // slice may refill while its old word moves into the registered output FIFO.
+  // With no middle, the input skid moves directly into that FIFO. In every
+  // case outputEnqReady depends only on registered local occupancy, never
+  // directly on External Product readiness, retaining one beat per cycle
+  // without recreating a combinational ready path across the SLR boundary.
   val refillSingleEntry =
     if (requestEntries == 1) queueDeqFire else false.B
-  val shiftReady = count =/= requestEntries.U || refillSingleEntry
+  val shiftReady =
+    if (requestEntries == 0) outputEnqReady
+    else count =/= requestEntries.U || refillSingleEntry
   val enqFire = inputBoundaryValid && shiftReady
   // Do not use same-cycle downstream readiness here. If both the SRL and
   // input boundary are full, hold the boundary word until the registered
@@ -369,14 +386,16 @@ private[fpt] final class BatchedCmuxPendingKeyRequestQueue(
   // replication. Both inputs are local to the pending-request hierarchy.
   // Shift only on enqueue. Dequeue changes the selected live tap, so every
   // data bit retains a single common clock enable and a pure shift chain.
-  when(enqFire) {
-    for (stage <- requestEntries - 1 to 1 by -1) {
-      requests(stage) := requests(stage - 1)
+  if (requestEntries > 0) {
+    when(enqFire) {
+      for (stage <- requestEntries - 1 to 1 by -1) {
+        requests.get(stage) := requests.get(stage - 1)
+      }
+      requests.get(0) := inputBoundary
     }
-    requests(0) := inputBoundary
-  }
-  when(enqFire =/= queueDeqFire) {
-    count := Mux(enqFire, count + 1.U, count - 1.U)
+    when(enqFire =/= queueDeqFire) {
+      count := Mux(enqFire, count + 1.U, count - 1.U)
+    }
   }
 }
 

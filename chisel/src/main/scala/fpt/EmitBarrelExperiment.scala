@@ -63,11 +63,11 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
       serializeInverseComponents = true,
       useSynchronousExternalProductMemory = true,
       decoupledBootstrappingKey = true,
-      // The crossing register, one local stream slice, and the two-entry
-      // output boundary provide four credits for the registered key request,
-      // synchronous key read, and External Product bank-reuse guard. Avoid
-      // spending one SRLC32E per 7,684-bit payload merely for deeper slack.
-      pendingKeyRequestEntries = 1,
+      // The input skid and two-entry output boundary provide three credits for
+      // the registered key request, synchronous key read, and External Product
+      // bank-reuse guard. Moving the skid directly into the output FIFO removes
+      // one 7,689-bit middle-SLR register bank while preserving full-rate drain.
+      pendingKeyRequestEntries = 0,
       pendingKeyRequestGearbox2x = true
     ),
     domainDimension

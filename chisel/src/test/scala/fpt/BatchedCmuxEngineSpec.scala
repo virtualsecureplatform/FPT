@@ -284,6 +284,51 @@ final class BatchedCmuxEngineSpec
     }
   }
 
+  it should "preserve full-rate draining without a middle pending slice" in {
+    test(new BatchedCmuxPendingQueueTimingHarness(requestEntries = 0)) { dut =>
+      dut.io.enqValid.poke(false.B)
+      dut.io.enqData.poke(0.U)
+      dut.io.deqReady.poke(false.B)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+
+      // The two output boundaries and input skid hold three requests while
+      // the consumer is stalled; there is no additional wide middle bank.
+      for (value <- 0 until 3) {
+        dut.io.enqValid.poke(true.B)
+        dut.io.enqData.poke(value.U)
+        dut.io.enqReady.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.enqValid.poke(false.B)
+      dut.io.count.expect(0.U)
+      dut.io.outputCount.expect(2.U)
+      dut.io.inputBoundaryValid.expect(true.B)
+      dut.io.shiftReady.expect(false.B)
+      dut.io.deqData.expect(0.U)
+
+      // Full handling remains conservative. The resident second output word
+      // covers the cycle in which the first slot is registered as free.
+      dut.io.deqReady.poke(true.B)
+      dut.io.outputDeqFire.expect(true.B)
+      dut.io.outputEnqFire.expect(false.B)
+      dut.io.enqFire.expect(false.B)
+      dut.clock.step()
+
+      // The held skid word now refills the output FIFO while its second word
+      // drains, so the consumer still observes adjacent ordered cycles.
+      dut.io.deqData.expect(1.U)
+      dut.io.outputEnqFire.expect(true.B)
+      dut.io.outputDeqFire.expect(true.B)
+      dut.io.enqFire.expect(true.B)
+      dut.clock.step()
+      dut.io.deqData.expect(2.U)
+      dut.clock.step()
+      dut.io.deqValid.expect(false.B)
+    }
+  }
+
   private def exercise(
       config: BatchedCmuxEngineConfig,
       drainUsesPrefetch: Boolean
