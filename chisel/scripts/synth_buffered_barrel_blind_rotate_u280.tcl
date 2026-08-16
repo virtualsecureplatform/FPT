@@ -235,6 +235,10 @@ resize_pblock pb_inverse -add CLOCKREGION_X0Y8:CLOCKREGION_X7Y11
 add_cells_to_pblock pb_inverse [dict get $resolved_cells inverse]
 
 opt_design -directive ExploreWithRemap
+if {$has_pending_fast_clock} {
+    source [file join $script_dir u280_pending_gearbox_tail_macros.tcl]
+    fpt_create_pending_gearbox_tail_macros
+}
 place_design -directive ExtraNetDelay_high
 write_checkpoint -force [file join $output_dir raw_place.dcp]
 report_design_analysis -congestion \

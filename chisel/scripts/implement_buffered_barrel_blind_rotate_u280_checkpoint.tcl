@@ -397,6 +397,10 @@ if {$floorplan_mode in {rotator-forward rotator-forward-control}} {
 }
 
 opt_design -directive ExploreWithRemap
+if {$has_pending_fast_clock} {
+    source [file join $script_dir u280_pending_gearbox_tail_macros.tcl]
+    fpt_create_pending_gearbox_tail_macros
+}
 
 if {$floorplan_mode in {rotator-forward rotator-forward-control}} {
     # Re-resolve the optimized segment, then make replication mandatory in
