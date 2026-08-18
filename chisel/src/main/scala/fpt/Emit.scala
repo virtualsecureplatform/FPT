@@ -81,6 +81,36 @@ private object SynthesisEmitter {
   def addUltraRamStyle(systemVerilog: Path, memoryModule: String): Unit =
     addRamStyle(systemVerilog, memoryModule, "ultra")
 
+  /** Preserve every lane-local accumulator write-mask net in generated RTL.
+    *
+    * CIRCT retains the Chisel names but does not emit a Vivado preservation
+    * attribute for `dontTouch`. Without this synthesis-only annotation,
+    * Vivado merges the identical expressions and can leave one LUT driving
+    * all RAMB36 byte-write enables across the accumulator banks.
+    */
+  def preserveAccumulatorWriteMasks(
+      systemVerilog: Path,
+      expectedMasks: Int
+  ): Unit = {
+    require(expectedMasks >= 1)
+    val source = Files.readString(systemVerilog)
+    val declaration =
+      "(?m)^  wire( +)(memoryWriteMask_[0-9]+(?:_[0-9]+)?);$".r
+    val matches = declaration.findAllMatchIn(source).toSeq
+    require(
+      matches.length == expectedMasks,
+      s"expected $expectedMasks accumulator write-mask nets, " +
+        s"found ${matches.length}"
+    )
+    val tagged = declaration.replaceAllIn(
+      source,
+      matched =>
+        s"  (* DONT_TOUCH = \"yes\" *) wire${matched.group(1)}" +
+          s"${matched.group(2)};"
+    )
+    Files.writeString(systemVerilog, tagged)
+  }
+
   /** CIRCT gives a SyncReadMem's read and write ports distinct clock names
     * even when both connect to the enclosing Chisel clock. UltraRAM inference
     * requires one syntactic clock, so make that equivalence explicit in the
@@ -514,6 +544,10 @@ object EmitPaperAccumulatorBanks extends App {
     new ReplicatedAccumulatorBanks(config),
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
+  )
+  SynthesisEmitter.preserveAccumulatorWriteMasks(
+    outputDirectory.resolve("ReplicatedAccumulatorBanks.sv"),
+    PaperSetII.coefficient.inverseLanes * config.wordFields
   )
 }
 

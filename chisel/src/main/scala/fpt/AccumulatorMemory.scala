@@ -477,7 +477,6 @@ final class ReplicatedAccumulatorBanks(
     "load and inverse update committed on the same cycle"
   )
 
-  val memoryWriteEnable = loadCommitValid || updateCommitValid
   val memoryWriteAddress = Mux(
     loadCommitValid,
     loadCommitAddress,
@@ -489,18 +488,28 @@ final class ReplicatedAccumulatorBanks(
       loadWords(lane),
       updateCommitWords(lane)
     )
+    // Materialize the write-mask cone once per lane.  If these expressions
+    // are shared, FIRRTL emits only three mask nets for all 128 inferred
+    // memories and Vivado can leave one LUT output driving 1,024 RAMB36
+    // WEBWE pins.  Preserving the lane-local results keeps each mask LUT with
+    // its pair of 128-bit banks (16 WEBWE loads in the Set-II build) without
+    // adding a cycle to the load/update protocol.
     val memoryWriteMask = Seq.tabulate(config.wordFields) { field =>
-      Mux(loadCommitValid, loadMask(field), true.B)
+      val laneMask = Wire(Bool())
+      laneMask := Mux(loadCommitValid, loadMask(field), true.B) &&
+        (loadCommitValid || updateCommitValid)
+      dontTouch(laneMask)
+      laneMask
     }
     forwardMemories(lane).write(
       memoryWriteAddress,
       memoryWriteWord,
-      memoryWriteMask.map(_ && memoryWriteEnable)
+      memoryWriteMask
     )
     updateMemories(lane).write(
       memoryWriteAddress,
       memoryWriteWord,
-      memoryWriteMask.map(_ && memoryWriteEnable)
+      memoryWriteMask
     )
   }
 

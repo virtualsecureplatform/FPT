@@ -83,6 +83,10 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
     "BufferedBlindRotateAccelerator.sv"
   )
   SynthesisEmitter.removeInlineFileList(systemVerilog)
+  SynthesisEmitter.preserveAccumulatorWriteMasks(
+    systemVerilog,
+    2 * engine.coefficient.inverseLanes * engine.coefficient.components
+  )
   SynthesisEmitter.addBlockRamStyle(
     systemVerilog,
     config.keyMemoryModuleName
