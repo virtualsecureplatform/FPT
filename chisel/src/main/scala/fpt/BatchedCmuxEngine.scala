@@ -21,7 +21,8 @@ final case class BatchedCmuxEngineConfig(
     serializeInverseComponents: Boolean = false,
     useSynchronousExternalProductMemory: Boolean = false,
     decoupledBootstrappingKey: Boolean = false,
-    pendingKeyRequestEntries: Int = 4
+    pendingKeyRequestEntries: Int = 4,
+    registerForwardSlrInput: Boolean = false
 ) {
   require(batchContexts >= 2)
   require(
@@ -43,6 +44,63 @@ final case class BatchedCmuxEngineConfig(
   val rows: Int = engine.externalProduct.rows
   val commandInterval: Int = rows * engine.forwardTransform.frameBeats
   val contextWidth: Int = TransformUtil.counterWidth(batchContexts)
+}
+
+/** Fixed-rate destination register at the coefficient-to-forward-SGen SLR cut.
+  *
+  * SGen cannot be backpressured after its one-cycle start lead. The coefficient
+  * store already provides that same fixed-rate contract, so this stage accepts
+  * every source beat and asserts if the destination ever violates it. Keeping
+  * readiness constant prevents a combinational control path from returning
+  * across the SLR; delaying start and valid with the payload preserves SGen's
+  * lead-cycle relationship.
+  */
+private[fpt] final class BatchedCmuxForwardInputBoundary(
+    lanes: Int,
+    dataWidth: Int,
+    preservePhysicalRegister: Boolean = true
+) extends Module {
+  require(lanes >= 1)
+  require(dataWidth >= 1)
+
+  val io = IO(new Bundle {
+    val sourceStart = Input(Bool())
+    val sourceValid = Input(Bool())
+    val sourceReady = Output(Bool())
+    val sourceLow = Input(Vec(lanes, SInt(dataWidth.W)))
+    val sourceHigh = Input(Vec(lanes, SInt(dataWidth.W)))
+    val destinationStart = Output(Bool())
+    val destinationValid = Output(Bool())
+    val destinationReady = Input(Bool())
+    val destinationLow = Output(Vec(lanes, SInt(dataWidth.W)))
+    val destinationHigh = Output(Vec(lanes, SInt(dataWidth.W)))
+  })
+
+  private val inputPayload = Cat(io.sourceHigh.asUInt, io.sourceLow.asUInt)
+  private val outputPayload = if (preservePhysicalRegister) {
+    val payload = Module(new PhysicalCutRegister(2 * lanes * dataWidth))
+    payload.io.clock := clock
+    payload.io.enable := io.sourceValid
+    payload.io.inputData := inputPayload
+    payload.io.outputData
+  } else {
+    RegEnable(inputPayload, 0.U, io.sourceValid)
+  }
+  private val unpacked = outputPayload.asTypeOf(
+    Vec(2, Vec(lanes, SInt(dataWidth.W)))
+  )
+  io.destinationLow := unpacked(0)
+  io.destinationHigh := unpacked(1)
+  io.destinationStart := RegNext(io.sourceStart, false.B)
+  io.destinationValid := RegNext(io.sourceValid, false.B)
+  io.sourceReady := true.B
+
+  when(io.destinationValid) {
+    assert(
+      io.destinationReady,
+      "forward SGen destination boundary cannot be backpressured"
+    )
+  }
 }
 
 private[fpt] final class BatchedCmuxPendingKeyRequest(
@@ -548,13 +606,33 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
     assert(forwardTags.io.enq.ready, "forward tag queue overflow")
   }
 
-  forward.io.start := coefficients.io.transformStart
-  forward.io.pairValid := coefficients.io.pairValid
-  forward.io.coefficientLow := coefficients.io.coefficientLow
-  forward.io.coefficientHigh := coefficients.io.coefficientHigh
+  if (config.registerForwardSlrInput) {
+    val forwardInputBoundary = Module(
+      new BatchedCmuxForwardInputBoundary(
+        coefficientConfig.forwardLanes,
+        coefficientConfig.forwardFormat.width
+      )
+    )
+    forwardInputBoundary.io.sourceStart := coefficients.io.transformStart
+    forwardInputBoundary.io.sourceValid := coefficients.io.pairValid
+    forwardInputBoundary.io.sourceLow := coefficients.io.coefficientLow
+    forwardInputBoundary.io.sourceHigh := coefficients.io.coefficientHigh
+    coefficients.io.pairReady := forwardInputBoundary.io.sourceReady
+
+    forward.io.start := forwardInputBoundary.io.destinationStart
+    forward.io.pairValid := forwardInputBoundary.io.destinationValid
+    forward.io.coefficientLow := forwardInputBoundary.io.destinationLow
+    forward.io.coefficientHigh := forwardInputBoundary.io.destinationHigh
+    forwardInputBoundary.io.destinationReady := forward.io.pairReady
+  } else {
+    forward.io.start := coefficients.io.transformStart
+    forward.io.pairValid := coefficients.io.pairValid
+    forward.io.coefficientLow := coefficients.io.coefficientLow
+    forward.io.coefficientHigh := coefficients.io.coefficientHigh
+    coefficients.io.pairReady := forward.io.pairReady
+  }
   forward.io.twist := io.forwardTwist
   forward.io.fftTwiddle := 0.U.asTypeOf(forward.io.fftTwiddle)
-  coefficients.io.pairReady := forward.io.pairReady
   io.forwardTwistIndex := forward.io.twistIndex
 
   val forwardTransactionBeat = RegInit(

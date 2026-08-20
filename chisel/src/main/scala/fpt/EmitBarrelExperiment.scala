@@ -14,6 +14,43 @@ import java.nio.file.Path
   * gadget levels together. The prior workset emits concurrently, preserving
   * II=16 without the bitwise frontend's unroutable full-polynomial transpose.
   */
+private[fpt] object PaperU280BufferedBarrelConfig {
+  def apply(
+      forwardPath: String,
+      inversePath: String,
+      domainDimension: Int
+  ): BufferedBlindRotateConfig = {
+    require(domainDimension >= 1, "DOMAIN_DIMENSION must be positive")
+
+    val baseEngine = PaperSetII.cmuxEngine(
+      forwardPath,
+      inversePath,
+      includeVerilogSource = false
+    )
+    val engine = baseEngine.copy(
+      coefficient = baseEngine.coefficient.copy(windowedRotator = true),
+      externalProduct = baseEngine.externalProduct.copy(
+        multiplier = ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+      )
+    )
+    val blindRotate = BatchedBlindRotateEngineConfig(
+      BatchedCmuxEngineConfig(
+        engine,
+        batchContexts = PaperSetII.bitwiseBatchContexts,
+        coefficientStorage =
+          BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks,
+        serializeInverseComponents = true,
+        useSynchronousExternalProductMemory = true,
+        decoupledBootstrappingKey = true,
+        pendingKeyRequestEntries = 1,
+        registerForwardSlrInput = true
+      ),
+      domainDimension
+    )
+    BufferedBlindRotateConfig(blindRotate, PaperSetII.keyLoadLanes)
+  }
+}
+
 object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
   require(
     args.length >= 3 && args.length <= 4,
@@ -29,49 +66,11 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
     else PaperSetII.blindRotateDomainDimension
   require(domainDimension >= 1, "DOMAIN_DIMENSION must be positive")
 
-  val baseEngine = PaperSetII.cmuxEngine(
+  val config = PaperU280BufferedBarrelConfig(
     forwardPath.toString,
     inversePath.toString,
-    includeVerilogSource = false
-  )
-  // Stream-width windowed rotation: the full-width barrel is ~283K LUTs of
-  // single-block muxing whose 32K-bit chain also cannot straddle an SLR
-  // boundary. Precomputing both gadget levels while alternating polynomial
-  // halves lets one inverse-bank-width span aligner serve every emitted pair.
-  val engine = baseEngine.copy(
-    coefficient = baseEngine.coefficient.copy(windowedRotator = true),
-    // The combinational Gauss correction path is over 5 ns when driven by
-    // the real key-buffer BRAM. Four exact products avoid that fabric-heavy
-    // correction network, use eight DSPs instead of the mapped Gauss path's
-    // ten, and pipeline the External Product at its natural synchronous-
-    // memory boundary.
-    externalProduct = baseEngine.externalProduct.copy(
-      multiplier = ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
-    )
-  )
-  val blindRotate = BatchedBlindRotateEngineConfig(
-    BatchedCmuxEngineConfig(
-      engine,
-      // 16, not barrelBatchContexts = 14: the 864-bit key port needs 256
-      // beats per bootstrapping-key coefficient, so the per-coefficient
-      // reuse window must be at least 256 cycles. A 14-context window is
-      // 14 x 16 = 224 cycles and outruns the loader, which backpressures
-      // the forward SGen core after ~forward-latency/32 CMUX steps.
-      batchContexts = PaperSetII.bitwiseBatchContexts,
-      coefficientStorage =
-        BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks,
-      serializeInverseComponents = true,
-      useSynchronousExternalProductMemory = true,
-      decoupledBootstrappingKey = true,
-      // The crossing register, one local stream slice, and the two-entry
-      // output boundary provide four credits for the registered key request,
-      // synchronous key read, and External Product bank-reuse guard. Avoid
-      // spending one SRLC32E per 7,684-bit payload merely for deeper slack.
-      pendingKeyRequestEntries = 1
-    ),
     domainDimension
   )
-  val config = BufferedBlindRotateConfig(blindRotate, PaperSetII.keyLoadLanes)
 
   ChiselStage.emitSystemVerilogFile(
     new BufferedBlindRotateAccelerator(config),

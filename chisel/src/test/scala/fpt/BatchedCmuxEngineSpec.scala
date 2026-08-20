@@ -497,4 +497,18 @@ final class BatchedCmuxEngineSpec
       drainUsesPrefetch = true
     )
   }
+
+  it should "preserve the CMUX schedule through the forward SLR cut" in {
+    exercise(
+      registerConfig.copy(
+        engine = engine.copy(
+          coefficient = coefficient.copy(windowedRotator = true)
+        ),
+        coefficientStorage =
+          BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks,
+        registerForwardSlrInput = true
+      ),
+      drainUsesPrefetch = true
+    )
+  }
 }

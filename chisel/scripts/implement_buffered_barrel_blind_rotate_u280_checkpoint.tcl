@@ -258,10 +258,17 @@ if {[llength $coefficient_digit_guided_sll_registers] ni {0 2560}} {
 set guided_sll_registers [concat \
     $pending_guided_sll_registers \
     $coefficient_digit_guided_sll_registers]
+set forward_input_guided_sll_registers [get_cells -hierarchical -quiet \
+    -regexp {^.*/forwardInputBoundary/(outputPayload_)?payload/value_reg.*$}]
+if {[llength $forward_input_guided_sll_registers] ni {0 7680}} {
+    error "Expected 0 or 7680 forward-input boundary registers, found [llength $forward_input_guided_sll_registers]"
+}
+set guided_sll_registers [concat \
+    $guided_sll_registers $forward_input_guided_sll_registers]
 if {[llength $guided_sll_registers] > 0} {
     set_property USER_SLL_REG TRUE $guided_sll_registers
 }
-puts "FPT_GUIDED_SLL_REGISTERS count=[llength $guided_sll_registers] pending=[llength $pending_guided_sll_registers] coefficient_digit=[llength $coefficient_digit_guided_sll_registers]"
+puts "FPT_GUIDED_SLL_REGISTERS count=[llength $guided_sll_registers] pending=[llength $pending_guided_sll_registers] coefficient_digit=[llength $coefficient_digit_guided_sll_registers] forward_input=[llength $forward_input_guided_sll_registers]"
 
 set forced_high_fanout_nets {}
 if {$force_high_fanout} {
