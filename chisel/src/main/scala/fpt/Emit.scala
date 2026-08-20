@@ -81,6 +81,27 @@ private object SynthesisEmitter {
   def addUltraRamStyle(systemVerilog: Path, memoryModule: String): Unit =
     addRamStyle(systemVerilog, memoryModule, "ultra")
 
+  /** Resolve an emitter-generated memory name by its stable logical prefix.
+    * Array dimensions vary with the selected transform parallelism.
+    */
+  def generatedModuleWithPrefix(systemVerilog: Path, prefix: String): String = {
+    val source = Files.readString(systemVerilog)
+    val modulePattern = "(?m)^module\\s+([A-Za-z_][A-Za-z0-9_]*)\\(".r
+    val matches = modulePattern.findAllMatchIn(source).map(_.group(1))
+      .filter(_.startsWith(prefix)).toSeq.distinct
+    require(
+      matches.size == 1,
+      s"expected one generated module beginning '$prefix', found ${matches.mkString(", ")}"
+    )
+    matches.head
+  }
+
+  def addBlockRamStyleByPrefix(systemVerilog: Path, prefix: String): Unit =
+    addBlockRamStyle(systemVerilog, generatedModuleWithPrefix(systemVerilog, prefix))
+
+  def addUltraRamStyleByPrefix(systemVerilog: Path, prefix: String): Unit =
+    addUltraRamStyle(systemVerilog, generatedModuleWithPrefix(systemVerilog, prefix))
+
   /** CIRCT gives a SyncReadMem's read and write ports distinct clock names
     * even when both connect to the enclosing Chisel clock. UltraRAM inference
     * requires one syntactic clock, so make that equivalence explicit in the
@@ -107,6 +128,15 @@ private object SynthesisEmitter {
       source.substring(0, moduleStart) + rewritten + source.substring(moduleEnd)
     )
   }
+
+  def useReadClockForMemoryWritesByPrefix(
+      systemVerilog: Path,
+      prefix: String
+  ): Unit =
+    useReadClockForMemoryWrites(
+      systemVerilog,
+      generatedModuleWithPrefix(systemVerilog, prefix)
+    )
 }
 
 object EmitPaperExternalProduct extends App {

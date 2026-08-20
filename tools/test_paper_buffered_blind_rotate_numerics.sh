@@ -38,7 +38,7 @@ cleanup() {
 trap cleanup EXIT
 
 (cd "$sgen_dir" && sbt assembly)
-FPT_ARITHMETIC_PROFILE="$arithmetic_profile" \
+FPT_ARITHMETIC_PROFILE="$arithmetic_profile" FFT_LOG_LANES=6 IFFT_LOG_LANES=5 \
     "$repo_root/tools/generate_sgen_fpt.sh" "$sgen_dir" "$sgen_output"
 
 cmake -S "$repo_root" -B "$cmake_output" \
@@ -56,6 +56,7 @@ cmake --build "$cmake_output" -j --target \
     FPT_PAPER_BLIND_ROTATE_VECTORS=\
 "$cmake_output/rtl_paper_blind_rotate_vectors.txt" \
     FPT_ARITHMETIC_PROFILE="$arithmetic_profile" \
+    FPT_U280_ROUTABLE_200_NUMERICS=1 \
     MAKEFLAGS="${MAKEFLAGS:--e -j4}" \
     VK_PCH_I_FAST= \
     VK_PCH_I_SLOW= \

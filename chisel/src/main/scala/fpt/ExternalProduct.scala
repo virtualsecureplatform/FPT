@@ -913,7 +913,11 @@ final class DoubleBufferedExternalProductAccumulator(
       // followed by a long route to the UltraRAM write port.
       val commitRegister = Module(new PhysicalCutRegister(memoryWordWidth))
       commitRegister.io.clock := clock
-      commitRegister.io.enable := pendingInputValid
+      // Validity is already delayed independently in commitValid. Clocking
+      // the data cut only on a valid product makes pendingInputValid the CE
+      // for the complete accumulator word (7,684 loads after placement).
+      // Capture unconditionally so that valid remains a narrow control path.
+      commitRegister.io.enable := true.B
       commitRegister.io.inputData := accumulatedWord.asUInt
       val commitWord = commitRegister.io.outputData.asTypeOf(memoryWordType)
       (commitValid, commitBeat, commitBank, commitWord)

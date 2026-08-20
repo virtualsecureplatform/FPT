@@ -1,4 +1,6 @@
 /build*/
+/vitis/build/
+/.ipcache/
 /chisel/target/
 /chisel/project/target/
 /chisel/test_run_dir/

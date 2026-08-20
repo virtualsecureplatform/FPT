@@ -80,12 +80,24 @@ final class PaperBufferedBlindRotateNumericalSpec
     )
 
     val profile = rtlProfile
-    val config = profile.bufferedBlindRotate(
-      forwardPath.toString,
-      inversePath.toString,
-      domainDimension = 1,
-      includeVerilogSource = true
-    )
+    val config = if (sys.env.get("FPT_U280_ROUTABLE_200_NUMERICS").contains("1")) {
+      require(
+        profile == PaperSetII,
+        "the U280 routable numerical target supports paper-set-ii only"
+      )
+      PaperU280BufferedBarrelConfig(
+        forwardPath.toString,
+        inversePath.toString,
+        domainDimension = 1
+      )
+    } else {
+      profile.bufferedBlindRotate(
+        forwardPath.toString,
+        inversePath.toString,
+        domainDimension = 1,
+        includeVerilogSource = true
+      )
+    }
     val blind = config.blindRotate
     val coefficient = blind.cmux.engine.coefficient
     val external = blind.cmux.engine.externalProduct
@@ -98,6 +110,10 @@ final class PaperBufferedBlindRotateNumericalSpec
     val expected = expectedRows.map(_.head)
 
     contexts should be(profile.bitwiseBatchContexts)
+    if (sys.env.get("FPT_U280_ROUTABLE_200_NUMERICS").contains("1")) {
+      coefficient.forwardLanes should be(64)
+      coefficient.inverseLanes should be(32)
+    }
     inputRows.size should be(contexts)
     inputRows.foreach(_.length should be(3))
     key.size should be(keyRows)

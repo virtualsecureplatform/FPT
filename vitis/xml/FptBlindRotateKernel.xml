@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root versionMajor="1" versionMinor="6">
+  <kernel name="FptBlindRotateKernel" language="ip_c" vlnv="fpt.example:kernel:FptBlindRotateKernel:1.0" attributes="" preferredWorkGroupSizeMultiple="0" workGroupSize="1" interrupt="true" hwControlProtocol="ap_ctrl_hs">
+    <ports>
+      <port name="s_axi_control" mode="slave" range="0x80" dataWidth="32" portType="addressable" base="0x0"/>
+      <port name="m_axi_input" mode="master" range="0xFFFFFFFFFFFFFFFF" dataWidth="512" portType="addressable" base="0x0"/>
+      <port name="m_axi_key_low" mode="master" range="0xFFFFFFFFFFFFFFFF" dataWidth="512" portType="addressable" base="0x0"/>
+      <port name="m_axi_key_high" mode="master" range="0xFFFFFFFFFFFFFFFF" dataWidth="512" portType="addressable" base="0x0"/>
+      <port name="m_axi_output" mode="master" range="0xFFFFFFFFFFFFFFFF" dataWidth="512" portType="addressable" base="0x0"/>
+    </ports>
+    <args>
+      <arg name="input_ptr" addressQualifier="1" id="0" port="m_axi_input" size="0x8" offset="0x10" hostOffset="0x0" hostSize="0x8" type="uint*"/>
+      <arg name="key_low_ptr" addressQualifier="1" id="1" port="m_axi_key_low" size="0x8" offset="0x18" hostOffset="0x0" hostSize="0x8" type="uint*"/>
+      <arg name="key_high_ptr" addressQualifier="1" id="2" port="m_axi_key_high" size="0x8" offset="0x20" hostOffset="0x0" hostSize="0x8" type="uint*"/>
+      <arg name="output_ptr" addressQualifier="1" id="3" port="m_axi_output" size="0x8" offset="0x28" hostOffset="0x0" hostSize="0x8" type="uint*"/>
+    </args>
+  </kernel>
+</root>

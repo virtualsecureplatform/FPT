@@ -416,10 +416,11 @@ final class ReplicatedAccumulatorBanks(
     updateWriteValid
   )
   val updateCommitWords = Reg(Vec(coefficient.inverseLanes, wordType))
-  when(updateWriteValid) {
-    for (lane <- 0 until coefficient.inverseLanes) {
-      updateCommitWords(lane) := updatedWords(lane)
-    }
+  // updateCommitValid qualifies the following memory write. Keeping this
+  // wide data boundary unconditional prevents updateWriteValid from becoming
+  // a clock-enable broadcast over every inverse lane (about 4K loads on U280).
+  for (lane <- 0 until coefficient.inverseLanes) {
+    updateCommitWords(lane) := updatedWords(lane)
   }
   when(io.loadStart) {
     assert(

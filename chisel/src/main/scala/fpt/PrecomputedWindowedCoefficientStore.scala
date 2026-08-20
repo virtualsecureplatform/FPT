@@ -69,10 +69,16 @@ private[fpt] final class MultiportedCoefficientScratch(
       |  always @(posedge clock) begin
       |    if (writeEnable)
       |      memory[writeAddress] <= inputData;
+      |    // Capture every read port unconditionally. Qualifying this wide
+      |    // word with readEnables turns each enable bit into a clock-enable
+      |    // broadcast over a complete replicated memory word (more than
+      |    // 16K loads in the U280 configuration). The surrounding pipeline
+      |    // already carries validity separately, so reading harmless data
+      |    // during bubbles removes that control cone without changing the
+      |    // visible transaction timing.
       |    for (readPort = 0; readPort < READ_PORTS; readPort = readPort + 1)
-      |      if (readEnables[readPort])
-      |        readData[readPort] <=
-      |          memory[readAddresses[readPort*ADDRESS_WIDTH +: ADDRESS_WIDTH]];
+      |      readData[readPort] <=
+      |        memory[readAddresses[readPort*ADDRESS_WIDTH +: ADDRESS_WIDTH]];
       |  end
       |
       |  genvar outputPort;

@@ -9,7 +9,7 @@ import java.nio.file.Path
   * Identical to `EmitPaperBufferedBlindRotateAccelerator` except the CMUX
   * coefficient frontend precomputes the paper barrel's requested stream-width
   * windows from replicated banks instead of materializing its full-width mux
-  * or using the bitwise transposed working sets. One 128-lane rotator handles
+  * or using the bitwise transposed working sets. One 64-lane rotator handles
   * the low and high halves on alternating preprocessing cycles and stores all
   * gadget levels together. The prior workset emits concurrently, preserving
   * II=16 without the bitwise frontend's unroutable full-polynomial transpose.
@@ -28,8 +28,16 @@ private[fpt] object PaperU280BufferedBarrelConfig {
       includeVerilogSource = false
     )
     val engine = baseEngine.copy(
-      coefficient = baseEngine.coefficient.copy(windowedRotator = true),
+      coefficient = baseEngine.coefficient.copy(
+        forwardLanes = 64,
+        inverseLanes = 32,
+        windowedRotator = true
+      ),
+      forwardTransform = baseEngine.forwardTransform.copy(lanes = 64),
+      inverseTransform = baseEngine.inverseTransform.copy(lanes = 32),
       externalProduct = baseEngine.externalProduct.copy(
+        inputLanes = 64,
+        outputLanes = 32,
         multiplier = ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
       )
     )
@@ -85,24 +93,16 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
     systemVerilog,
     config.keyMemoryModuleName
   )
-  // Duplicate the packed transpose so low and high halves can be read while
-  // the next workset is written. Each 48 x 2,560-bit copy maps to 36 RAMB36s,
-  // replacing hundreds of shallow lane-local distributed memories.
-  SynthesisEmitter.addBlockRamStyle(
-    systemVerilog,
-    "digitMemories_48x2560"
-  )
+  // The generated width tracks the selected transform parallelism.
+  SynthesisEmitter.addBlockRamStyleByPrefix(systemVerilog, "digitMemories_")
   // Each 4 x 15,360-bit External Product ping-pong bank otherwise consumes
   // 8,780 distributed-memory LUTs. Use the U280's otherwise-idle UltraRAM for
   // the padded twin, but leave the other shallow bank distributed: mapping it
   // to 213 RAMB36s leaves only seven free BRAM sites in the middle SLR and
   // stretches the accumulator-bank BRAM-to-BRAM update paths across the die.
-  SynthesisEmitter.useReadClockForMemoryWrites(
+  SynthesisEmitter.useReadClockForMemoryWritesByPrefix(
     systemVerilog,
-    "accumulatorMemories_0_4x15361"
+    "accumulatorMemories_0_"
   )
-  SynthesisEmitter.addUltraRamStyle(
-    systemVerilog,
-    "accumulatorMemories_0_4x15361"
-  )
+  SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "accumulatorMemories_0_")
 }
