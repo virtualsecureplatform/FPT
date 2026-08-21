@@ -24,7 +24,8 @@ final class FptBlindRotateKernelSequencer(
   require(keyWidth == 27)
   require(config.keyBuffer.loadBeatsPerCoefficient == 256)
 
-  private val inputWordsPerContext = dimension + 1
+  // One test-vector word, `dimension` TLWE mask words, and one TLWE body.
+  private val inputWordsPerContext = dimension + 2
   private val inputWords = contexts * inputWordsPerContext
   private val inputBytes = inputWords * 4
   private val outputWords = contexts * (coefficient.polynomialSize + 1)
@@ -110,7 +111,8 @@ final class FptBlindRotateKernelSequencer(
   // control block otherwise keeps ap_start asserted until completion, and the
   // newly-idle sequencer would accept the same invocation a second time.
   io.ready := launch || donePulse
-  io.status := Cat(0.U(19.W), busy, errorCode, errorChannel, errorSticky)
+  val progressStatus = WireDefault(0.U(19.W))
+  io.status := Cat(progressStatus, busy, errorCode, errorChannel, errorSticky)
 
   val inputPointer = Reg(UInt(64.W))
   val keyLowPointer = Reg(UInt(64.W))
@@ -212,7 +214,7 @@ final class FptBlindRotateKernelSequencer(
     }.otherwise {
       inputLane := inputLane + 1.U
     }
-    when(inputContextWord === dimension.U) {
+    when(inputContextWord === (dimension + 1).U) {
       inputContextWord := 0.U
       when(inputContext =/= (contexts - 1).U) {
         inputContext := inputContext + 1.U
@@ -254,7 +256,13 @@ final class FptBlindRotateKernelSequencer(
     keyBeat := 0.U
   }
   val packedKey = Cat(keyHighBuffer(351, 0), keyLowBuffer)
-  io.coreKeyLoadValid := busy && keyLoadActive && keyLowValid && keyHighValid
+  // The buffered accelerator's key-load interface uses a pulse-valid
+  // contract: valid may only be asserted while the active bank load is ready.
+  // The DataMovers can replace the final beat in the skid registers before
+  // loadDone returns, so retain that next beat without presenting it during
+  // the one-cycle gap between coefficient loads.
+  io.coreKeyLoadValid := busy && keyLoadActive && keyLowValid && keyHighValid &&
+    io.coreKeyLoadReady
   val consumeKeyBeat = io.coreKeyLoadValid && io.coreKeyLoadReady
   io.keyLowData.ready := busy && (!keyLowValid || consumeKeyBeat)
   io.keyHighData.ready := busy && (!keyHighValid || consumeKeyBeat)
@@ -301,12 +309,14 @@ final class FptBlindRotateKernelSequencer(
   val keyHighStatusCount = RegInit(0.U(2.W))
   val outputStatusDone = RegInit(false.B)
   val coreDoneSeen = RegInit(false.B)
+  val outputDrainCount = RegInit(0.U(8.W))
   when(launch) {
     inputStatusDone := false.B
     keyLowStatusCount := 0.U
     keyHighStatusCount := 0.U
     outputStatusDone := false.B
     coreDoneSeen := false.B
+    outputDrainCount := 0.U
   }
   when(io.inputStatus.valid) { inputStatusDone := true.B }
   when(io.keyLowStatus.valid && keyLowStatusCount =/= 2.U) {
@@ -339,8 +349,32 @@ final class FptBlindRotateKernelSequencer(
 
   val allStatusesDone = inputStatusDone && keyLowStatusCount === 2.U &&
     keyHighStatusCount === 2.U && outputStatusDone
+  val coreComplete = coreDoneSeen || io.coreDone
+  // Some DataMover configurations do not emit status-stream beats when the
+  // optional status FIFOs are disabled.  Core completion means the final
+  // output word and TLAST have already handshaken into S2MM.  Prefer explicit
+  // statuses, but otherwise leave a bounded drain interval for outstanding
+  // packed writes and AXI responses before acknowledging the invocation.
   when(
-    busy && (errorSticky || ((coreDoneSeen || io.coreDone) && allStatusesDone))
+    busy && coreComplete && !allStatusesDone && !outputDrainCount.andR
+  ) {
+    outputDrainCount := outputDrainCount + 1.U
+  }
+  val outputDrained = allStatusesDone || outputDrainCount.andR
+  progressStatus := Cat(
+    keyIndex,
+    inputsLoaded,
+    keyZeroLoaded,
+    runStarted,
+    coreDoneSeen,
+    inputStatusDone,
+    keyLowStatusCount === 2.U,
+    keyHighStatusCount === 2.U,
+    outputStatusDone,
+    keyLoadActive
+  )
+  when(
+    busy && (errorSticky || (coreComplete && outputDrained))
   ) {
     busy := false.B
     donePulse := true.B

@@ -54,7 +54,11 @@ if [[ $xo_only -eq 1 ]]; then
 fi
 
 xclbin=$build_dir/xclbin/FptBlindRotateKernel_${target}_${floorplan}.xclbin
-v++ -l -g -t "$target" --platform "$platform" \
+debug_options=()
+if [[ $target == hw ]]; then
+    debug_options=(-g)
+fi
+v++ -l "${debug_options[@]}" -t "$target" --platform "$platform" \
     --config "$vitis_dir/cfg/link_config.cfg" --kernel_frequency 200 \
     -o "$xclbin" "$build_dir/xo/FptBlindRotateKernel.xo" \
     --log_dir "$build_dir/vpp_log/${target}_${floorplan}" \

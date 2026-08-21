@@ -13,7 +13,7 @@ namespace fpt::u280 {
 inline constexpr std::size_t kContexts = 16;
 inline constexpr std::size_t kDimension = 630;
 inline constexpr std::size_t kPolynomialSize = 1024;
-inline constexpr std::size_t kInputWordsPerContext = kDimension + 1;
+inline constexpr std::size_t kInputWordsPerContext = kDimension + 2;
 inline constexpr std::size_t kInputWords = kContexts * kInputWordsPerContext;
 inline constexpr std::size_t kOutputWords =
     kContexts * (kPolynomialSize + 1);
@@ -36,12 +36,14 @@ struct ComplexKeyLane {
 
 inline std::vector<std::uint32_t> pack_input_batch(
     const std::array<std::uint32_t, kContexts>& test_vectors,
-    const std::array<std::array<std::uint32_t, kDimension>, kContexts>& masks) {
+    const std::array<std::array<std::uint32_t, kDimension>, kContexts>& masks,
+    const std::array<std::uint32_t, kContexts>& bodies) {
   std::vector<std::uint32_t> result;
   result.reserve(kInputWords);
   for (std::size_t context = 0; context < kContexts; ++context) {
     result.push_back(test_vectors[context]);
     result.insert(result.end(), masks[context].begin(), masks[context].end());
+    result.push_back(bodies[context]);
   }
   return result;
 }
@@ -91,6 +93,6 @@ inline std::pair<Axi512Word, Axi512Word> pack_key_beat(
 }  // namespace fpt::u280
 
 static_assert(sizeof(fpt::u280::Axi512Word) == 64);
-static_assert(fpt::u280::kInputBytes == 40384);
+static_assert(fpt::u280::kInputBytes == 40448);
 static_assert(fpt::u280::kOutputBytes == 65600);
 static_assert(fpt::u280::kKeyBufferBytes == 10321920);

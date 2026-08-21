@@ -13,13 +13,16 @@ packaging; `--test` builds and runs a zero-vector XRT smoke test after linking.
 
 The four kernel arguments, in order, are the input, key-low, key-high, and
 output buffers. The input is context-major: one test-vector word followed by
-630 mask words for each of 16 contexts. Each key buffer contains 161,280
-512-bit words. A logical 864-bit key beat packs sixteen lanes as
+630 TLWE mask words and one TLWE body for each of 16 contexts. Each key buffer
+contains 161,280 512-bit words. A logical 864-bit key beat packs sixteen lanes as
 `{imag[26:0], real[26:0]}`; bits 511:0 go to key-low and bits 863:512 go in the
 low 352 bits of key-high. Output is 16 context-major 1,025-word TLWE results.
 
-AXI-Lite register `0x30` reports `{busy, error_code[7:0],
-error_channel[2:0], error}` in its low 13 bits. Error channels 1–4 identify
+AXI-Lite register `0x30` reports `{key_index[9:0], inputs_loaded,
+key_zero_loaded, run_started, core_done_seen, input_status_done,
+key_low_status_done, key_high_status_done, output_status_done,
+key_load_active, busy, error_code[7:0], error_channel[2:0], error}`.
+Error channels 1–4 identify
 input, key-low, key-high, and output respectively. A DataMover error completes
 the invocation with the sticky error set; reset the kernel before reuse.
 

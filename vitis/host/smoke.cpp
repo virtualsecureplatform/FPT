@@ -19,7 +19,8 @@ int main(int argc, char** argv) try {
 
   xrt::device device{0};
   const auto uuid = device.load_xclbin(argv[1]);
-  xrt::kernel kernel{device, uuid, "FptBlindRotateKernel"};
+  xrt::kernel kernel{device, uuid, "FptBlindRotateKernel",
+                     xrt::kernel::cu_access_mode::exclusive};
   xrt::bo input{device, kInputBytes,
                 static_cast<xrt::memory_group>(kernel.group_id(0))};
   xrt::bo key_low{device, kKeyBufferBytes,
@@ -39,7 +40,10 @@ int main(int argc, char** argv) try {
 
   auto run = kernel(input, key_low, key_high, output);
   run.wait();
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   const auto status = kernel.read_register(0x30);
+#pragma GCC diagnostic pop
   if (status & 1u) {
     throw std::runtime_error("kernel DataMover error status " +
                              std::to_string(status));

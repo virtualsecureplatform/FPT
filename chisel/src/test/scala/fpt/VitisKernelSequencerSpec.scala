@@ -96,7 +96,7 @@ final class VitisKernelSequencerSpec
 
       dut.io.inputCommand.valid.expect(true.B)
       address(dut.io.inputCommand.bits.peek().litValue) should be(BigInt("100000000", 16))
-      btt(dut.io.inputCommand.bits.peek().litValue) should be(40384)
+      btt(dut.io.inputCommand.bits.peek().litValue) should be(40448)
       dut.io.outputCommand.valid.expect(true.B)
       address(dut.io.outputCommand.bits.peek().litValue) should be(BigInt("400000000", 16))
       btt(dut.io.outputCommand.bits.peek().litValue) should be(65600)
@@ -119,7 +119,7 @@ final class VitisKernelSequencerSpec
     }
   }
 
-  it should "serialize across a non-aligned 631-word context boundary" in {
+  it should "serialize across a 632-word context boundary" in {
     test(new FptBlindRotateKernelSequencer(config)) { dut =>
       initialize(dut)
       dut.reset.poke(true.B)
@@ -150,7 +150,7 @@ final class VitisKernelSequencerSpec
         dut.clock.step()
         cycles += 1
       }
-      starts should be(Vector((0, BigInt(0)), (1, BigInt(631))))
+      starts should be(Vector((0, BigInt(0)), (1, BigInt(632))))
     }
   }
 
@@ -191,6 +191,18 @@ final class VitisKernelSequencerSpec
         dut.clock.step()
       }
       accepted should be(20)
+
+      // A paired beat may already be resident when the key memory inserts
+      // its gap between coefficient loads.  Keep it buffered, but do not
+      // violate the pulse-valid contract while the memory is unavailable.
+      dut.io.coreKeyLoadReady.poke(false.B)
+      dut.io.coreKeyLoadValid.expect(false.B)
+      dut.io.keyLowData.ready.expect(false.B)
+      dut.io.keyHighData.ready.expect(false.B)
+      dut.clock.step(3)
+      dut.io.coreKeyLoadValid.expect(false.B)
+      dut.io.coreKeyLoadReady.poke(true.B)
+      dut.io.coreKeyLoadValid.expect(true.B)
     }
   }
 
@@ -222,9 +234,31 @@ final class VitisKernelSequencerSpec
       dut.io.done.expect(true.B)
       dut.io.ready.expect(true.B)
       dut.io.idle.expect(true.B)
-      dut.io.status.expect(0.U)
+      (dut.io.status.peek().litValue & 0x1fff) should be(0)
       dut.clock.step()
       dut.io.done.expect(false.B)
+    }
+  }
+
+  it should "complete after a bounded output drain when statuses are absent" in {
+    test(new FptBlindRotateKernelSequencer(config)) { dut =>
+      initialize(dut)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+      launch(dut)
+
+      dut.io.coreDone.poke(true.B)
+      dut.clock.step()
+      dut.io.coreDone.poke(false.B)
+      dut.io.done.expect(false.B)
+      for (_ <- 0 until 254) {
+        dut.clock.step()
+        dut.io.done.expect(false.B)
+      }
+      dut.clock.step()
+      dut.io.done.expect(true.B)
+      dut.io.idle.expect(true.B)
     }
   }
 
@@ -242,10 +276,10 @@ final class VitisKernelSequencerSpec
       dut.clock.step()
       dut.io.done.expect(true.B)
       dut.io.idle.expect(true.B)
-      dut.io.status.expect("h00000125".U)
+      (dut.io.status.peek().litValue & 0x1fff) should be(0x125)
       dut.clock.step()
       dut.io.done.expect(false.B)
-      dut.io.status.expect("h00000125".U)
+      (dut.io.status.peek().litValue & 0x1fff) should be(0x125)
     }
   }
 }
