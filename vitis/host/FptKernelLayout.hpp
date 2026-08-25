@@ -17,7 +17,7 @@ inline constexpr std::size_t kInputWordsPerContext = kDimension + 2;
 inline constexpr std::size_t kInputWords = kContexts * kInputWordsPerContext;
 inline constexpr std::size_t kOutputWords =
     kContexts * (kPolynomialSize + 1);
-inline constexpr std::size_t kKeyBeatsPerCoefficient = 256;
+inline constexpr std::size_t kKeyBeatsPerCoefficient = 128;
 inline constexpr std::size_t kKeyWords =
     kDimension * kKeyBeatsPerCoefficient;
 inline constexpr std::size_t kInputBytes = kInputWords * sizeof(std::uint32_t);
@@ -95,4 +95,4 @@ inline std::pair<Axi512Word, Axi512Word> pack_key_beat(
 static_assert(sizeof(fpt::u280::Axi512Word) == 64);
 static_assert(fpt::u280::kInputBytes == 40448);
 static_assert(fpt::u280::kOutputBytes == 65600);
-static_assert(fpt::u280::kKeyBufferBytes == 10321920);
+static_assert(fpt::u280::kKeyBufferBytes == 5160960);

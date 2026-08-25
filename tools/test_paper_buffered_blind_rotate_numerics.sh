@@ -38,7 +38,7 @@ cleanup() {
 trap cleanup EXIT
 
 (cd "$sgen_dir" && sbt assembly)
-FPT_ARITHMETIC_PROFILE="$arithmetic_profile" FFT_LOG_LANES=6 IFFT_LOG_LANES=5 \
+FPT_ARITHMETIC_PROFILE="$arithmetic_profile" FFT_LOG_LANES=7 IFFT_LOG_LANES=6 \
     "$repo_root/tools/generate_sgen_fpt.sh" "$sgen_dir" "$sgen_output"
 
 cmake -S "$repo_root" -B "$cmake_output" \

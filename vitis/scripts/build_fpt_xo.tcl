@@ -77,7 +77,7 @@ ipx::package_project -root_dir $ip_repo_dir \
 set_property sdx_kernel true [ipx::current_core]
 set_property sdx_kernel_type rtl [ipx::current_core]
 ipx::associate_bus_interfaces -busif s_axi_control -clock ap_clk [ipx::current_core]
-foreach bus {m_axi_input m_axi_key_low m_axi_key_high m_axi_output} {
+foreach bus {m_axi_input m_axi_key_low m_axi_key_high m_axi_key_low1 m_axi_key_high1 m_axi_output} {
   ipx::associate_bus_interfaces -busif $bus -clock ap_clk [ipx::current_core]
 }
 ipx::create_xgui_files [ipx::current_core]

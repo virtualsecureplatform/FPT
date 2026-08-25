@@ -8,7 +8,7 @@ sealed class FptRtlProfile(
   val blindRotateDomainDimension = 630
   val barrelBatchContexts = 14
   val bitwiseBatchContexts = 16
-  val keyLoadLanes = 16
+  val keyLoadLanes = 32
 
   val coefficient = CmuxCoefficientConfig(
     polynomialSize = 1024,
@@ -103,7 +103,7 @@ sealed class FptRtlProfile(
       ),
       domainDimension
     )
-    BufferedBlindRotateConfig(blindRotate, keyLoadLanes)
+    BufferedBlindRotateConfig(blindRotate, keyLoadLanes, keyBanks = 3)
   }
 }
 

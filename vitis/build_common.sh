@@ -39,7 +39,13 @@ mkdir -p "$generated_dir" "$build_dir/xo" "$build_dir/xclbin" \
 if [[ ! -x $repo_dir/third_party/SGen/sgen.bat ]]; then
     (cd "$repo_dir/third_party/SGen" && sbt assembly)
 fi
-FPT_ARITHMETIC_PROFILE=paper-set-ii FFT_LOG_LANES=6 IFFT_LOG_LANES=5 \
+FPT_ARITHMETIC_PROFILE=paper-set-ii \
+    FFT_LOG_LANES=${FFT_LOG_LANES:-7} \
+    IFFT_LOG_LANES=${IFFT_LOG_LANES:-6} \
+    RADIX_LOG=${RADIX_LOG:-3} \
+    IFFT_RADIX_LOG=${IFFT_RADIX_LOG:-3} \
+    FPT_SGEN_FORWARD_SWITCH_TRANSPOSE=${FPT_SGEN_FORWARD_SWITCH_TRANSPOSE:-0} \
+    FPT_SGEN_INVERSE_SWITCH_TRANSPOSE=${FPT_SGEN_INVERSE_SWITCH_TRANSPOSE:-0} \
     "$repo_dir/tools/generate_sgen_fpt.sh" \
     "$repo_dir/third_party/SGen" "$generated_dir"
 (cd "$repo_dir/chisel" && sbt -J-Xmx12G \

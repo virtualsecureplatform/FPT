@@ -12,7 +12,8 @@ set_property USER_SLR_ASSIGNMENT SLR1 [get_cells [list \
 set_property USER_SLR_ASSIGNMENT SLR0 [get_cells [list \
   ${fpt_root}/inverse ${fpt_root}/inverseBoundary]]
 set_property USER_SLR_ASSIGNMENT SLR0 [get_cells [list control controller/sequencer \
-  input_datamover key_low_datamover key_high_datamover output_datamover]]
+  input_datamover key_low_datamover key_high_datamover \
+  key_low1_datamover key_high1_datamover output_datamover]]
 
 set forward_sll_registers [get_cells -hierarchical \
   -regexp {^.*/forwardInputBoundary/(outputPayload_)?payload/value_reg.*$}]

@@ -27,18 +27,26 @@ int main(int argc, char** argv) try {
                   static_cast<xrt::memory_group>(kernel.group_id(1))};
   xrt::bo key_high{device, kKeyBufferBytes,
                    static_cast<xrt::memory_group>(kernel.group_id(2))};
+  xrt::bo key_low1{device, kKeyBufferBytes,
+                   static_cast<xrt::memory_group>(kernel.group_id(3))};
+  xrt::bo key_high1{device, kKeyBufferBytes,
+                    static_cast<xrt::memory_group>(kernel.group_id(4))};
   xrt::bo output{device, kOutputBytes,
-                 static_cast<xrt::memory_group>(kernel.group_id(3))};
+                 static_cast<xrt::memory_group>(kernel.group_id(5))};
 
   std::fill_n(input.map<std::uint32_t*>(), kInputWords, 0);
   std::fill_n(key_low.map<std::uint64_t*>(), kKeyBufferBytes / 8, 0);
   std::fill_n(key_high.map<std::uint64_t*>(), kKeyBufferBytes / 8, 0);
+  std::fill_n(key_low1.map<std::uint64_t*>(), kKeyBufferBytes / 8, 0);
+  std::fill_n(key_high1.map<std::uint64_t*>(), kKeyBufferBytes / 8, 0);
   std::fill_n(output.map<std::uint32_t*>(), kOutputWords, 0xdeadbeefu);
   input.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   key_low.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   key_high.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  key_low1.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  key_high1.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-  auto run = kernel(input, key_low, key_high, output);
+  auto run = kernel(input, key_low, key_high, key_low1, key_high1, output);
   run.wait();
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"

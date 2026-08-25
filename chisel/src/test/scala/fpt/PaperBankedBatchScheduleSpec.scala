@@ -48,7 +48,7 @@ final class PaperBankedBatchScheduleSpec
       includeVerilogSource = true,
       bitwiseBitsPerCycle = if (bitwise) Some(2) else None
     )
-    val expectedLatency = if (bitwise) 237 else 220
+    val expectedLatency = if (bitwise) 249 else 220
     val config = BatchedCmuxEngineConfig(
       engine,
       batchContexts = if (bitwise) 16 else 14,

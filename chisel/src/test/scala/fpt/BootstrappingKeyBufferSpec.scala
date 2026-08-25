@@ -213,4 +213,61 @@ final class BootstrappingKeyBufferSpec
       dut.io.readResponseValid.expect(false.B)
     }
   }
+
+  it should "retain three independent coefficients when configured with three banks" in {
+    val threeBankConfig = config.copy(bankCount = 3)
+    test(new BootstrappingKeyPingPongBuffer(threeBankConfig)) { dut =>
+      dut.io.loadStart.poke(false.B)
+      dut.io.loadValid.poke(false.B)
+      dut.io.loadIndex.poke(0.U)
+      dut.io.load.foreach { lane =>
+        lane.real.poke(0.S)
+        lane.imag.poke(0.S)
+      }
+      dut.io.readRequestValid.poke(false.B)
+      dut.io.readIndex.poke(0.U)
+      dut.io.readRow.poke(0.U)
+      dut.io.readBeat.poke(0.U)
+      dut.io.readResponseReady.poke(true.B)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+
+      def load(index: Int): Unit = {
+        dut.io.loadIndex.poke(index.U)
+        dut.io.loadStartReady.expect(true.B)
+        dut.io.loadStart.poke(true.B)
+        dut.clock.step()
+        dut.io.loadStart.poke(false.B)
+        dut.io.loadValid.poke(true.B)
+        dut.clock.step(threeBankConfig.loadBeatsPerCoefficient)
+        dut.io.loadValid.poke(false.B)
+        dut.io.loadDone.expect(true.B)
+        dut.clock.step()
+      }
+
+      load(0)
+      load(1)
+      load(2)
+      for (bank <- 0 until 3) {
+        dut.io.bankValid(bank).expect(true.B)
+        dut.io.bankIndex(bank).expect(bank.U)
+      }
+      dut.io.loadIndex.poke(3.U)
+      dut.io.loadStartReady.expect(false.B)
+
+      dut.io.readRequestValid.poke(true.B)
+      dut.io.readIndex.poke(0.U)
+      for (request <- 0 until threeBankConfig.readsPerCoefficient) {
+        val word = request % threeBankConfig.wordsPerCoefficient
+        dut.io.readRow.poke((word / external.inputFrameBeats).U)
+        dut.io.readBeat.poke((word % external.inputFrameBeats).U)
+        dut.io.readRequestReady.expect(true.B)
+        dut.clock.step()
+      }
+      dut.io.readRequestValid.poke(false.B)
+      dut.clock.step()
+      dut.io.loadStartReady.expect(true.B)
+    }
+  }
 }

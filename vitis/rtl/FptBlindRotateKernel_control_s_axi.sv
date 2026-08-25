@@ -32,8 +32,14 @@ module FptBlindRotateKernel_control_s_axi #(
   output wire [63:0]                     input_ptr,
   output wire [63:0]                     key_low_ptr,
   output wire [63:0]                     key_high_ptr,
+  output wire [63:0]                     key_low1_ptr,
+  output wire [63:0]                     key_high1_ptr,
   output wire [63:0]                     output_ptr,
-  input  wire [31:0]                     kernel_status
+  input  wire [31:0]                     kernel_status,
+  input  wire [31:0]                     debug_key_beats,
+  input  wire [31:0]                     debug_key_starved_cycles,
+  input  wire [31:0]                     debug_key_bank_blocked_cycles,
+  input  wire [31:0]                     debug_run_cycles
 );
 
   localparam [6:0] ADDR_AP_CTRL       = 7'h00;
@@ -49,6 +55,14 @@ module FptBlindRotateKernel_control_s_axi #(
   localparam [6:0] ADDR_OUTPUT_LO     = 7'h28;
   localparam [6:0] ADDR_OUTPUT_HI     = 7'h2c;
   localparam [6:0] ADDR_STATUS        = 7'h30;
+  localparam [6:0] ADDR_KEY_BEATS     = 7'h34;
+  localparam [6:0] ADDR_KEY_STARVED   = 7'h38;
+  localparam [6:0] ADDR_KEY_BLOCKED   = 7'h3c;
+  localparam [6:0] ADDR_RUN_CYCLES    = 7'h40;
+  localparam [6:0] ADDR_KEY_LOW1_LO   = 7'h48;
+  localparam [6:0] ADDR_KEY_LOW1_HI   = 7'h4c;
+  localparam [6:0] ADDR_KEY_HIGH1_LO  = 7'h50;
+  localparam [6:0] ADDR_KEY_HIGH1_HI  = 7'h54;
   localparam [1:0] WRIDLE = 2'd0, WRDATA = 2'd1, WRRESP = 2'd2;
   localparam [1:0] RDIDLE = 2'd0, RDDATA = 2'd1;
 
@@ -66,6 +80,8 @@ module FptBlindRotateKernel_control_s_axi #(
   reg [63:0] int_input_ptr;
   reg [63:0] int_key_low_ptr;
   reg [63:0] int_key_high_ptr;
+  reg [63:0] int_key_low1_ptr;
+  reg [63:0] int_key_high1_ptr;
   reg [63:0] int_output_ptr;
 
   wire aw_hs = AWVALID && AWREADY;
@@ -88,6 +104,8 @@ module FptBlindRotateKernel_control_s_axi #(
   assign input_ptr = int_input_ptr;
   assign key_low_ptr = int_key_low_ptr;
   assign key_high_ptr = int_key_high_ptr;
+  assign key_low1_ptr = int_key_low1_ptr;
+  assign key_high1_ptr = int_key_high1_ptr;
   assign output_ptr = int_output_ptr;
 
   always @(posedge ACLK) begin
@@ -133,6 +151,14 @@ module FptBlindRotateKernel_control_s_axi #(
             ADDR_OUTPUT_LO: rdata <= int_output_ptr[31:0];
             ADDR_OUTPUT_HI: rdata <= int_output_ptr[63:32];
             ADDR_STATUS: rdata <= kernel_status;
+            ADDR_KEY_BEATS: rdata <= debug_key_beats;
+            ADDR_KEY_STARVED: rdata <= debug_key_starved_cycles;
+            ADDR_KEY_BLOCKED: rdata <= debug_key_bank_blocked_cycles;
+            ADDR_RUN_CYCLES: rdata <= debug_run_cycles;
+            ADDR_KEY_LOW1_LO: rdata <= int_key_low1_ptr[31:0];
+            ADDR_KEY_LOW1_HI: rdata <= int_key_low1_ptr[63:32];
+            ADDR_KEY_HIGH1_LO: rdata <= int_key_high1_ptr[31:0];
+            ADDR_KEY_HIGH1_HI: rdata <= int_key_high1_ptr[63:32];
             default: rdata <= 0;
           endcase
         end
@@ -154,6 +180,8 @@ module FptBlindRotateKernel_control_s_axi #(
       int_input_ptr <= 64'b0;
       int_key_low_ptr <= 64'b0;
       int_key_high_ptr <= 64'b0;
+      int_key_low1_ptr <= 64'b0;
+      int_key_high1_ptr <= 64'b0;
       int_output_ptr <= 64'b0;
     end else if (ACLK_EN) begin
       if (w_hs && waddr == ADDR_AP_CTRL && WSTRB[0]) begin
@@ -187,6 +215,14 @@ module FptBlindRotateKernel_control_s_axi #(
         int_key_high_ptr[31:0] <= (WDATA & wmask) | (int_key_high_ptr[31:0] & ~wmask);
       if (w_hs && waddr == ADDR_KEY_HIGH_HI)
         int_key_high_ptr[63:32] <= (WDATA & wmask) | (int_key_high_ptr[63:32] & ~wmask);
+      if (w_hs && waddr == ADDR_KEY_LOW1_LO)
+        int_key_low1_ptr[31:0] <= (WDATA & wmask) | (int_key_low1_ptr[31:0] & ~wmask);
+      if (w_hs && waddr == ADDR_KEY_LOW1_HI)
+        int_key_low1_ptr[63:32] <= (WDATA & wmask) | (int_key_low1_ptr[63:32] & ~wmask);
+      if (w_hs && waddr == ADDR_KEY_HIGH1_LO)
+        int_key_high1_ptr[31:0] <= (WDATA & wmask) | (int_key_high1_ptr[31:0] & ~wmask);
+      if (w_hs && waddr == ADDR_KEY_HIGH1_HI)
+        int_key_high1_ptr[63:32] <= (WDATA & wmask) | (int_key_high1_ptr[63:32] & ~wmask);
       if (w_hs && waddr == ADDR_OUTPUT_LO)
         int_output_ptr[31:0] <= (WDATA & wmask) | (int_output_ptr[31:0] & ~wmask);
       if (w_hs && waddr == ADDR_OUTPUT_HI)

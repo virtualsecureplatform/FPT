@@ -183,9 +183,18 @@ final class BatchedBlindRotateEngine(
   val running = RegInit(false.B)
   io.active := running
   val validInputContext = io.inputContext < config.batchContexts.U
+  // Keep a controller-local copy of the coefficient-store occupancy.  The
+  // store updates occupancy only at command/update boundaries, well before a
+  // new input context can be accepted.  Using the snapshot prevents the
+  // ready/start handshake from making a combinational SLR round trip through
+  // the coefficient memories while preserving zero-bubble readiness.
+  val contextBusy = RegNext(
+    cmux.io.contextBusy,
+    VecInit(Seq.fill(config.batchContexts)(false.B))
+  )
   val selectedInputBusy = Mux(
     validInputContext,
-    cmux.io.contextBusy(io.inputContext),
+    contextBusy(io.inputContext),
     true.B
   )
   io.inputStartReady := loadState === loadIdle && !running &&

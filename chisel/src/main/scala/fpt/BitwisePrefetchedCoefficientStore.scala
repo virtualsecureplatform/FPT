@@ -17,7 +17,11 @@ final class BitwisePrefetchedBatchedCmuxCoefficientStore(
   private val rowWidth = counterWidth(rows)
   private val commandInterval = rows * config.forwardBeats
   private val cooldownWidth = counterWidth(commandInterval)
-  private val coreCount = 2
+  // A 128-lane Set-II command occupies 16 stream cycles, while one bitwise
+  // prefetch/rotate frontend needs 34 cycles before it can accept another
+  // context. Two frontends therefore force a 34-cycle reuse bubble. Three
+  // cover the turnaround (3 * 16 >= 34) and restore the intended II=16.
+  private val coreCount = 3
   private val coreWidth = counterWidth(coreCount)
   private val commandQueueEntries = batchContexts + 2
   private val commandQueuePointerWidth = counterWidth(commandQueueEntries)

@@ -5,7 +5,8 @@ import chisel3.util._
 
 final case class BufferedBlindRotateConfig(
     blindRotate: BatchedBlindRotateEngineConfig,
-    keyLoadLanes: Int
+    keyLoadLanes: Int,
+    keyBanks: Int = 2
 ) {
   require(
     blindRotate.cmux.decoupledBootstrappingKey,
@@ -17,9 +18,10 @@ final case class BufferedBlindRotateConfig(
       blindRotate.cmux.engine.externalProduct,
       blindRotate.batchContexts,
       blindRotate.domainDimension,
-      keyLoadLanes
+      keyLoadLanes,
+      keyBanks
     )
-  val keyMemoryDepth: Int = 2 * keyBuffer.wordsPerCoefficient
+  val keyMemoryDepth: Int = keyBanks * keyBuffer.wordsPerCoefficient
   val keyMemoryWordBits: Int =
     keyBuffer.complexValuesPerRead *
       2 * keyBuffer.externalProduct.bootstrappingKey.width
@@ -81,9 +83,9 @@ final class BufferedBatchedBlindRotateSampleExtractEngine(
     )
     val keyLoadDone = Output(Bool())
     val keyLoadDoneIndex = Output(UInt(blindConfig.dimensionWidth.W))
-    val keyBankValid = Output(Vec(2, Bool()))
+    val keyBankValid = Output(Vec(config.keyBuffer.bankCount, Bool()))
     val keyBankIndex = Output(
-      Vec(2, UInt(blindConfig.dimensionWidth.W))
+      Vec(config.keyBuffer.bankCount, UInt(blindConfig.dimensionWidth.W))
     )
 
     val runStart = Input(Bool())
@@ -209,7 +211,11 @@ final class BufferedBatchedBlindRotateSampleExtractEngine(
   val firstKeyReady = keyBuffer.io.bankValid.zip(keyBuffer.io.bankIndex)
     .map { case (valid, index) => valid && index === 0.U }
     .reduce(_ || _)
-  io.runReady := blindRotate.io.runReady && firstKeyReady
+  // Key-bank residency lives beside the wide key RAM.  Snapshot the reduced
+  // predicate at that boundary instead of allowing every bankIndex bit to
+  // traverse the sequencer and return on runStart in the same cycle.
+  val firstKeyReadyLocal = RegNext(firstKeyReady, false.B)
+  io.runReady := blindRotate.io.runReady && firstKeyReadyLocal
   blindRotate.io.runStart := io.runStart && io.runReady
   when(io.runStart) {
     assert(io.runReady, "buffered Blind Rotate started before key zero loaded")

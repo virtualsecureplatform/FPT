@@ -88,7 +88,8 @@ final class PaperBufferedBlindRotateNumericalSpec
       PaperU280BufferedBarrelConfig(
         forwardPath.toString,
         inversePath.toString,
-        domainDimension = 1
+        domainDimension = 1,
+        includeVerilogSource = true
       )
     } else {
       profile.bufferedBlindRotate(
@@ -111,8 +112,9 @@ final class PaperBufferedBlindRotateNumericalSpec
 
     contexts should be(profile.bitwiseBatchContexts)
     if (sys.env.get("FPT_U280_ROUTABLE_200_NUMERICS").contains("1")) {
-      coefficient.forwardLanes should be(64)
-      coefficient.inverseLanes should be(32)
+      coefficient.forwardLanes should be(128)
+      coefficient.inverseLanes should be(64)
+      blind.cmux.commandInterval should be(16)
     }
     inputRows.size should be(contexts)
     inputRows.foreach(_.length should be(3))

@@ -7,11 +7,13 @@ final case class BootstrappingKeyBufferConfig(
     externalProduct: ExternalProductConfig,
     batchContexts: Int,
     domainDimension: Int,
-    loadLanes: Int
+    loadLanes: Int,
+    bankCount: Int = 2
 ) {
   require(batchContexts >= 2)
   require(domainDimension >= 1)
   require(loadLanes >= 1)
+  require(bankCount >= 2)
 
   val complexValuesPerRead: Int =
     externalProduct.outputComponents * externalProduct.inputLanes
@@ -48,8 +50,9 @@ final class BootstrappingKeyPingPongBuffer(
   private val keyWidth = external.bootstrappingKey.width
   private val complexWidth = 2 * keyWidth
   private val loadWordWidth = config.loadLanes * complexWidth
-  private val memoryDepth = 2 * config.wordsPerCoefficient
+  private val memoryDepth = config.bankCount * config.wordsPerCoefficient
   private val memoryAddressWidth = TransformUtil.counterWidth(memoryDepth)
+  private val bankWidth = TransformUtil.counterWidth(config.bankCount)
   private val wordWidth = TransformUtil.counterWidth(
     config.wordsPerCoefficient
   )
@@ -93,8 +96,10 @@ final class BootstrappingKeyPingPongBuffer(
       )
     )
 
-    val bankValid = Output(Vec(2, Bool()))
-    val bankIndex = Output(Vec(2, UInt(config.dimensionWidth.W)))
+    val bankValid = Output(Vec(config.bankCount, Bool()))
+    val bankIndex = Output(
+      Vec(config.bankCount, UInt(config.dimensionWidth.W))
+    )
   })
 
   val memory = SyncReadMem(
@@ -102,16 +107,16 @@ final class BootstrappingKeyPingPongBuffer(
     Vec(config.loadGroupsPerRead, UInt(loadWordWidth.W))
   )
 
-  val bankValid = RegInit(VecInit(Seq.fill(2)(false.B)))
-  val bankIndex = Reg(Vec(2, UInt(config.dimensionWidth.W)))
+  val bankValid = RegInit(VecInit(Seq.fill(config.bankCount)(false.B)))
+  val bankIndex = Reg(Vec(config.bankCount, UInt(config.dimensionWidth.W)))
   val bankReadCount = RegInit(
-    VecInit(Seq.fill(2)(0.U(readCountWidth.W)))
+    VecInit(Seq.fill(config.bankCount)(0.U(readCountWidth.W)))
   )
   io.bankValid := bankValid
   io.bankIndex := bankIndex
 
   val loading = RegInit(false.B)
-  val loadBank = RegInit(0.U(1.W))
+  val loadBank = RegInit(0.U(bankWidth.W))
   val loadIndex = RegInit(0.U(config.dimensionWidth.W))
   val loadWord = RegInit(0.U(wordWidth.W))
   val loadGroup = RegInit(0.U(loadGroupWidth.W))
@@ -127,7 +132,7 @@ final class BootstrappingKeyPingPongBuffer(
     loadWord === (config.wordsPerCoefficient - 1).U
 
   val responseValid = RegInit(false.B)
-  val responseBank = RegInit(0.U(1.W))
+  val responseBank = RegInit(0.U(bankWidth.W))
   val responseIndex = RegInit(0.U(config.dimensionWidth.W))
   val responseRow = RegInit(0.U(config.rowWidth.W))
   val responseBeat = RegInit(0.U(config.beatWidth.W))
@@ -137,8 +142,8 @@ final class BootstrappingKeyPingPongBuffer(
   io.readResponseBeat := responseBeat
 
   val responseFire = responseValid && io.readResponseReady
-  val bankFree = Wire(Vec(2, Bool()))
-  for (bank <- 0 until 2) {
+  val bankFree = Wire(Vec(config.bankCount, Bool()))
+  for (bank <- 0 until config.bankCount) {
     bankFree(bank) := !bankValid(bank) &&
       !(loading && loadBank === bank.U) &&
       !(responseValid && responseBank === bank.U && !responseFire)
@@ -148,7 +153,7 @@ final class BootstrappingKeyPingPongBuffer(
   }.reduce(_ || _)
   val duplicateLoad = residentDuplicate ||
     (loading && loadIndex === io.loadIndex)
-  val selectedLoadBank = Mux(bankFree(0), 0.U, 1.U)
+  val selectedLoadBank = PriorityEncoder(bankFree)
   io.loadStartReady := (!loading || completingLoad) &&
     bankFree.asUInt.orR &&
     !duplicateLoad && io.loadIndex < config.domainDimension.U
@@ -208,8 +213,8 @@ final class BootstrappingKeyPingPongBuffer(
   val inputReadWord = (
     io.readRow * external.inputFrameBeats.U + io.readBeat
   )(wordWidth - 1, 0)
-  val inputMatchingBank = Wire(Vec(2, Bool()))
-  for (bank <- 0 until 2) {
+  val inputMatchingBank = Wire(Vec(config.bankCount, Bool()))
+  for (bank <- 0 until config.bankCount) {
     val resident = bankValid(bank) && bankIndex(bank) === io.readIndex
     val completing = completingLoad && loadBank === bank.U &&
       loadIndex === io.readIndex && loadWord =/= inputReadWord
@@ -220,7 +225,7 @@ final class BootstrappingKeyPingPongBuffer(
   // outer pending queue's distributed-RAM read and tag/address decode from
   // the BRAM address path while retaining one request per cycle.
   val requestValid = RegInit(false.B)
-  val requestBank = RegInit(0.U(1.W))
+  val requestBank = RegInit(0.U(bankWidth.W))
   val requestAddress = RegInit(0.U(memoryAddressWidth.W))
   val requestIndex = RegInit(0.U(config.dimensionWidth.W))
   val requestRow = RegInit(0.U(config.rowWidth.W))
@@ -233,7 +238,7 @@ final class BootstrappingKeyPingPongBuffer(
     io.readRow < external.rows.U &&
     io.readBeat < external.inputFrameBeats.U
   val inputRequestFire = io.readRequestValid && io.readRequestReady
-  val selectedInputBank = Mux(inputMatchingBank(0), 0.U, 1.U)
+  val selectedInputBank = PriorityEncoder(inputMatchingBank)
   val inputReadAddress = (
     selectedInputBank * config.wordsPerCoefficient.U + inputReadWord
   )(memoryAddressWidth - 1, 0)

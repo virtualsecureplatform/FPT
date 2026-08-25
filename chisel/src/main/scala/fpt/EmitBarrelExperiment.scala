@@ -9,35 +9,29 @@ import java.nio.file.Path
   * Identical to `EmitPaperBufferedBlindRotateAccelerator` except the CMUX
   * coefficient frontend precomputes the paper barrel's requested stream-width
   * windows from replicated banks instead of materializing its full-width mux
-  * or using the bitwise transposed working sets. One 64-lane rotator handles
+  * or using the bitwise transposed working sets. One 128-lane rotator handles
   * the low and high halves on alternating preprocessing cycles and stores all
   * gadget levels together. The prior workset emits concurrently, preserving
-  * II=16 without the bitwise frontend's unroutable full-polynomial transpose.
+  * the paper's II=16 without the bitwise frontend's unroutable full-polynomial
+  * transpose.
   */
 private[fpt] object PaperU280BufferedBarrelConfig {
   def apply(
       forwardPath: String,
       inversePath: String,
-      domainDimension: Int
+      domainDimension: Int,
+      includeVerilogSource: Boolean = false
   ): BufferedBlindRotateConfig = {
     require(domainDimension >= 1, "DOMAIN_DIMENSION must be positive")
 
     val baseEngine = PaperSetII.cmuxEngine(
       forwardPath,
       inversePath,
-      includeVerilogSource = false
+      includeVerilogSource = includeVerilogSource
     )
     val engine = baseEngine.copy(
-      coefficient = baseEngine.coefficient.copy(
-        forwardLanes = 64,
-        inverseLanes = 32,
-        windowedRotator = true
-      ),
-      forwardTransform = baseEngine.forwardTransform.copy(lanes = 64),
-      inverseTransform = baseEngine.inverseTransform.copy(lanes = 32),
+      coefficient = baseEngine.coefficient.copy(windowedRotator = true),
       externalProduct = baseEngine.externalProduct.copy(
-        inputLanes = 64,
-        outputLanes = 32,
         multiplier = ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
       )
     )

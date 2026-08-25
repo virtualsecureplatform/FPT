@@ -21,6 +21,8 @@ module FptBlindRotateKernel #(
   `FPT_AXI_MASTER_PORT(m_axi_input)
   `FPT_AXI_MASTER_PORT(m_axi_key_low)
   `FPT_AXI_MASTER_PORT(m_axi_key_high)
+  `FPT_AXI_MASTER_PORT(m_axi_key_low1)
+  `FPT_AXI_MASTER_PORT(m_axi_key_high1)
   `FPT_AXI_MASTER_PORT(m_axi_output)
   input  wire s_axi_control_awvalid,
   output wire s_axi_control_awready,
@@ -48,28 +50,41 @@ module FptBlindRotateKernel #(
   wire ap_done;
   wire ap_ready;
   wire [31:0] kernel_status;
+  wire [31:0] debug_key_beats, debug_key_starved_cycles;
+  wire [31:0] debug_key_bank_blocked_cycles, debug_run_cycles;
   wire [63:0] input_ptr;
   wire [63:0] key_low_ptr;
   wire [63:0] key_high_ptr;
+  wire [63:0] key_low1_ptr;
+  wire [63:0] key_high1_ptr;
   wire [63:0] output_ptr;
 
   wire input_cmd_valid, input_cmd_ready;
   wire key_low_cmd_valid, key_low_cmd_ready;
   wire key_high_cmd_valid, key_high_cmd_ready;
+  wire key_low1_cmd_valid, key_low1_cmd_ready;
+  wire key_high1_cmd_valid, key_high1_cmd_ready;
   wire output_cmd_valid, output_cmd_ready;
   wire [103:0] input_cmd_data, key_low_cmd_data;
   wire [103:0] key_high_cmd_data, output_cmd_data;
+  wire [103:0] key_low1_cmd_data, key_high1_cmd_data;
   wire input_stream_valid, input_stream_ready;
   wire key_low_stream_valid, key_low_stream_ready;
   wire key_high_stream_valid, key_high_stream_ready;
+  wire key_low1_stream_valid, key_low1_stream_ready;
+  wire key_high1_stream_valid, key_high1_stream_ready;
   wire [511:0] input_stream_data, key_low_stream_data, key_high_stream_data;
+  wire [511:0] key_low1_stream_data, key_high1_stream_data;
   wire output_stream_valid, output_stream_ready, output_stream_last;
   wire [31:0] output_stream_data;
   wire input_status_valid, key_low_status_valid, key_high_status_valid;
+  wire key_low1_status_valid, key_high1_status_valid;
   wire output_status_valid;
   wire [7:0] input_status_data, key_low_status_data, key_high_status_data;
+  wire [7:0] key_low1_status_data, key_high1_status_data;
   wire [7:0] output_status_data;
   wire input_error, key_low_error, key_high_error, output_error;
+  wire key_low1_error, key_high1_error;
 
   FptBlindRotateKernel_control_s_axi #(
     .C_S_AXI_ADDR_WIDTH(C_S_AXI_CONTROL_ADDR_WIDTH),
@@ -88,21 +103,34 @@ module FptBlindRotateKernel #(
     .ap_start(ap_start), .ap_done(ap_done), .ap_ready(ap_ready),
     .ap_idle(ap_idle), .input_ptr(input_ptr), .key_low_ptr(key_low_ptr),
     .key_high_ptr(key_high_ptr), .output_ptr(output_ptr),
-    .kernel_status(kernel_status)
+    .key_low1_ptr(key_low1_ptr), .key_high1_ptr(key_high1_ptr),
+    .kernel_status(kernel_status), .debug_key_beats(debug_key_beats),
+    .debug_key_starved_cycles(debug_key_starved_cycles),
+    .debug_key_bank_blocked_cycles(debug_key_bank_blocked_cycles),
+    .debug_run_cycles(debug_run_cycles)
   );
 
   FptBlindRotateKernelController controller (
     .clock(ap_clk), .reset(reset),
     .io_start(ap_start), .io_idle(ap_idle), .io_done(ap_done),
     .io_ready(ap_ready), .io_status(kernel_status),
+    .io_debugKeyBeats(debug_key_beats),
+    .io_debugKeyStarvedCycles(debug_key_starved_cycles),
+    .io_debugKeyBankBlockedCycles(debug_key_bank_blocked_cycles),
+    .io_debugRunCycles(debug_run_cycles),
     .io_inputPointer(input_ptr), .io_keyLowPointer(key_low_ptr),
     .io_keyHighPointer(key_high_ptr), .io_outputPointer(output_ptr),
+    .io_keyLow1Pointer(key_low1_ptr), .io_keyHigh1Pointer(key_high1_ptr),
     .io_inputCommand_ready(input_cmd_ready),
     .io_inputCommand_valid(input_cmd_valid), .io_inputCommand_bits(input_cmd_data),
     .io_keyLowCommand_ready(key_low_cmd_ready),
     .io_keyLowCommand_valid(key_low_cmd_valid), .io_keyLowCommand_bits(key_low_cmd_data),
     .io_keyHighCommand_ready(key_high_cmd_ready),
     .io_keyHighCommand_valid(key_high_cmd_valid), .io_keyHighCommand_bits(key_high_cmd_data),
+    .io_keyLow1Command_ready(key_low1_cmd_ready),
+    .io_keyLow1Command_valid(key_low1_cmd_valid), .io_keyLow1Command_bits(key_low1_cmd_data),
+    .io_keyHigh1Command_ready(key_high1_cmd_ready),
+    .io_keyHigh1Command_valid(key_high1_cmd_valid), .io_keyHigh1Command_bits(key_high1_cmd_data),
     .io_outputCommand_ready(output_cmd_ready),
     .io_outputCommand_valid(output_cmd_valid), .io_outputCommand_bits(output_cmd_data),
     .io_inputData_ready(input_stream_ready),
@@ -111,15 +139,22 @@ module FptBlindRotateKernel #(
     .io_keyLowData_valid(key_low_stream_valid), .io_keyLowData_bits(key_low_stream_data),
     .io_keyHighData_ready(key_high_stream_ready),
     .io_keyHighData_valid(key_high_stream_valid), .io_keyHighData_bits(key_high_stream_data),
+    .io_keyLow1Data_ready(key_low1_stream_ready),
+    .io_keyLow1Data_valid(key_low1_stream_valid), .io_keyLow1Data_bits(key_low1_stream_data),
+    .io_keyHigh1Data_ready(key_high1_stream_ready),
+    .io_keyHigh1Data_valid(key_high1_stream_valid), .io_keyHigh1Data_bits(key_high1_stream_data),
     .io_outputData_ready(output_stream_ready),
     .io_outputData_valid(output_stream_valid), .io_outputData_bits(output_stream_data),
     .io_outputLast(output_stream_last),
     .io_inputStatus_valid(input_status_valid), .io_inputStatus_bits(input_status_data),
     .io_keyLowStatus_valid(key_low_status_valid), .io_keyLowStatus_bits(key_low_status_data),
     .io_keyHighStatus_valid(key_high_status_valid), .io_keyHighStatus_bits(key_high_status_data),
+    .io_keyLow1Status_valid(key_low1_status_valid), .io_keyLow1Status_bits(key_low1_status_data),
+    .io_keyHigh1Status_valid(key_high1_status_valid), .io_keyHigh1Status_bits(key_high1_status_data),
     .io_outputStatus_valid(output_status_valid), .io_outputStatus_bits(output_status_data),
     .io_inputError(input_error), .io_keyLowError(key_low_error),
-    .io_keyHighError(key_high_error), .io_outputError(output_error)
+    .io_keyHighError(key_high_error), .io_outputError(output_error),
+    .io_keyLow1Error(key_low1_error), .io_keyHigh1Error(key_high1_error)
   );
 
   axi_datamover_mm2s input_datamover (
@@ -164,6 +199,10 @@ module FptBlindRotateKernel #(
     key_low_stream, key_low_status, key_low_error)
   `FPT_KEY_DATAMOVER(key_high_datamover, m_axi_key_high, key_high_cmd,
     key_high_stream, key_high_status, key_high_error)
+  `FPT_KEY_DATAMOVER(key_low1_datamover, m_axi_key_low1, key_low1_cmd,
+    key_low1_stream, key_low1_status, key_low1_error)
+  `FPT_KEY_DATAMOVER(key_high1_datamover, m_axi_key_high1, key_high1_cmd,
+    key_high1_stream, key_high1_status, key_high1_error)
 
   axi_datamover_s2mm output_datamover (
     .m_axi_s2mm_aclk(ap_clk), .m_axi_s2mm_aresetn(ap_rst_n),
@@ -194,6 +233,8 @@ module FptBlindRotateKernel #(
   `FPT_TIE_READ_MASTER_WRITE(m_axi_input)
   `FPT_TIE_READ_MASTER_WRITE(m_axi_key_low)
   `FPT_TIE_READ_MASTER_WRITE(m_axi_key_high)
+  `FPT_TIE_READ_MASTER_WRITE(m_axi_key_low1)
+  `FPT_TIE_READ_MASTER_WRITE(m_axi_key_high1)
   assign m_axi_output_arvalid = 1'b0;
   assign m_axi_output_araddr = 64'b0;
   assign m_axi_output_arlen = 8'b0;

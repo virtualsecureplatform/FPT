@@ -20,9 +20,9 @@ final class FptBlindRotateKernelSequencer(
   require(dimension == 630, "the Vitis kernel implements Paper Set-II")
   require(coefficient.torusWidth == 32)
   require(blind.inputTorusWidth == 32)
-  require(config.keyBuffer.loadLanes == 16)
+  require(config.keyBuffer.loadLanes == 32)
   require(keyWidth == 27)
-  require(config.keyBuffer.loadBeatsPerCoefficient == 256)
+  require(config.keyBuffer.loadBeatsPerCoefficient == 128)
 
   // One test-vector word, `dimension` TLWE mask words, and one TLWE body.
   private val inputWordsPerContext = dimension + 2
@@ -31,11 +31,7 @@ final class FptBlindRotateKernelSequencer(
   private val outputWords = contexts * (coefficient.polynomialSize + 1)
   private val outputBytes = outputWords * 4
   private val keyWords = dimension * config.keyBuffer.loadBeatsPerCoefficient
-  private val keyFirstCoefficients = 511
-  private val keyFirstWords =
-    keyFirstCoefficients * config.keyBuffer.loadBeatsPerCoefficient
-  private val keyFirstBytes = keyFirstWords * 64
-  private val keySecondBytes = (keyWords - keyFirstWords) * 64
+  private val keyBytes = keyWords * 64
 
   val io = IO(new Bundle {
     val start = Input(Bool())
@@ -43,28 +39,42 @@ final class FptBlindRotateKernelSequencer(
     val done = Output(Bool())
     val ready = Output(Bool())
     val status = Output(UInt(32.W))
+    val debugKeyBeats = Output(UInt(32.W))
+    val debugKeyStarvedCycles = Output(UInt(32.W))
+    val debugKeyBankBlockedCycles = Output(UInt(32.W))
+    val debugRunCycles = Output(UInt(32.W))
     val inputPointer = Input(UInt(64.W))
     val keyLowPointer = Input(UInt(64.W))
     val keyHighPointer = Input(UInt(64.W))
+    val keyLow1Pointer = Input(UInt(64.W))
+    val keyHigh1Pointer = Input(UInt(64.W))
     val outputPointer = Input(UInt(64.W))
 
     val inputCommand = Decoupled(UInt(104.W))
     val keyLowCommand = Decoupled(UInt(104.W))
     val keyHighCommand = Decoupled(UInt(104.W))
+    val keyLow1Command = Decoupled(UInt(104.W))
+    val keyHigh1Command = Decoupled(UInt(104.W))
     val outputCommand = Decoupled(UInt(104.W))
     val inputData = Flipped(Decoupled(UInt(512.W)))
     val keyLowData = Flipped(Decoupled(UInt(512.W)))
     val keyHighData = Flipped(Decoupled(UInt(512.W)))
+    val keyLow1Data = Flipped(Decoupled(UInt(512.W)))
+    val keyHigh1Data = Flipped(Decoupled(UInt(512.W)))
     val outputData = Decoupled(UInt(32.W))
     val outputLast = Output(Bool())
 
     val inputStatus = Flipped(Valid(UInt(8.W)))
     val keyLowStatus = Flipped(Valid(UInt(8.W)))
     val keyHighStatus = Flipped(Valid(UInt(8.W)))
+    val keyLow1Status = Flipped(Valid(UInt(8.W)))
+    val keyHigh1Status = Flipped(Valid(UInt(8.W)))
     val outputStatus = Flipped(Valid(UInt(8.W)))
     val inputError = Input(Bool())
     val keyLowError = Input(Bool())
     val keyHighError = Input(Bool())
+    val keyLow1Error = Input(Bool())
+    val keyHigh1Error = Input(Bool())
     val outputError = Input(Bool())
 
     val coreInputStart = Output(Bool())
@@ -82,7 +92,7 @@ final class FptBlindRotateKernelSequencer(
     val coreKeyLoadIndex = Output(UInt(dimensionWidth.W))
     val coreKeyLoadValid = Output(Bool())
     val coreKeyLoadReady = Input(Bool())
-    val coreKeyLoad = Output(Vec(16, new ComplexSInt(keyWidth)))
+    val coreKeyLoad = Output(Vec(32, new ComplexSInt(keyWidth)))
     val coreKeyLoadDone = Input(Bool())
     val coreKeyLoadDoneIndex = Input(UInt(dimensionWidth.W))
 
@@ -113,10 +123,20 @@ final class FptBlindRotateKernelSequencer(
   io.ready := launch || donePulse
   val progressStatus = WireDefault(0.U(19.W))
   io.status := Cat(progressStatus, busy, errorCode, errorChannel, errorSticky)
+  val debugKeyBeats = RegInit(0.U(32.W))
+  val debugKeyStarvedCycles = RegInit(0.U(32.W))
+  val debugKeyBankBlockedCycles = RegInit(0.U(32.W))
+  val debugRunCycles = RegInit(0.U(32.W))
+  io.debugKeyBeats := debugKeyBeats
+  io.debugKeyStarvedCycles := debugKeyStarvedCycles
+  io.debugKeyBankBlockedCycles := debugKeyBankBlockedCycles
+  io.debugRunCycles := debugRunCycles
 
   val inputPointer = Reg(UInt(64.W))
   val keyLowPointer = Reg(UInt(64.W))
   val keyHighPointer = Reg(UInt(64.W))
+  val keyLow1Pointer = Reg(UInt(64.W))
+  val keyHigh1Pointer = Reg(UInt(64.W))
   val outputPointer = Reg(UInt(64.W))
   when(launch) {
     busy := true.B
@@ -126,18 +146,22 @@ final class FptBlindRotateKernelSequencer(
     inputPointer := io.inputPointer
     keyLowPointer := io.keyLowPointer
     keyHighPointer := io.keyHighPointer
+    keyLow1Pointer := io.keyLow1Pointer
+    keyHigh1Pointer := io.keyHigh1Pointer
     outputPointer := io.outputPointer
+    debugKeyBeats := 0.U
+    debugKeyStarvedCycles := 0.U
+    debugKeyBankBlockedCycles := 0.U
+    debugRunCycles := 0.U
   }
 
   val inputCommandPending = RegInit(false.B)
   val outputCommandPending = RegInit(false.B)
-  val keyLowCommandsSent = RegInit(0.U(2.W))
-  val keyHighCommandsSent = RegInit(0.U(2.W))
+  val keyCommandsSent = RegInit(VecInit(Seq.fill(4)(false.B)))
   when(launch) {
     inputCommandPending := true.B
     outputCommandPending := true.B
-    keyLowCommandsSent := 0.U
-    keyHighCommandsSent := 0.U
+    keyCommandsSent.foreach(_ := false.B)
   }
 
   io.inputCommand.valid := inputCommandPending
@@ -147,34 +171,16 @@ final class FptBlindRotateKernelSequencer(
   io.outputCommand.bits := dataMoverCommand(outputPointer, outputBytes)
   when(io.outputCommand.fire) { outputCommandPending := false.B }
 
-  io.keyLowCommand.valid := busy && keyLowCommandsSent =/= 2.U
-  io.keyLowCommand.bits := dataMoverCommand(
-    Mux(
-      keyLowCommandsSent === 0.U,
-      keyLowPointer,
-      keyLowPointer + keyFirstBytes.U
-    ),
-    keySecondBytes
+  val keyCommands = Seq(
+    io.keyLowCommand -> keyLowPointer,
+    io.keyHighCommand -> keyHighPointer,
+    io.keyLow1Command -> keyLow1Pointer,
+    io.keyHigh1Command -> keyHigh1Pointer
   )
-  when(keyLowCommandsSent === 0.U) {
-    io.keyLowCommand.bits := dataMoverCommand(keyLowPointer, keyFirstBytes)
-  }
-  when(io.keyLowCommand.fire) { keyLowCommandsSent := keyLowCommandsSent + 1.U }
-
-  io.keyHighCommand.valid := busy && keyHighCommandsSent =/= 2.U
-  io.keyHighCommand.bits := dataMoverCommand(
-    Mux(
-      keyHighCommandsSent === 0.U,
-      keyHighPointer,
-      keyHighPointer + keyFirstBytes.U
-    ),
-    keySecondBytes
-  )
-  when(keyHighCommandsSent === 0.U) {
-    io.keyHighCommand.bits := dataMoverCommand(keyHighPointer, keyFirstBytes)
-  }
-  when(io.keyHighCommand.fire) {
-    keyHighCommandsSent := keyHighCommandsSent + 1.U
+  keyCommands.zipWithIndex.foreach { case ((command, pointer), index) =>
+    command.valid := busy && !keyCommandsSent(index)
+    command.bits := dataMoverCommand(pointer, keyBytes)
+    when(command.fire) { keyCommandsSent(index) := true.B }
   }
 
   // Serialize the aggregate 512-bit input stream into its linear 32-bit words.
@@ -234,8 +240,12 @@ final class FptBlindRotateKernelSequencer(
   // Pair independent key streams through one-word skid registers.
   val keyLowBuffer = Reg(UInt(512.W))
   val keyHighBuffer = Reg(UInt(512.W))
+  val keyLow1Buffer = Reg(UInt(512.W))
+  val keyHigh1Buffer = Reg(UInt(512.W))
   val keyLowValid = RegInit(false.B)
   val keyHighValid = RegInit(false.B)
+  val keyLow1Valid = RegInit(false.B)
+  val keyHigh1Valid = RegInit(false.B)
   val keyIndex = RegInit(0.U(dimensionWidth.W))
   val keyBeat = RegInit(0.U(8.W))
   val keyLoadActive = RegInit(false.B)
@@ -246,6 +256,8 @@ final class FptBlindRotateKernelSequencer(
   when(launch) {
     keyLowValid := false.B
     keyHighValid := false.B
+    keyLow1Valid := false.B
+    keyHigh1Valid := false.B
     keyIndex := 0.U
     keyBeat := 0.U
     keyLoadActive := false.B
@@ -255,26 +267,47 @@ final class FptBlindRotateKernelSequencer(
     keyLoadActive := true.B
     keyBeat := 0.U
   }
-  val packedKey = Cat(keyHighBuffer(351, 0), keyLowBuffer)
+  val packedKey0 = Cat(keyHighBuffer(351, 0), keyLowBuffer)
+  val packedKey1 = Cat(keyHigh1Buffer(351, 0), keyLow1Buffer)
+  val allKeyValid = keyLowValid && keyHighValid && keyLow1Valid && keyHigh1Valid
   // The buffered accelerator's key-load interface uses a pulse-valid
   // contract: valid may only be asserted while the active bank load is ready.
   // The DataMovers can replace the final beat in the skid registers before
   // loadDone returns, so retain that next beat without presenting it during
   // the one-cycle gap between coefficient loads.
-  io.coreKeyLoadValid := busy && keyLoadActive && keyLowValid && keyHighValid &&
+  io.coreKeyLoadValid := busy && keyLoadActive && allKeyValid &&
     io.coreKeyLoadReady
   val consumeKeyBeat = io.coreKeyLoadValid && io.coreKeyLoadReady
+  when(busy && keyLoadActive && io.coreKeyLoadReady &&
+      !allKeyValid) {
+    debugKeyStarvedCycles := debugKeyStarvedCycles + 1.U
+  }
+  when(busy && !keyLoadActive && keyIndex < dimension.U &&
+      !io.coreKeyLoadStartReady) {
+    debugKeyBankBlockedCycles := debugKeyBankBlockedCycles + 1.U
+  }
+  when(consumeKeyBeat) {
+    debugKeyBeats := debugKeyBeats + 1.U
+  }
   io.keyLowData.ready := busy && (!keyLowValid || consumeKeyBeat)
   io.keyHighData.ready := busy && (!keyHighValid || consumeKeyBeat)
+  io.keyLow1Data.ready := busy && (!keyLow1Valid || consumeKeyBeat)
+  io.keyHigh1Data.ready := busy && (!keyHigh1Valid || consumeKeyBeat)
   for (lane <- 0 until 16) {
-    io.coreKeyLoad(lane).real := packedKey(lane * 54 + 26, lane * 54).asSInt
+    io.coreKeyLoad(lane).real := packedKey0(lane * 54 + 26, lane * 54).asSInt
     io.coreKeyLoad(lane).imag :=
-      packedKey(lane * 54 + 53, lane * 54 + 27).asSInt
+      packedKey0(lane * 54 + 53, lane * 54 + 27).asSInt
+    io.coreKeyLoad(lane + 16).real :=
+      packedKey1(lane * 54 + 26, lane * 54).asSInt
+    io.coreKeyLoad(lane + 16).imag :=
+      packedKey1(lane * 54 + 53, lane * 54 + 27).asSInt
   }
   when(consumeKeyBeat) {
     keyLowValid := false.B
     keyHighValid := false.B
-    when(keyBeat =/= 255.U) { keyBeat := keyBeat + 1.U }
+    keyLow1Valid := false.B
+    keyHigh1Valid := false.B
+    when(keyBeat =/= 127.U) { keyBeat := keyBeat + 1.U }
   }
   // These assignments follow the consume case so a same-cycle replacement
   // remains resident and the paired stream sustains one beat per cycle.
@@ -285,6 +318,14 @@ final class FptBlindRotateKernelSequencer(
   when(io.keyHighData.fire) {
     keyHighBuffer := io.keyHighData.bits
     keyHighValid := true.B
+  }
+  when(io.keyLow1Data.fire) {
+    keyLow1Buffer := io.keyLow1Data.bits
+    keyLow1Valid := true.B
+  }
+  when(io.keyHigh1Data.fire) {
+    keyHigh1Buffer := io.keyHigh1Data.bits
+    keyHigh1Valid := true.B
   }
   when(io.coreKeyLoadDone) {
     assert(io.coreKeyLoadDoneIndex === keyIndex, "key-load index mismatch")
@@ -305,26 +346,25 @@ final class FptBlindRotateKernelSequencer(
   io.coreResultReady := busy && io.outputData.ready
 
   val inputStatusDone = RegInit(false.B)
-  val keyLowStatusCount = RegInit(0.U(2.W))
-  val keyHighStatusCount = RegInit(0.U(2.W))
+  val keyStatusDone = RegInit(VecInit(Seq.fill(4)(false.B)))
   val outputStatusDone = RegInit(false.B)
   val coreDoneSeen = RegInit(false.B)
   val outputDrainCount = RegInit(0.U(8.W))
+  when(busy && runStarted && !coreDoneSeen) {
+    debugRunCycles := debugRunCycles + 1.U
+  }
   when(launch) {
     inputStatusDone := false.B
-    keyLowStatusCount := 0.U
-    keyHighStatusCount := 0.U
+    keyStatusDone.foreach(_ := false.B)
     outputStatusDone := false.B
     coreDoneSeen := false.B
     outputDrainCount := 0.U
   }
   when(io.inputStatus.valid) { inputStatusDone := true.B }
-  when(io.keyLowStatus.valid && keyLowStatusCount =/= 2.U) {
-    keyLowStatusCount := keyLowStatusCount + 1.U
-  }
-  when(io.keyHighStatus.valid && keyHighStatusCount =/= 2.U) {
-    keyHighStatusCount := keyHighStatusCount + 1.U
-  }
+  when(io.keyLowStatus.valid) { keyStatusDone(0) := true.B }
+  when(io.keyHighStatus.valid) { keyStatusDone(1) := true.B }
+  when(io.keyLow1Status.valid) { keyStatusDone(2) := true.B }
+  when(io.keyHigh1Status.valid) { keyStatusDone(3) := true.B }
   when(io.outputStatus.valid) { outputStatusDone := true.B }
   when(io.coreDone) { coreDoneSeen := true.B }
 
@@ -332,12 +372,16 @@ final class FptBlindRotateKernelSequencer(
     io.inputError || (io.inputStatus.valid && !io.inputStatus.bits(7)),
     io.keyLowError || (io.keyLowStatus.valid && !io.keyLowStatus.bits(7)),
     io.keyHighError || (io.keyHighStatus.valid && !io.keyHighStatus.bits(7)),
+    io.keyLow1Error || (io.keyLow1Status.valid && !io.keyLow1Status.bits(7)),
+    io.keyHigh1Error || (io.keyHigh1Status.valid && !io.keyHigh1Status.bits(7)),
     io.outputError || (io.outputStatus.valid && !io.outputStatus.bits(7))
   ))
   val channelStatus = VecInit(Seq(
     Mux(io.inputStatus.valid, io.inputStatus.bits, "hff".U),
     Mux(io.keyLowStatus.valid, io.keyLowStatus.bits, "hff".U),
     Mux(io.keyHighStatus.valid, io.keyHighStatus.bits, "hff".U),
+    Mux(io.keyLow1Status.valid, io.keyLow1Status.bits, "hff".U),
+    Mux(io.keyHigh1Status.valid, io.keyHigh1Status.bits, "hff".U),
     Mux(io.outputStatus.valid, io.outputStatus.bits, "hff".U)
   ))
   when(busy && channelErrors.asUInt.orR && !errorSticky) {
@@ -347,8 +391,7 @@ final class FptBlindRotateKernelSequencer(
     errorCode := channelStatus(selectedError)
   }
 
-  val allStatusesDone = inputStatusDone && keyLowStatusCount === 2.U &&
-    keyHighStatusCount === 2.U && outputStatusDone
+  val allStatusesDone = inputStatusDone && keyStatusDone.asUInt.andR && outputStatusDone
   val coreComplete = coreDoneSeen || io.coreDone
   // Some DataMover configurations do not emit status-stream beats when the
   // optional status FIFOs are disabled.  Core completion means the final
@@ -368,8 +411,7 @@ final class FptBlindRotateKernelSequencer(
     runStarted,
     coreDoneSeen,
     inputStatusDone,
-    keyLowStatusCount === 2.U,
-    keyHighStatusCount === 2.U,
+    keyStatusDone.asUInt.andR,
     outputStatusDone,
     keyLoadActive
   )
@@ -391,26 +433,40 @@ final class FptBlindRotateKernelController(
     val done = Output(Bool())
     val ready = Output(Bool())
     val status = Output(UInt(32.W))
+    val debugKeyBeats = Output(UInt(32.W))
+    val debugKeyStarvedCycles = Output(UInt(32.W))
+    val debugKeyBankBlockedCycles = Output(UInt(32.W))
+    val debugRunCycles = Output(UInt(32.W))
     val inputPointer = Input(UInt(64.W))
     val keyLowPointer = Input(UInt(64.W))
     val keyHighPointer = Input(UInt(64.W))
+    val keyLow1Pointer = Input(UInt(64.W))
+    val keyHigh1Pointer = Input(UInt(64.W))
     val outputPointer = Input(UInt(64.W))
     val inputCommand = Decoupled(UInt(104.W))
     val keyLowCommand = Decoupled(UInt(104.W))
     val keyHighCommand = Decoupled(UInt(104.W))
+    val keyLow1Command = Decoupled(UInt(104.W))
+    val keyHigh1Command = Decoupled(UInt(104.W))
     val outputCommand = Decoupled(UInt(104.W))
     val inputData = Flipped(Decoupled(UInt(512.W)))
     val keyLowData = Flipped(Decoupled(UInt(512.W)))
     val keyHighData = Flipped(Decoupled(UInt(512.W)))
+    val keyLow1Data = Flipped(Decoupled(UInt(512.W)))
+    val keyHigh1Data = Flipped(Decoupled(UInt(512.W)))
     val outputData = Decoupled(UInt(32.W))
     val outputLast = Output(Bool())
     val inputStatus = Flipped(Valid(UInt(8.W)))
     val keyLowStatus = Flipped(Valid(UInt(8.W)))
     val keyHighStatus = Flipped(Valid(UInt(8.W)))
+    val keyLow1Status = Flipped(Valid(UInt(8.W)))
+    val keyHigh1Status = Flipped(Valid(UInt(8.W)))
     val outputStatus = Flipped(Valid(UInt(8.W)))
     val inputError = Input(Bool())
     val keyLowError = Input(Bool())
     val keyHighError = Input(Bool())
+    val keyLow1Error = Input(Bool())
+    val keyHigh1Error = Input(Bool())
     val outputError = Input(Bool())
   })
 
@@ -422,9 +478,15 @@ final class FptBlindRotateKernelController(
   io.done := sequencer.io.done
   io.ready := sequencer.io.ready
   io.status := sequencer.io.status
+  io.debugKeyBeats := sequencer.io.debugKeyBeats
+  io.debugKeyStarvedCycles := sequencer.io.debugKeyStarvedCycles
+  io.debugKeyBankBlockedCycles := sequencer.io.debugKeyBankBlockedCycles
+  io.debugRunCycles := sequencer.io.debugRunCycles
   sequencer.io.inputPointer := io.inputPointer
   sequencer.io.keyLowPointer := io.keyLowPointer
   sequencer.io.keyHighPointer := io.keyHighPointer
+  sequencer.io.keyLow1Pointer := io.keyLow1Pointer
+  sequencer.io.keyHigh1Pointer := io.keyHigh1Pointer
   sequencer.io.outputPointer := io.outputPointer
 
   io.inputCommand.valid := sequencer.io.inputCommand.valid
@@ -436,6 +498,12 @@ final class FptBlindRotateKernelController(
   io.keyHighCommand.valid := sequencer.io.keyHighCommand.valid
   io.keyHighCommand.bits := sequencer.io.keyHighCommand.bits
   sequencer.io.keyHighCommand.ready := io.keyHighCommand.ready
+  io.keyLow1Command.valid := sequencer.io.keyLow1Command.valid
+  io.keyLow1Command.bits := sequencer.io.keyLow1Command.bits
+  sequencer.io.keyLow1Command.ready := io.keyLow1Command.ready
+  io.keyHigh1Command.valid := sequencer.io.keyHigh1Command.valid
+  io.keyHigh1Command.bits := sequencer.io.keyHigh1Command.bits
+  sequencer.io.keyHigh1Command.ready := io.keyHigh1Command.ready
   io.outputCommand.valid := sequencer.io.outputCommand.valid
   io.outputCommand.bits := sequencer.io.outputCommand.bits
   sequencer.io.outputCommand.ready := io.outputCommand.ready
@@ -449,6 +517,12 @@ final class FptBlindRotateKernelController(
   sequencer.io.keyHighData.valid := io.keyHighData.valid
   sequencer.io.keyHighData.bits := io.keyHighData.bits
   io.keyHighData.ready := sequencer.io.keyHighData.ready
+  sequencer.io.keyLow1Data.valid := io.keyLow1Data.valid
+  sequencer.io.keyLow1Data.bits := io.keyLow1Data.bits
+  io.keyLow1Data.ready := sequencer.io.keyLow1Data.ready
+  sequencer.io.keyHigh1Data.valid := io.keyHigh1Data.valid
+  sequencer.io.keyHigh1Data.bits := io.keyHigh1Data.bits
+  io.keyHigh1Data.ready := sequencer.io.keyHigh1Data.ready
   io.outputData.valid := sequencer.io.outputData.valid
   io.outputData.bits := sequencer.io.outputData.bits
   sequencer.io.outputData.ready := io.outputData.ready
@@ -460,11 +534,17 @@ final class FptBlindRotateKernelController(
   sequencer.io.keyLowStatus.bits := io.keyLowStatus.bits
   sequencer.io.keyHighStatus.valid := io.keyHighStatus.valid
   sequencer.io.keyHighStatus.bits := io.keyHighStatus.bits
+  sequencer.io.keyLow1Status.valid := io.keyLow1Status.valid
+  sequencer.io.keyLow1Status.bits := io.keyLow1Status.bits
+  sequencer.io.keyHigh1Status.valid := io.keyHigh1Status.valid
+  sequencer.io.keyHigh1Status.bits := io.keyHigh1Status.bits
   sequencer.io.outputStatus.valid := io.outputStatus.valid
   sequencer.io.outputStatus.bits := io.outputStatus.bits
   sequencer.io.inputError := io.inputError
   sequencer.io.keyLowError := io.keyLowError
   sequencer.io.keyHighError := io.keyHighError
+  sequencer.io.keyLow1Error := io.keyLow1Error
+  sequencer.io.keyHigh1Error := io.keyHigh1Error
   sequencer.io.outputError := io.outputError
   sequencer.io.coreInputStartReady := core.io.inputStartReady
   sequencer.io.coreInputReady := core.io.inputReady
