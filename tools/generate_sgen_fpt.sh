@@ -9,6 +9,15 @@ source "$repo_root/tools/fpt_arithmetic_profile_contract.sh"
 forward_module=${FORWARD_MODULE:-FptSGenForward}
 inverse_module=${INVERSE_MODULE:-FptSGenInverse}
 arithmetic_profile=${FPT_ARITHMETIC_PROFILE:-custom}
+sgen_ram_style=${FPT_SGEN_RAM_STYLE:-block}
+
+case "$sgen_ram_style" in
+    auto|block|distributed) ;;
+    *)
+        echo "FPT_SGEN_RAM_STYLE must be auto, block, or distributed" >&2
+        exit 1
+        ;;
+esac
 
 if [[ ! "$forward_module" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ||
    [[ ! "$inverse_module" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
@@ -54,18 +63,46 @@ if [[ $arithmetic_profile != custom ]] &&
 fi
 ifft_stage_scale=${IFFT_STAGE_SCALE:-0.5}
 integrated_tangent=${INTEGRATED_TANGENT:-1}
+switch_transpose=${FPT_SGEN_SWITCH_TRANSPOSE:-0}
+forward_switch_transpose=${FPT_SGEN_FORWARD_SWITCH_TRANSPOSE:-$switch_transpose}
+inverse_switch_transpose=${FPT_SGEN_INVERSE_SWITCH_TRANSPOSE:-$switch_transpose}
+transform_flags=()
 
-case "$integrated_tangent" in
-    1)
+case "$integrated_tangent:$forward_switch_transpose" in
+    1:0)
         forward_transform=fptdft
-        inverse_transform=fptidft
         ;;
-    0)
+    1:1)
+        forward_transform=fptdftswitch
+        ;;
+    0:0)
         forward_transform=dft
-        inverse_transform=idft
+        ;;
+    0:1)
+        echo "FPT_SGEN_FORWARD_SWITCH_TRANSPOSE requires INTEGRATED_TANGENT=1" >&2
+        exit 1
         ;;
     *)
-        echo "INTEGRATED_TANGENT must be 0 or 1" >&2
+        echo "INTEGRATED_TANGENT and FPT_SGEN_FORWARD_SWITCH_TRANSPOSE must be 0 or 1" >&2
+        exit 1
+        ;;
+esac
+case "$integrated_tangent:$inverse_switch_transpose" in
+    1:0)
+        inverse_transform=fptidft
+        ;;
+    1:1)
+        inverse_transform=fptidftswitch
+        ;;
+    0:0)
+        inverse_transform=idft
+        ;;
+    0:1)
+        echo "FPT_SGEN_INVERSE_SWITCH_TRANSPOSE requires INTEGRATED_TANGENT=1" >&2
+        exit 1
+        ;;
+    *)
+        echo "INTEGRATED_TANGENT and FPT_SGEN_INVERSE_SWITCH_TRANSPOSE must be 0 or 1" >&2
         exit 1
         ;;
 esac
@@ -84,28 +121,37 @@ if ! rg -q 'Seq\.fill\(rightShift\)\(sign\)' \
     echo "SGen is missing signed fractional power-of-two stage scaling" >&2
     exit 1
 fi
-if ! rg -q 'val adjustedHigh = ir\.rtl\.Plus' \
-    "$sgen_dir/src/main/scala/ir/rtl/hardwaretype/FixedPoint.scala"; then
-    echo "SGen is missing the DSP48E2-sized wide-product split" >&2
-    exit 1
-fi
-
 mkdir -p "$output_dir"
-"$sgen_dir/sgen.bat" -nologo \
+SGEN_RAM_STYLE="$sgen_ram_style" \
+    "$sgen_dir/sgen.bat" -nologo \
     -n "$fft_log_points" -k "$fft_log_lanes" -r "$radix_log" \
+    "${transform_flags[@]}" \
     -hw complex fixedpoint "$fft_integer_bits" "$fft_fractional_bits" \
     -o "$output_dir/forward.raw.v" "$forward_transform"
-"$sgen_dir/sgen.bat" -nologo \
+SGEN_RAM_STYLE="$sgen_ram_style" \
+    "$sgen_dir/sgen.bat" -nologo \
     -n "$fft_log_points" -k "$ifft_log_lanes" -r "$ifft_radix_log" \
+    "${transform_flags[@]}" \
     -sf "$ifft_stage_scale" \
     -hw complex fixedpoint "$ifft_integer_bits" "$ifft_fractional_bits" \
     -o "$output_dir/inverse.raw.v" "$inverse_transform"
 
-sed "0,/module main(/s//module $forward_module(/" \
+sed \
+    -e "s/SGenSwitchTranspose/${forward_module}SwitchTranspose/g" \
+    -e "s/mainSquareSwitch/${forward_module}SquareSwitch/g" \
+    -e "s/mainTwist/${forward_module}Twist/g" \
+    -e "s/mainForwardCore/${forward_module}ForwardCore/g" \
+    -e "0,/module main(/s//module $forward_module(/" \
     "$output_dir/forward.raw.v" > "$output_dir/forward.v"
-sed "0,/module main(/s//module $inverse_module(/" \
+sed \
+    -e "s/SGenSwitchTranspose/${inverse_module}SwitchTranspose/g" \
+    -e "s/mainSquareSwitch/${inverse_module}SquareSwitch/g" \
+    -e "s/mainTwist/${inverse_module}Twist/g" \
+    -e "s/mainInverseCore/${inverse_module}InverseCore/g" \
+    -e "0,/module main(/s//module $inverse_module(/" \
     "$output_dir/inverse.raw.v" > "$output_dir/inverse.v"
 rm -f "$output_dir/forward.raw.v" "$output_dir/inverse.raw.v"
 
-printf 'Generated FPT-adapted SGen transforms in %s (integrated tangent: %s, profile: %s)\n' \
-    "$output_dir" "$integrated_tangent" "$arithmetic_profile"
+printf 'Generated FPT-adapted SGen transforms in %s (integrated tangent: %s, forward switch transpose: %s, inverse switch transpose: %s, profile: %s, RAM style: %s)\n' \
+    "$output_dir" "$integrated_tangent" "$forward_switch_transpose" \
+    "$inverse_switch_transpose" "$arithmetic_profile" "$sgen_ram_style"
