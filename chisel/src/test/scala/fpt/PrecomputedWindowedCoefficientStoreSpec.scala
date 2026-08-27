@@ -13,9 +13,9 @@ final class PrecomputedWindowedCoefficientStoreSpec
     with ChiselScalatestTester
     with Matchers {
   private val config = CmuxCoefficientConfig(
-    polynomialSize = 16,
+    polynomialSize = 32,
     forwardLanes = 4,
-    inverseLanes = 4,
+    inverseLanes = 2,
     components = 2,
     levels = 2,
     baseBits = 3,
