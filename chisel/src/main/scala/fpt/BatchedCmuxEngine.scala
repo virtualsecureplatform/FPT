@@ -20,6 +20,7 @@ final case class BatchedCmuxEngineConfig(
       BatchedCoefficientStorage.RegisterArray,
     serializeInverseComponents: Boolean = false,
     useSynchronousExternalProductMemory: Boolean = false,
+    useRotatingThreeBankExternalProductMemory: Boolean = false,
     decoupledBootstrappingKey: Boolean = false,
     pendingKeyRequestEntries: Int = 4,
     registerForwardSlrInput: Boolean = false
@@ -40,6 +41,10 @@ final case class BatchedCmuxEngineConfig(
       engine.inverseSGen.exists(_.inputLeadCycles == 1),
       "serialized inverse components require a one-cycle SGen input lead"
     )
+  }
+  if (useRotatingThreeBankExternalProductMemory) {
+    require(serializeInverseComponents)
+    require(useSynchronousExternalProductMemory)
   }
   val rows: Int = engine.externalProduct.rows
   val commandInterval: Int = rows * engine.forwardTransform.frameBeats
@@ -566,7 +571,9 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
       externalConfig,
       contextWidth,
       serializeComponents = config.serializeInverseComponents,
-      useSynchronousMemory = config.useSynchronousExternalProductMemory
+      useSynchronousMemory = config.useSynchronousExternalProductMemory,
+      useRotatingThreeBankMemory =
+        config.useRotatingThreeBankExternalProductMemory
     )
   )
 

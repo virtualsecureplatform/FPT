@@ -10,14 +10,27 @@ forward_module=${FORWARD_MODULE:-FptSGenForward}
 inverse_module=${INVERSE_MODULE:-FptSGenInverse}
 arithmetic_profile=${FPT_ARITHMETIC_PROFILE:-custom}
 sgen_ram_style=${FPT_SGEN_RAM_STYLE:-block}
+forward_partition=${FPT_SGEN_FORWARD_PARTITION:-none}
+forward_boundary_registers=${FPT_SGEN_FORWARD_BOUNDARY_REGISTERS:-2}
 
 case "$sgen_ram_style" in
-    auto|block|distributed) ;;
+    auto|hybrid|block|distributed) ;;
     *)
-        echo "FPT_SGEN_RAM_STYLE must be auto, block, or distributed" >&2
+        echo "FPT_SGEN_RAM_STYLE must be auto, hybrid, block, or distributed" >&2
         exit 1
         ;;
 esac
+case "$forward_partition" in
+    none|stage1|stage2|stage2spill) ;;
+    *)
+        echo "FPT_SGEN_FORWARD_PARTITION must be none, stage1, stage2, or stage2spill" >&2
+        exit 1
+        ;;
+esac
+if [[ $forward_boundary_registers != 2 ]]; then
+    echo "FPT_SGEN_FORWARD_BOUNDARY_REGISTERS must be 2" >&2
+    exit 1
+fi
 
 if [[ ! "$forward_module" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ||
    [[ ! "$inverse_module" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
@@ -66,43 +79,48 @@ integrated_tangent=${INTEGRATED_TANGENT:-1}
 switch_transpose=${FPT_SGEN_SWITCH_TRANSPOSE:-0}
 forward_switch_transpose=${FPT_SGEN_FORWARD_SWITCH_TRANSPOSE:-$switch_transpose}
 inverse_switch_transpose=${FPT_SGEN_INVERSE_SWITCH_TRANSPOSE:-$switch_transpose}
+# In the FPT integration, the historical SWITCH_TRANSPOSE knobs mean the
+# radix-2^k feedforward MDC architecture. Keep them as compatibility aliases,
+# but do not map them to SGen's unrelated lane/time transpose backend.
+forward_radix2k_mdc=${FPT_SGEN_FORWARD_RADIX2K_MDC:-$forward_switch_transpose}
+inverse_radix2k_mdc=${FPT_SGEN_INVERSE_RADIX2K_MDC:-$inverse_switch_transpose}
 transform_flags=()
 
-case "$integrated_tangent:$forward_switch_transpose" in
+case "$integrated_tangent:$forward_radix2k_mdc" in
     1:0)
         forward_transform=fptdft
         ;;
     1:1)
-        forward_transform=fptdftswitch
+        forward_transform=fptradix2kdft
         ;;
     0:0)
         forward_transform=dft
         ;;
     0:1)
-        echo "FPT_SGEN_FORWARD_SWITCH_TRANSPOSE requires INTEGRATED_TANGENT=1" >&2
+        echo "FPT_SGEN_FORWARD_RADIX2K_MDC requires INTEGRATED_TANGENT=1" >&2
         exit 1
         ;;
     *)
-        echo "INTEGRATED_TANGENT and FPT_SGEN_FORWARD_SWITCH_TRANSPOSE must be 0 or 1" >&2
+        echo "INTEGRATED_TANGENT and FPT_SGEN_FORWARD_RADIX2K_MDC must be 0 or 1" >&2
         exit 1
         ;;
 esac
-case "$integrated_tangent:$inverse_switch_transpose" in
+case "$integrated_tangent:$inverse_radix2k_mdc" in
     1:0)
         inverse_transform=fptidft
         ;;
     1:1)
-        inverse_transform=fptidftswitch
+        inverse_transform=fptradix2kidft
         ;;
     0:0)
         inverse_transform=idft
         ;;
     0:1)
-        echo "FPT_SGEN_INVERSE_SWITCH_TRANSPOSE requires INTEGRATED_TANGENT=1" >&2
+        echo "FPT_SGEN_INVERSE_RADIX2K_MDC requires INTEGRATED_TANGENT=1" >&2
         exit 1
         ;;
     *)
-        echo "INTEGRATED_TANGENT and FPT_SGEN_INVERSE_SWITCH_TRANSPOSE must be 0 or 1" >&2
+        echo "INTEGRATED_TANGENT and FPT_SGEN_INVERSE_RADIX2K_MDC must be 0 or 1" >&2
         exit 1
         ;;
 esac
@@ -123,6 +141,8 @@ if ! rg -q 'Seq\.fill\(rightShift\)\(sign\)' \
 fi
 mkdir -p "$output_dir"
 SGEN_RAM_STYLE="$sgen_ram_style" \
+    SGEN_FPT_FORWARD_PARTITION="$forward_partition" \
+    SGEN_FPT_BOUNDARY_REGISTERS="$forward_boundary_registers" \
     "$sgen_dir/sgen.bat" -nologo \
     -n "$fft_log_points" -k "$fft_log_lanes" -r "$radix_log" \
     "${transform_flags[@]}" \
@@ -137,6 +157,9 @@ SGEN_RAM_STYLE="$sgen_ram_style" \
     -o "$output_dir/inverse.raw.v" "$inverse_transform"
 
 sed \
+    -e "s/mainFront/${forward_module}Front/g" \
+    -e "s/mainBoundary/${forward_module}Boundary/g" \
+    -e "s/mainBack/${forward_module}Back/g" \
     -e "s/SGenSwitchTranspose/${forward_module}SwitchTranspose/g" \
     -e "s/mainSquareSwitch/${forward_module}SquareSwitch/g" \
     -e "s/mainTwist/${forward_module}Twist/g" \
@@ -152,6 +175,6 @@ sed \
     "$output_dir/inverse.raw.v" > "$output_dir/inverse.v"
 rm -f "$output_dir/forward.raw.v" "$output_dir/inverse.raw.v"
 
-printf 'Generated FPT-adapted SGen transforms in %s (integrated tangent: %s, forward switch transpose: %s, inverse switch transpose: %s, profile: %s, RAM style: %s)\n' \
-    "$output_dir" "$integrated_tangent" "$forward_switch_transpose" \
-    "$inverse_switch_transpose" "$arithmetic_profile" "$sgen_ram_style"
+printf 'Generated FPT-adapted SGen transforms in %s (integrated tangent: %s, forward radix-2^k MDC: %s, inverse radix-2^k MDC: %s, forward partition: %s, profile: %s, RAM style: %s)\n' \
+    "$output_dir" "$integrated_tangent" "$forward_radix2k_mdc" \
+    "$inverse_radix2k_mdc" "$forward_partition" "$arithmetic_profile" "$sgen_ram_style"

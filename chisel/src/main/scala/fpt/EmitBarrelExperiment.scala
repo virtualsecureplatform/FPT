@@ -16,6 +16,18 @@ import java.nio.file.Path
   * transpose.
   */
 private[fpt] object PaperU280BufferedBarrelConfig {
+  private def externalProductMultiplier: ExternalProductMultiplier =
+    sys.env.getOrElse("FPT_EXTERNAL_PRODUCT_MULTIPLIER", "schoolbook") match {
+      case "schoolbook" =>
+        ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+      case "quantized_gauss" =>
+        ExternalProductMultiplier.ExactPipelinedQuantizedGaussDsp
+      case value =>
+        throw new IllegalArgumentException(
+          s"FPT_EXTERNAL_PRODUCT_MULTIPLIER must be schoolbook or quantized_gauss, got $value"
+        )
+    }
+
   def apply(
       forwardPath: String,
       inversePath: String,
@@ -32,7 +44,7 @@ private[fpt] object PaperU280BufferedBarrelConfig {
     val engine = baseEngine.copy(
       coefficient = baseEngine.coefficient.copy(windowedRotator = true),
       externalProduct = baseEngine.externalProduct.copy(
-        multiplier = ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+        multiplier = externalProductMultiplier
       )
     )
     val blindRotate = BatchedBlindRotateEngineConfig(
@@ -43,6 +55,7 @@ private[fpt] object PaperU280BufferedBarrelConfig {
           BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks,
         serializeInverseComponents = true,
         useSynchronousExternalProductMemory = true,
+        useRotatingThreeBankExternalProductMemory = true,
         decoupledBootstrappingKey = true,
         pendingKeyRequestEntries = 1,
         registerForwardSlrInput = true

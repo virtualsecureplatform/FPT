@@ -442,6 +442,261 @@ private final class PipelinedExactSchoolbookComplexMultiplyBlackBox(
   )
 }
 
+/** Three-stage, bit-exact quantized Gauss multiplier for External Product.
+  *
+  * External Product only consumes a fixed slice of each full complex product.
+  * This implementation reconstructs the exact wrapped Gauss result, including
+  * both pre-adder overflow corrections, and registers that slice directly.
+  * Three split real products use six DSP48E2s instead of the schoolbook path's
+  * eight while retaining the same three-cycle latency and one-result-per-cycle
+  * throughput.
+  */
+final class PipelinedQuantizedGaussComplexMultiply(
+    val aWidth: Int,
+    val bWidth: Int,
+    val productShift: Int,
+    val outputWidth: Int
+) extends Module {
+  require(aWidth > 27 && aWidth <= 35)
+  require(bWidth >= 2 && bWidth <= 27)
+  require(productShift >= 0)
+  require(outputWidth >= 1)
+  require(productShift + outputWidth <= aWidth + bWidth + 1)
+
+  val io = IO(new Bundle {
+    val a = Input(new ComplexSInt(aWidth))
+    val b = Input(new ComplexSInt(bWidth))
+    val productReal = Output(SInt(outputWidth.W))
+    val productImag = Output(SInt(outputWidth.W))
+  })
+
+  private val multiplier = Module(
+    new PipelinedQuantizedGaussComplexMultiplyBlackBox(
+      aWidth,
+      bWidth,
+      productShift,
+      outputWidth
+    )
+  )
+  multiplier.io.clock := clock
+  multiplier.io.aReal := io.a.real
+  multiplier.io.aImag := io.a.imag
+  multiplier.io.bReal := io.b.real
+  multiplier.io.bImag := io.b.imag
+  io.productReal := multiplier.io.productReal
+  io.productImag := multiplier.io.productImag
+}
+
+object PipelinedQuantizedGaussComplexMultiply {
+  val latency: Int = 3
+}
+
+private final class PipelinedQuantizedGaussComplexMultiplyBlackBox(
+    aWidth: Int,
+    bWidth: Int,
+    productShift: Int,
+    outputWidth: Int
+) extends BlackBox(
+      Map(
+        "A_WIDTH" -> IntParam(aWidth),
+        "B_WIDTH" -> IntParam(bWidth),
+        "PRODUCT_SHIFT" -> IntParam(productShift),
+        "OUTPUT_WIDTH" -> IntParam(outputWidth)
+      )
+    )
+    with HasBlackBoxInline {
+  override def desiredName: String =
+    "FptPipelinedQuantizedGaussComplexMultiply"
+
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val aReal = Input(SInt(aWidth.W))
+    val aImag = Input(SInt(aWidth.W))
+    val bReal = Input(SInt(bWidth.W))
+    val bImag = Input(SInt(bWidth.W))
+    val productReal = Output(SInt(outputWidth.W))
+    val productImag = Output(SInt(outputWidth.W))
+  })
+
+  setInline(
+    "FptPipelinedQuantizedGaussComplexMultiply.sv",
+    """module FptQuantizedGaussSignedSplitMultiply #(
+      |  parameter integer A_WIDTH = 30,
+      |  parameter integer B_WIDTH = 27
+      |) (
+      |  input  wire                              clock,
+      |  input  wire signed [A_WIDTH-1:0]         a,
+      |  input  wire signed [B_WIDTH-1:0]         b,
+      |  output wire signed [A_WIDTH+B_WIDTH-1:0] product
+      |);
+      |  localparam integer LOW_WIDTH = 17;
+      |  localparam integer HIGH_WIDTH = A_WIDTH - LOW_WIDTH;
+      |  localparam integer PRODUCT_WIDTH = A_WIDTH + B_WIDTH;
+      |  localparam integer SUM_WIDTH = PRODUCT_WIDTH + 1;
+      |  localparam integer LOW_PRODUCT_WIDTH = LOW_WIDTH + 1 + B_WIDTH;
+      |  localparam integer HIGH_PRODUCT_WIDTH = HIGH_WIDTH + B_WIDTH;
+      |  wire signed [LOW_WIDTH:0] low =
+      |    $signed({1'b0, a[LOW_WIDTH-1:0]});
+      |  wire signed [HIGH_WIDTH-1:0] high =
+      |    $signed(a[A_WIDTH-1:LOW_WIDTH]);
+      |  wire signed [B_WIDTH-1:0] signed_b = $signed(b);
+      |
+      |  (* use_dsp = "yes", extract_enable = "no" *)
+      |  reg signed [LOW_PRODUCT_WIDTH-1:0] low_product;
+      |  (* use_dsp = "yes", extract_enable = "no" *)
+      |  reg signed [HIGH_PRODUCT_WIDTH-1:0] high_product;
+      |  wire signed [SUM_WIDTH-1:0] extended_low_product =
+      |    {{(SUM_WIDTH-LOW_PRODUCT_WIDTH){low_product[LOW_PRODUCT_WIDTH-1]}},
+      |      low_product};
+      |  wire signed [SUM_WIDTH-1:0] shifted_high_product =
+      |    {{(SUM_WIDTH-HIGH_PRODUCT_WIDTH-LOW_WIDTH){
+      |        high_product[HIGH_PRODUCT_WIDTH-1]}},
+      |      high_product, {LOW_WIDTH{1'b0}}};
+      |  wire signed [SUM_WIDTH-1:0] full_product =
+      |    extended_low_product + shifted_high_product;
+      |  assign product = full_product[PRODUCT_WIDTH-1:0];
+      |
+      |  always @(posedge clock) begin
+      |    low_product <= low * signed_b;
+      |    high_product <= high * signed_b;
+      |  end
+      |endmodule
+      |
+      |module FptPipelinedQuantizedGaussComplexMultiply #(
+      |  parameter integer A_WIDTH = 30,
+      |  parameter integer B_WIDTH = 27,
+      |  parameter integer PRODUCT_SHIFT = 28,
+      |  parameter integer OUTPUT_WIDTH = 30
+      |) (
+      |  input  wire                              clock,
+      |  input  wire signed [A_WIDTH-1:0]         aReal,
+      |  input  wire signed [A_WIDTH-1:0]         aImag,
+      |  input  wire signed [B_WIDTH-1:0]         bReal,
+      |  input  wire signed [B_WIDTH-1:0]         bImag,
+      |  output wire signed [OUTPUT_WIDTH-1:0]    productReal,
+      |  output wire signed [OUTPUT_WIDTH-1:0]    productImag
+      |);
+      |  localparam integer PRODUCT_WIDTH = A_WIDTH + B_WIDTH;
+      |  localparam integer FULL_WIDTH = PRODUCT_WIDTH + 1;
+      |
+      |  // Stage one isolates the transform/key memories from the DSP inputs.
+      |  (* keep = "yes", extract_enable = "no" *)
+      |  reg signed [A_WIDTH-1:0] a_real_reg;
+      |  (* keep = "yes", extract_enable = "no" *)
+      |  reg signed [A_WIDTH-1:0] a_imag_reg;
+      |  (* keep = "yes", extract_enable = "no" *)
+      |  reg signed [B_WIDTH-1:0] b_real_reg;
+      |  (* keep = "yes", extract_enable = "no" *)
+      |  reg signed [B_WIDTH-1:0] b_imag_reg;
+      |
+      |  wire signed [A_WIDTH:0] sum_a_full =
+      |    $signed({a_real_reg[A_WIDTH-1], a_real_reg}) +
+      |    $signed({a_imag_reg[A_WIDTH-1], a_imag_reg});
+      |  wire signed [B_WIDTH:0] sum_b_full =
+      |    $signed({b_real_reg[B_WIDTH-1], b_real_reg}) +
+      |    $signed({b_imag_reg[B_WIDTH-1], b_imag_reg});
+      |  wire signed [A_WIDTH-1:0] sum_a = sum_a_full[A_WIDTH-1:0];
+      |  wire signed [B_WIDTH-1:0] sum_b = sum_b_full[B_WIDTH-1:0];
+      |  wire sum_a_positive_overflow =
+      |    ~a_real_reg[A_WIDTH-1] & ~a_imag_reg[A_WIDTH-1] & sum_a[A_WIDTH-1];
+      |  wire sum_a_negative_overflow =
+      |    a_real_reg[A_WIDTH-1] & a_imag_reg[A_WIDTH-1] & ~sum_a[A_WIDTH-1];
+      |  wire sum_b_positive_overflow =
+      |    ~b_real_reg[B_WIDTH-1] & ~b_imag_reg[B_WIDTH-1] & sum_b[B_WIDTH-1];
+      |  wire sum_b_negative_overflow =
+      |    b_real_reg[B_WIDTH-1] & b_imag_reg[B_WIDTH-1] & ~sum_b[B_WIDTH-1];
+      |
+      |  wire signed [PRODUCT_WIDTH-1:0] product_ac;
+      |  wire signed [PRODUCT_WIDTH-1:0] product_bd;
+      |  wire signed [PRODUCT_WIDTH-1:0] product_sum;
+      |  FptQuantizedGaussSignedSplitMultiply #(
+      |    .A_WIDTH(A_WIDTH), .B_WIDTH(B_WIDTH)
+      |  ) multiply_ac (
+      |    .clock(clock), .a(a_real_reg), .b(b_real_reg), .product(product_ac)
+      |  );
+      |  FptQuantizedGaussSignedSplitMultiply #(
+      |    .A_WIDTH(A_WIDTH), .B_WIDTH(B_WIDTH)
+      |  ) multiply_bd (
+      |    .clock(clock), .a(a_imag_reg), .b(b_imag_reg), .product(product_bd)
+      |  );
+      |  FptQuantizedGaussSignedSplitMultiply #(
+      |    .A_WIDTH(A_WIDTH), .B_WIDTH(B_WIDTH)
+      |  ) multiply_sum (
+      |    .clock(clock), .a(sum_a), .b(sum_b), .product(product_sum)
+      |  );
+      |
+      |  // Stage two carries the wrapped pre-adders and their correction
+      |  // signs alongside the six registered DSP partial products.
+      |  reg signed [A_WIDTH-1:0] sum_a_reg;
+      |  reg signed [B_WIDTH-1:0] sum_b_reg;
+      |  reg sum_a_positive_overflow_reg;
+      |  reg sum_a_negative_overflow_reg;
+      |  reg sum_b_positive_overflow_reg;
+      |  reg sum_b_negative_overflow_reg;
+      |
+      |  wire signed [FULL_WIDTH-1:0] ac_extended =
+      |    {product_ac[PRODUCT_WIDTH-1], product_ac};
+      |  wire signed [FULL_WIDTH-1:0] bd_extended =
+      |    {product_bd[PRODUCT_WIDTH-1], product_bd};
+      |  wire signed [FULL_WIDTH-1:0] sum_product_extended =
+      |    {product_sum[PRODUCT_WIDTH-1], product_sum};
+      |  wire signed [FULL_WIDTH-1:0] sum_a_extended =
+      |    {{(FULL_WIDTH-A_WIDTH){sum_a_reg[A_WIDTH-1]}}, sum_a_reg};
+      |  wire signed [FULL_WIDTH-1:0] sum_b_extended =
+      |    {{(FULL_WIDTH-B_WIDTH){sum_b_reg[B_WIDTH-1]}}, sum_b_reg};
+      |  wire signed [FULL_WIDTH-1:0] correction_a_magnitude =
+      |    sum_b_extended <<< A_WIDTH;
+      |  wire signed [FULL_WIDTH-1:0] correction_b_magnitude =
+      |    sum_a_extended <<< B_WIDTH;
+      |  wire signed [FULL_WIDTH-1:0] correction_a =
+      |    sum_a_positive_overflow_reg ? correction_a_magnitude :
+      |    sum_a_negative_overflow_reg ? -correction_a_magnitude :
+      |    {FULL_WIDTH{1'b0}};
+      |  wire signed [FULL_WIDTH-1:0] correction_b =
+      |    sum_b_positive_overflow_reg ? correction_b_magnitude :
+      |    sum_b_negative_overflow_reg ? -correction_b_magnitude :
+      |    {FULL_WIDTH{1'b0}};
+      |  wire correction_ab =
+      |    (sum_a_positive_overflow_reg | sum_a_negative_overflow_reg) &
+      |    (sum_b_positive_overflow_reg | sum_b_negative_overflow_reg);
+      |  wire signed [FULL_WIDTH-1:0] correction_ab_value =
+      |    {correction_ab, {PRODUCT_WIDTH{1'b0}}};
+      |
+      |  (* use_dsp = "no" *)
+      |  wire signed [FULL_WIDTH-1:0] full_real = ac_extended - bd_extended;
+      |  (* use_dsp = "no" *)
+      |  wire signed [FULL_WIDTH-1:0] full_imag =
+      |    sum_product_extended - ac_extended - bd_extended +
+      |    correction_a + correction_b + correction_ab_value;
+      |
+      |  // Stage three captures only the fixed-point bits consumed by the
+      |  // accumulator, avoiding unused post-multiply result buses.
+      |  (* use_dsp = "no", extract_enable = "no" *)
+      |  reg signed [OUTPUT_WIDTH-1:0] product_real_reg;
+      |  (* use_dsp = "no", extract_enable = "no" *)
+      |  reg signed [OUTPUT_WIDTH-1:0] product_imag_reg;
+      |  assign productReal = product_real_reg;
+      |  assign productImag = product_imag_reg;
+      |
+      |  always @(posedge clock) begin
+      |    a_real_reg <= aReal;
+      |    a_imag_reg <= aImag;
+      |    b_real_reg <= bReal;
+      |    b_imag_reg <= bImag;
+      |    sum_a_reg <= sum_a;
+      |    sum_b_reg <= sum_b;
+      |    sum_a_positive_overflow_reg <= sum_a_positive_overflow;
+      |    sum_a_negative_overflow_reg <= sum_a_negative_overflow;
+      |    sum_b_positive_overflow_reg <= sum_b_positive_overflow;
+      |    sum_b_negative_overflow_reg <= sum_b_negative_overflow;
+      |    product_real_reg <= full_real[PRODUCT_SHIFT +: OUTPUT_WIDTH];
+      |    product_imag_reg <= full_imag[PRODUCT_SHIFT +: OUTPUT_WIDTH];
+      |  end
+      |endmodule
+      |""".stripMargin
+  )
+}
+
 /** Exact Gauss complex multiplier for the wider TFHEpp hardware profile.
   *
   * Each real product decomposes its operands into unsigned low limbs and

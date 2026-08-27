@@ -9,6 +9,8 @@ object ExternalProductMultiplier {
   case object Schoolbook extends ExternalProductMultiplier
   case object ExactGaussDsp extends ExternalProductMultiplier
   case object ExactPipelinedSchoolbookDsp extends ExternalProductMultiplier
+  case object ExactPipelinedQuantizedGaussDsp
+      extends ExternalProductMultiplier
   case object ExactGaussTwoLimbDsp extends ExternalProductMultiplier
 }
 
@@ -47,7 +49,9 @@ final case class ExternalProductConfig(
     require(bootstrappingKey.width >= 2 && bootstrappingKey.width <= 27)
   }
   if (
-    multiplier == ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+    multiplier == ExternalProductMultiplier.ExactPipelinedSchoolbookDsp ||
+      multiplier ==
+        ExternalProductMultiplier.ExactPipelinedQuantizedGaussDsp
   ) {
     require(spectrum.width > 27 && spectrum.width <= 35)
     require(bootstrappingKey.width >= 2 && bootstrappingKey.width <= 27)
@@ -88,6 +92,15 @@ private[fpt] object ExternalProductMultiply {
       // This fallback keeps the configuration numerically usable in simple
       // reference accumulators. The synchronous physical accumulator below
       // replaces it with the explicitly registered DSP implementation.
+      val ac = a.real * b.real
+      val bd = a.imag * b.imag
+      val ad = a.real * b.imag
+      val bc = a.imag * b.real
+      (ac -& bd, ad +& bc)
+    case ExternalProductMultiplier.ExactPipelinedQuantizedGaussDsp =>
+      // The synchronous physical accumulators instantiate the quantized
+      // multiplier directly. Keep reference configurations mathematically
+      // equivalent when they call this generic helper.
       val ac = a.real * b.real
       val bd = a.imag * b.imag
       val ad = a.real * b.imag
@@ -318,11 +331,13 @@ final class DoubleBufferedExternalProductAccumulator(
     val config: ExternalProductConfig,
     val tagWidth: Int,
     val serializeComponents: Boolean = false,
-    val useSynchronousMemory: Boolean = false
+    val useSynchronousMemory: Boolean = false,
+    val useRotatingThreeBankMemory: Boolean = false
 ) extends Module {
   import TransformUtil._
   require(tagWidth >= 1)
   require(!serializeComponents || config.outputComponents >= 2)
+  require(!useRotatingThreeBankMemory || useSynchronousMemory)
 
   private val rowWidth = counterWidth(config.rows)
   private val inputBeatWidth = counterWidth(config.inputFrameBeats)
@@ -374,7 +389,9 @@ final class DoubleBufferedExternalProductAccumulator(
   if (!useSynchronousMemory) {
     require(
       config.multiplier !=
-        ExternalProductMultiplier.ExactPipelinedSchoolbookDsp,
+        ExternalProductMultiplier.ExactPipelinedSchoolbookDsp &&
+        config.multiplier !=
+          ExternalProductMultiplier.ExactPipelinedQuantizedGaussDsp,
       "the pipelined DSP multiplier requires synchronous accumulator storage"
     )
     val accumulatorMemory = Reg(
@@ -597,6 +614,29 @@ final class DoubleBufferedExternalProductAccumulator(
       outputBeat := outputBeat + 1.U
     }
   }
+  } else if (useRotatingThreeBankMemory) {
+    val rotating = Module(
+      new RotatingThreeBankExternalProductAccumulator(config, tagWidth)
+    )
+    rotating.io.inputValid := io.inputValid
+    io.inputReady := rotating.io.inputReady
+    rotating.io.inputFirst := io.inputFirst
+    rotating.io.inputTag := io.inputTag
+    rotating.io.decomposition := io.decomposition
+    rotating.io.bootstrappingKey := io.bootstrappingKey
+    io.keyRow := rotating.io.keyRow
+    io.pointIndex := rotating.io.pointIndex
+    io.outputValid := rotating.io.outputValid
+    rotating.io.outputReady := io.outputReady
+    io.outputStart := rotating.io.outputStart
+    io.outputFirst := rotating.io.outputFirst
+    io.outputLast := rotating.io.outputLast
+    io.outputComponent := rotating.io.outputComponent
+    io.outputTag := rotating.io.outputTag
+    io.output := rotating.io.output
+    io.done := rotating.io.done
+    io.doneTag := rotating.io.doneTag
+    io.busy := rotating.io.busy
   } else {
     require(
       config.inputFrameBeats >= 2,
@@ -678,8 +718,12 @@ final class DoubleBufferedExternalProductAccumulator(
       if (config.outputGroupsPerInputBeat == 1) beat
       else beat >> groupBits
 
-    val usePipelinedProduct = config.multiplier ==
+    val useSchoolbookPipelinedProduct = config.multiplier ==
       ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+    val useQuantizedPipelinedProduct = config.multiplier ==
+      ExternalProductMultiplier.ExactPipelinedQuantizedGaussDsp
+    val usePipelinedProduct =
+      useSchoolbookPipelinedProduct || useQuantizedPipelinedProduct
     val productPipelineCycles =
       if (usePipelinedProduct)
         PipelinedExactSchoolbookComplexMultiply.latency
@@ -749,32 +793,49 @@ final class DoubleBufferedExternalProductAccumulator(
           val inputLane = group * config.outputLanes + lane
           val a = io.decomposition(inputLane)
           val b = io.bootstrappingKey(component)(inputLane)
-          val (productReal, productImag) =
-            if (usePipelinedProduct) {
-              val multiply = Module(
-                new PipelinedExactSchoolbookComplexMultiply(
-                  config.spectrum.width,
-                  config.bootstrappingKey.width
-                )
+          if (useQuantizedPipelinedProduct) {
+            val multiply = Module(
+              new PipelinedQuantizedGaussComplexMultiply(
+                config.spectrum.width,
+                config.bootstrappingKey.width,
+                config.productShift,
+                config.accumulator.width
               )
-              multiply.io.a := a
-              multiply.io.b := b
-              (multiply.io.productReal, multiply.io.productImag)
-            } else {
-              ExternalProductMultiply(a, b, config)
-            }
-          productWord(component)(group)(lane).real :=
-            FixedPointBits.shiftedLowSigned(
-              productReal,
-              config.productShift,
-              config.accumulator.width
             )
-          productWord(component)(group)(lane).imag :=
-            FixedPointBits.shiftedLowSigned(
-              productImag,
-              config.productShift,
-              config.accumulator.width
-            )
+            multiply.io.a := a
+            multiply.io.b := b
+            productWord(component)(group)(lane).real :=
+              multiply.io.productReal
+            productWord(component)(group)(lane).imag :=
+              multiply.io.productImag
+          } else {
+            val (productReal, productImag) =
+              if (useSchoolbookPipelinedProduct) {
+                val multiply = Module(
+                  new PipelinedExactSchoolbookComplexMultiply(
+                    config.spectrum.width,
+                    config.bootstrappingKey.width
+                  )
+                )
+                multiply.io.a := a
+                multiply.io.b := b
+                (multiply.io.productReal, multiply.io.productImag)
+              } else {
+                ExternalProductMultiply(a, b, config)
+              }
+            productWord(component)(group)(lane).real :=
+              FixedPointBits.shiftedLowSigned(
+                productReal,
+                config.productShift,
+                config.accumulator.width
+              )
+            productWord(component)(group)(lane).imag :=
+              FixedPointBits.shiftedLowSigned(
+                productImag,
+                config.productShift,
+                config.accumulator.width
+              )
+          }
         }
       }
     }

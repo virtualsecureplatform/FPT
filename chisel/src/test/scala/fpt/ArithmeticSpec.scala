@@ -226,6 +226,91 @@ final class ArithmeticSpec
     }
   }
 
+  it should "pipeline bit-exact quantized Gauss products every cycle" in {
+    val aWidth = 30
+    val bWidth = 27
+    val productShift = 28
+    val outputWidth = 30
+    val random = new Random(0x6761757373L)
+    def randomSigned(width: Int): BigInt = {
+      val bits = BigInt(width, random)
+      if (bits.testBit(width - 1)) bits - (BigInt(1) << width) else bits
+    }
+    def quantize(value: BigInt): BigInt = {
+      val bits = (value >> productShift) &
+        ((BigInt(1) << outputWidth) - 1)
+      if (bits.testBit(outputWidth - 1)) bits - (BigInt(1) << outputWidth)
+      else bits
+    }
+    val aLimit = BigInt(1) << (aWidth - 1)
+    val bLimit = BigInt(1) << (bWidth - 1)
+    val vectors = Seq(
+      (-aLimit, -aLimit, -bLimit, -bLimit),
+      (-aLimit, aLimit - 1, bLimit - 1, -bLimit),
+      (aLimit - 1, -aLimit, -bLimit, bLimit - 1),
+      (aLimit - 1, aLimit - 1, bLimit - 1, bLimit - 1),
+      (BigInt(-1), BigInt(0), BigInt(1), BigInt(-1))
+    ) ++ Seq.fill(1000)(
+      (
+        randomSigned(aWidth),
+        randomSigned(aWidth),
+        randomSigned(bWidth),
+        randomSigned(bWidth)
+      )
+    )
+
+    test(
+      new PipelinedQuantizedGaussComplexMultiply(
+        aWidth,
+        bWidth,
+        productShift,
+        outputWidth
+      )
+    ).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      val expected = mutable.Queue.empty[(BigInt, BigInt, Int)]
+
+      def checkReady(): Unit = {
+        if (
+          expected.size >= PipelinedQuantizedGaussComplexMultiply.latency
+        ) {
+          val (real, imag, index) = expected.dequeue()
+          withClue(s"pipelined quantized Gauss vector=$index real") {
+            dut.io.productReal.expect(real.S)
+          }
+          withClue(s"pipelined quantized Gauss vector=$index imag") {
+            dut.io.productImag.expect(imag.S)
+          }
+        }
+      }
+
+      for (((aReal, aImag, bReal, bImag), index) <- vectors.zipWithIndex) {
+        dut.io.a.real.poke(aReal.S)
+        dut.io.a.imag.poke(aImag.S)
+        dut.io.b.real.poke(bReal.S)
+        dut.io.b.imag.poke(bImag.S)
+        dut.clock.step()
+        expected.enqueue(
+          (
+            quantize(aReal * bReal - aImag * bImag),
+            quantize(aReal * bImag + aImag * bReal),
+            index
+          )
+        )
+        checkReady()
+      }
+      while (expected.nonEmpty) {
+        dut.io.a.real.poke(0.S)
+        dut.io.a.imag.poke(0.S)
+        dut.io.b.real.poke(0.S)
+        dut.io.b.imag.poke(0.S)
+        dut.clock.step()
+        expected.enqueue((BigInt(0), BigInt(0), -1))
+        checkReady()
+        if (expected.forall(_._3 == -1)) expected.clear()
+      }
+    }
+  }
+
   it should "keep the wider two-limb Gauss product exact" in {
     val aWidth = 46
     val bWidth = 29

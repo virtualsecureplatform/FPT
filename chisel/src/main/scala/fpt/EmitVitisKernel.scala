@@ -30,5 +30,11 @@ object EmitFptBlindRotateKernelController extends App {
     systemVerilog,
     "accumulatorMemories_0_"
   )
+  SynthesisEmitter.useReadClockForMemoryWritesByPrefix(
+    systemVerilog,
+    "accumulatorMemories_1_"
+  )
   SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "accumulatorMemories_0_")
+  SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "accumulatorMemories_1_")
+  SynthesisEmitter.addBlockRamStyleByPrefix(systemVerilog, "componentOneMemory_")
 }

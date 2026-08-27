@@ -47,7 +47,41 @@ private[fpt] final class MultiportedCoefficientScratch(
 
   setInline(
     "FptMultiportedCoefficientScratch.sv",
-    """module FptMultiportedCoefficientScratch #(
+    """(* keep_hierarchy = "yes" *)
+      |module FptCoefficientScratchReplica #(
+      |  parameter integer DEPTH = 2,
+      |  parameter integer ADDRESS_WIDTH = 1,
+      |  parameter integer WORD_WIDTH = 1
+      |) (
+      |  input  wire                       clock,
+      |  input  wire                       writeEnable,
+      |  input  wire [ADDRESS_WIDTH-1:0]   writeAddress,
+      |  input  wire [WORD_WIDTH-1:0]      writeData,
+      |  input  wire [ADDRESS_WIDTH-1:0]   readAddress,
+      |  output reg  [WORD_WIDTH-1:0]      readData
+      |);
+      |  // These copies are intentionally identical logically but distinct
+      |  // physically. Preserve them so synthesis cannot rebuild one global
+      |  // address/enable cone for all five wide LUTRAM replicas.
+      |  (* keep = "true", dont_touch = "true" *)
+      |  reg [ADDRESS_WIDTH-1:0] writeAddressCut;
+      |  (* keep = "true", dont_touch = "true" *)
+      |  reg writeEnableCut;
+      |  (* ram_style = "distributed" *)
+      |  reg [WORD_WIDTH-1:0] memory [0:DEPTH-1];
+      |
+      |  always @(posedge clock) begin
+      |    writeAddressCut <= writeAddress;
+      |    writeEnableCut <= writeEnable;
+      |    if (writeEnableCut)
+      |      memory[writeAddressCut] <= writeData;
+      |    // Validity is pipelined separately, so bubble reads are harmless
+      |    // and avoid a word-wide clock-enable broadcast.
+      |    readData <= memory[readAddress];
+      |  end
+      |endmodule
+      |
+      |module FptMultiportedCoefficientScratch #(
       |  parameter integer DEPTH = 2,
       |  parameter integer ADDRESS_WIDTH = 1,
       |  parameter integer WORD_WIDTH = 1,
@@ -61,32 +95,32 @@ private[fpt] final class MultiportedCoefficientScratch(
       |  input  wire [READ_PORTS*ADDRESS_WIDTH-1:0]   readAddresses,
       |  output wire [READ_PORTS*WORD_WIDTH-1:0]      outputData
       |);
-      |  (* ram_style = "distributed" *)
-      |  reg [WORD_WIDTH-1:0] memory [0:DEPTH-1];
-      |  reg [WORD_WIDTH-1:0] readData [0:READ_PORTS-1];
-      |  integer readPort;
+      |  reg [WORD_WIDTH-1:0] writeDataCut;
       |
       |  always @(posedge clock) begin
-      |    if (writeEnable)
-      |      memory[writeAddress] <= inputData;
-      |    // Capture every read port unconditionally. Qualifying this wide
-      |    // word with readEnables turns each enable bit into a clock-enable
-      |    // broadcast over a complete replicated memory word (more than
-      |    // 16K loads in the U280 configuration). The surrounding pipeline
-      |    // already carries validity separately, so reading harmless data
-      |    // during bubbles removes that control cone without changing the
-      |    // visible transaction timing.
-      |    for (readPort = 0; readPort < READ_PORTS; readPort = readPort + 1)
-      |      readData[readPort] <=
-      |        memory[readAddresses[readPort*ADDRESS_WIDTH +: ADDRESS_WIDTH]];
+      |    // Delay data by the same cycle as each replica's local controls.
+      |    writeDataCut <= inputData;
       |  end
       |
-      |  genvar outputPort;
+      |  genvar replica;
       |  generate
-      |    for (outputPort = 0; outputPort < READ_PORTS;
-      |         outputPort = outputPort + 1) begin : pack_outputs
-      |      assign outputData[outputPort*WORD_WIDTH +: WORD_WIDTH] =
-      |        readData[outputPort];
+      |    for (replica = 0; replica < READ_PORTS;
+      |         replica = replica + 1) begin : scratch_replicas
+      |      (* keep_hierarchy = "yes" *)
+      |      FptCoefficientScratchReplica #(
+      |        .DEPTH(DEPTH),
+      |        .ADDRESS_WIDTH(ADDRESS_WIDTH),
+      |        .WORD_WIDTH(WORD_WIDTH)
+      |      ) replica_memory (
+      |        .clock(clock),
+      |        .writeEnable(writeEnable),
+      |        .writeAddress(writeAddress),
+      |        .writeData(writeDataCut),
+      |        .readAddress(
+      |          readAddresses[replica*ADDRESS_WIDTH +: ADDRESS_WIDTH]
+      |        ),
+      |        .readData(outputData[replica*WORD_WIDTH +: WORD_WIDTH])
+      |      );
       |    end
       |  endgenerate
       |endmodule
@@ -224,8 +258,10 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   val freeBuffer = PriorityEncoder(sourceAvailable.asUInt)
 
   val fillOutstanding = RegInit(false.B)
-  val fillBuffer = RegInit(0.U(bufferWidth.W))
-  val fillIsDrain = RegInit(false.B)
+  // These payload fields are written when fillOutstanding is raised and are
+  // only observed with a prefetch response, so they do not need reset loads.
+  val fillBuffer = Reg(UInt(bufferWidth.W))
+  val fillIsDrain = Reg(Bool())
 
   private def sourceScratchAddress(buffer: UInt, beat: UInt): UInt = {
     val halfBeat = beat(memoryConfig.halfBeatWidth - 1, 0)

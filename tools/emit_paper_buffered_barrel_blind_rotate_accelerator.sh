@@ -52,10 +52,23 @@ for module in "$top" PipelinedWindowedNegacyclicRotatorSpan \
         exit 1
     fi
 done
+external_product_multiplier=${FPT_EXTERNAL_PRODUCT_MULTIPLIER:-schoolbook}
+case $external_product_multiplier in
+schoolbook)
+    multiplier_module=FptPipelinedExactSchoolbookComplexMultiply
+    ;;
+quantized_gauss)
+    multiplier_module=FptPipelinedQuantizedGaussComplexMultiply
+    ;;
+*)
+    echo "FPT_EXTERNAL_PRODUCT_MULTIPLIER must be schoolbook or quantized_gauss" >&2
+    exit 1
+    ;;
+esac
 if ! rg -q \
-    '^module FptPipelinedExactSchoolbookComplexMultiply[[:space:]]*#\(' \
+    "^module $multiplier_module[[:space:]]*#\\(" \
     "$output_file"; then
-    echo "Emitted source is missing FptPipelinedExactSchoolbookComplexMultiply" >&2
+    echo "Emitted source is missing $multiplier_module" >&2
     exit 1
 fi
 if ! rg -q '\(\* DONT_TOUCH = "yes" \*\) reg' "$output_file"; then

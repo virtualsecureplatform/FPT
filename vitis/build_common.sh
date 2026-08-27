@@ -24,6 +24,12 @@ build_dir=$vitis_dir/build
 generated_dir=$build_dir/generated
 platform=${FPT_PLATFORM:-xilinx_u280_gen3x16_xdma_1_202211_1}
 floorplan=${FPT_FLOORPLAN:-A}
+build_tag=${FPT_BUILD_TAG:-}
+if [[ -n $build_tag && ! $build_tag =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "FPT_BUILD_TAG must contain only letters, digits, underscore, or dash" >&2
+    exit 1
+fi
+artifact_suffix=${build_tag:+_$build_tag}
 
 if [[ -f /opt/xilinx/Vitis/2023.2/settings64.sh ]]; then
     source /opt/xilinx/Vitis/2023.2/settings64.sh
@@ -44,8 +50,10 @@ FPT_ARITHMETIC_PROFILE=paper-set-ii \
     IFFT_LOG_LANES=${IFFT_LOG_LANES:-6} \
     RADIX_LOG=${RADIX_LOG:-3} \
     IFFT_RADIX_LOG=${IFFT_RADIX_LOG:-3} \
-    FPT_SGEN_FORWARD_SWITCH_TRANSPOSE=${FPT_SGEN_FORWARD_SWITCH_TRANSPOSE:-0} \
-    FPT_SGEN_INVERSE_SWITCH_TRANSPOSE=${FPT_SGEN_INVERSE_SWITCH_TRANSPOSE:-0} \
+    FPT_SGEN_FORWARD_RADIX2K_MDC=${FPT_SGEN_FORWARD_RADIX2K_MDC:-${FPT_SGEN_FORWARD_SWITCH_TRANSPOSE:-0}} \
+    FPT_SGEN_FORWARD_PARTITION=${FPT_SGEN_FORWARD_PARTITION:-none} \
+    FPT_SGEN_FORWARD_BOUNDARY_REGISTERS=${FPT_SGEN_FORWARD_BOUNDARY_REGISTERS:-2} \
+    FPT_SGEN_INVERSE_RADIX2K_MDC=${FPT_SGEN_INVERSE_RADIX2K_MDC:-${FPT_SGEN_INVERSE_SWITCH_TRANSPOSE:-0}} \
     "$repo_dir/tools/generate_sgen_fpt.sh" \
     "$repo_dir/third_party/SGen" "$generated_dir"
 (cd "$repo_dir/chisel" && sbt -J-Xmx12G \
@@ -59,17 +67,32 @@ if [[ $xo_only -eq 1 ]]; then
     exit 0
 fi
 
-xclbin=$build_dir/xclbin/FptBlindRotateKernel_${target}_${floorplan}.xclbin
+xclbin=$build_dir/xclbin/FptBlindRotateKernel_${target}_${floorplan}${artifact_suffix}.xclbin
+link_config=$vitis_dir/cfg/link_config.cfg
+if [[ $target == hw && $floorplan == A ]]; then
+    link_config=$build_dir/link_config_${floorplan}.cfg
+    cp "$vitis_dir/cfg/link_config.cfg" "$link_config"
+    {
+        printf '\n[vivado]\n'
+        printf 'prop=run.impl_1.STEPS.PLACE_DESIGN.TCL.PRE=%s\n' \
+            "$vitis_dir/scripts/apply_fpt_hard_floorplan.tcl"
+    } >> "$link_config"
+fi
 debug_options=()
 if [[ $target == hw ]]; then
     debug_options=(-g)
 fi
+step_options=()
+if [[ -n ${FPT_TO_STEP:-} ]]; then
+    step_options+=(--to_step "$FPT_TO_STEP")
+fi
 v++ -l "${debug_options[@]}" -t "$target" --platform "$platform" \
-    --config "$vitis_dir/cfg/link_config.cfg" --kernel_frequency 200 \
+    "${step_options[@]}" \
+    --config "$link_config" --kernel_frequency 200 \
     -o "$xclbin" "$build_dir/xo/FptBlindRotateKernel.xo" \
-    --log_dir "$build_dir/vpp_log/${target}_${floorplan}" \
-    --temp_dir "$build_dir/vpp_temp/${target}_${floorplan}" \
-    --report_dir "$build_dir/vpp_report/${target}_${floorplan}"
+    --log_dir "$build_dir/vpp_log/${target}_${floorplan}${artifact_suffix}" \
+    --temp_dir "$build_dir/vpp_temp/${target}_${floorplan}${artifact_suffix}" \
+    --report_dir "$build_dir/vpp_report/${target}_${floorplan}${artifact_suffix}"
 if [[ $target == hw_emu ]]; then
     emconfigutil --platform "$platform" --od "$build_dir/xclbin"
 fi

@@ -139,8 +139,8 @@ final class ReplicatedAccumulatorBanks(
   // control and test-vector arithmetic do not directly drive 128 BRAM write
   // ports across the middle SLR.
   val loadActive = RegInit(false.B)
-  val loadContextReg = RegInit(0.U(contextWidth.W))
-  val loadBeat = RegInit(0.U(loadBeatWidth.W))
+  val loadContextReg = Reg(UInt(contextWidth.W))
+  val loadBeat = Reg(UInt(loadBeatWidth.W))
   io.loadReady := loadActive
 
   when(io.loadValid) {
@@ -157,18 +157,10 @@ final class ReplicatedAccumulatorBanks(
   val loadFinal = loadFire && loadBeat === (config.loadBeats - 1).U
 
   val loadCommitValid = RegNext(loadFire, false.B)
-  val loadCommitAddress = RegEnable(
-    loadAddress,
-    0.U(config.addressWidth.W),
-    loadFire
-  )
-  val loadCommitContext = RegEnable(
-    loadContextReg,
-    0.U(contextWidth.W),
-    loadFire
-  )
-  val loadCommitHighHalf = RegEnable(loadHighHalf, false.B, loadFire)
-  val loadCommitFinal = RegEnable(loadFinal, false.B, loadFire)
+  val loadCommitAddress = RegEnable(loadAddress, loadFire)
+  val loadCommitContext = RegEnable(loadContextReg, loadFire)
+  val loadCommitHighHalf = RegEnable(loadHighHalf, loadFire)
+  val loadCommitFinal = RegEnable(loadFinal, loadFire)
   val loadCommitData = Reg(chiselTypeOf(io.load))
   when(loadFire) {
     loadCommitData := io.load
@@ -209,8 +201,8 @@ final class ReplicatedAccumulatorBanks(
   // packed context still returns at one beat per cycle after this one-cycle
   // request stage.
   val prefetchActive = RegInit(false.B)
-  val prefetchContextReg = RegInit(0.U(contextWidth.W))
-  val prefetchIssueBeat = RegInit(0.U(halfBeatWidth.W))
+  val prefetchContextReg = Reg(UInt(contextWidth.W))
+  val prefetchIssueBeat = Reg(UInt(halfBeatWidth.W))
   io.prefetchReady := !prefetchActive && !loadActive && !loadCommitValid &&
     !io.loadStart
   val prefetchFire = io.prefetchStart && io.prefetchReady
@@ -225,14 +217,9 @@ final class ReplicatedAccumulatorBanks(
     _.read(prefetchAddress, prefetchReadEnable)
   )
   val prefetchValid = RegNext(prefetchReadEnable, false.B)
-  val prefetchBeatReg = RegEnable(
-    activePrefetchBeat,
-    0.U(halfBeatWidth.W),
-    prefetchReadEnable
-  )
+  val prefetchBeatReg = RegEnable(activePrefetchBeat, prefetchReadEnable)
   val prefetchOutputContextReg = RegEnable(
     activePrefetchContext,
-    0.U(contextWidth.W),
     prefetchReadEnable
   )
   // Register the complete BRAM response before it leaves the memory module.
@@ -242,14 +229,9 @@ final class ReplicatedAccumulatorBanks(
   // SLR. The eight-beat prefetch still fits inside the command interval.
   val prefetchOutputWords = RegNext(VecInit(prefetchWords))
   val prefetchOutputValid = RegNext(prefetchValid, false.B)
-  val prefetchOutputBeat = RegEnable(
-    prefetchBeatReg,
-    0.U(halfBeatWidth.W),
-    prefetchValid
-  )
+  val prefetchOutputBeat = RegEnable(prefetchBeatReg, prefetchValid)
   val prefetchResponseContext = RegEnable(
     prefetchOutputContextReg,
-    0.U(contextWidth.W),
     prefetchValid
   )
   io.prefetchValid := prefetchOutputValid
@@ -296,8 +278,8 @@ final class ReplicatedAccumulatorBanks(
   // adder away from the two BRAM write inputs while preserving one beat per
   // cycle.
   val updateActive = RegInit(false.B)
-  val updateContextReg = RegInit(0.U(contextWidth.W))
-  val updateBeat = RegInit(0.U(halfBeatWidth.W))
+  val updateContextReg = Reg(UInt(contextWidth.W))
+  val updateBeat = Reg(UInt(halfBeatWidth.W))
   io.updateReady := !loadActive && !loadCommitValid && !io.loadStart
   val updateFire = io.updateValid && io.updateReady
   val activeUpdateContext = Mux(
@@ -313,16 +295,8 @@ final class ReplicatedAccumulatorBanks(
 
   val updateWriteValid = RegNext(updateFire, false.B)
   val updateWriteFinal = RegNext(updateFinal, false.B)
-  val updateWriteAddress = RegEnable(
-    updateAddress,
-    0.U(config.addressWidth.W),
-    updateFire
-  )
-  val updateWriteContext = RegEnable(
-    activeUpdateContext,
-    0.U(contextWidth.W),
-    updateFire
-  )
+  val updateWriteAddress = RegEnable(updateAddress, updateFire)
+  val updateWriteContext = RegEnable(activeUpdateContext, updateFire)
   val updateLowReg = Reg(chiselTypeOf(io.updateLow))
   val updateHighReg = Reg(chiselTypeOf(io.updateHigh))
   // These wide registers are the receiving boundary for inverse data crossing

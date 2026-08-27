@@ -429,4 +429,142 @@ final class ExternalProductSpec
       }
     }
   }
+
+  it should "preserve line rate with the rotating three-bank accumulator" in {
+    val rotatingConfig = ExternalProductConfig(
+      points = 8,
+      inputLanes = 2,
+      outputLanes = 1,
+      rows = 4,
+      outputComponents = 2,
+      spectrum = FixedFormat(18, 12),
+      bootstrappingKey = FixedFormat(8, 19),
+      accumulator = FixedFormat(27, 3),
+      multiplier =
+        ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
+    )
+    val transactionCount = 3
+    val width = rotatingConfig.accumulator.width
+    val modulus = BigInt(1) << width
+    val mask = modulus - 1
+    def wrapSigned(value: BigInt): BigInt = {
+      val bits = value & mask
+      if (bits.testBit(width - 1)) bits - modulus else bits
+    }
+    val expected = Array.fill(transactionCount,
+      rotatingConfig.outputComponents,
+      rotatingConfig.points)((BigInt(0), BigInt(0)))
+
+    def operands(
+        transaction: Int,
+        row: Int,
+        point: Int,
+        component: Int
+    ): (BigInt, BigInt, BigInt, BigInt) = {
+      val aReal = BigInt(transaction * 211 + row * 101 + point * 17 - 211)
+      val aImag = BigInt(transaction * -97 + row * 47 - point * 23 + 91)
+      val bReal = BigInt(component * 73 + row * 13 - point * 5 + 19)
+      val bImag = BigInt(component * -61 + row * 7 + point * 11 - 3)
+      (aReal, aImag, bReal, bImag)
+    }
+    for (transaction <- 0 until transactionCount;
+        row <- 0 until rotatingConfig.rows;
+        point <- 0 until rotatingConfig.points;
+        component <- 0 until rotatingConfig.outputComponents) {
+      val (aReal, aImag, bReal, bImag) =
+        operands(transaction, row, point, component)
+      val productReal = aReal * bReal - aImag * bImag
+      val productImag = aReal * bImag + aImag * bReal
+      val quantizedReal = wrapSigned(productReal >> rotatingConfig.productShift)
+      val quantizedImag = wrapSigned(productImag >> rotatingConfig.productShift)
+      val previous = expected(transaction)(component)(point)
+      expected(transaction)(component)(point) =
+        if (row == 0) (quantizedReal, quantizedImag)
+        else (
+          wrapSigned(previous._1 + quantizedReal),
+          wrapSigned(previous._2 + quantizedImag)
+        )
+    }
+
+    test(
+      new DoubleBufferedExternalProductAccumulator(
+        rotatingConfig,
+        tagWidth = 2,
+        serializeComponents = true,
+        useSynchronousMemory = true,
+        useRotatingThreeBankMemory = true
+      )
+    ).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      dut.io.inputValid.poke(false.B)
+      dut.io.inputFirst.poke(false.B)
+      dut.io.inputTag.poke(0.U)
+      dut.io.outputReady.poke(true.B)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+
+      var outputTransaction = 0
+      var outputComponent = 0
+      var outputBeat = 0
+      def checkOutput(): Unit = {
+        if (dut.io.outputValid.peek().litToBoolean) {
+          dut.io.outputTag.expect(outputTransaction.U)
+          dut.io.outputComponent.expect(outputComponent.U)
+          dut.io.outputFirst.expect(
+            (outputComponent == 0 && outputBeat == 0).B
+          )
+          dut.io.outputLast.expect(
+            (outputComponent == rotatingConfig.outputComponents - 1 &&
+              outputBeat == rotatingConfig.outputFrameBeats - 1).B
+          )
+          val value = expected(outputTransaction)(outputComponent)(outputBeat)
+          dut.io.output(outputComponent)(0).real.expect(value._1.S)
+          dut.io.output(outputComponent)(0).imag.expect(value._2.S)
+          outputBeat += 1
+          if (outputBeat == rotatingConfig.outputFrameBeats) {
+            outputBeat = 0
+            outputComponent += 1
+            if (outputComponent == rotatingConfig.outputComponents) {
+              outputComponent = 0
+              outputTransaction += 1
+            }
+          }
+        }
+      }
+
+      for (transaction <- 0 until transactionCount;
+          row <- 0 until rotatingConfig.rows;
+          beat <- 0 until rotatingConfig.inputFrameBeats) {
+        dut.io.inputValid.poke(true.B)
+        dut.io.inputFirst.poke((row == 0 && beat == 0).B)
+        dut.io.inputTag.poke(transaction.U)
+        dut.io.inputReady.expect(true.B)
+        for (lane <- 0 until rotatingConfig.inputLanes) {
+          val point = beat * rotatingConfig.inputLanes + lane
+          val (aReal, aImag, _, _) = operands(transaction, row, point, 0)
+          dut.io.decomposition(lane).real.poke(aReal.S)
+          dut.io.decomposition(lane).imag.poke(aImag.S)
+          for (component <- 0 until rotatingConfig.outputComponents) {
+            val (_, _, bReal, bImag) =
+              operands(transaction, row, point, component)
+            dut.io.bootstrappingKey(component)(lane).real.poke(bReal.S)
+            dut.io.bootstrappingKey(component)(lane).imag.poke(bImag.S)
+          }
+        }
+        checkOutput()
+        dut.clock.step()
+      }
+      dut.io.inputValid.poke(false.B)
+      dut.io.inputFirst.poke(false.B)
+
+      var tailCycles = 0
+      while (outputTransaction < transactionCount) {
+        checkOutput()
+        dut.clock.step()
+        tailCycles += 1
+        tailCycles should be <= 24
+      }
+      dut.io.busy.expect(false.B)
+    }
+  }
 }
