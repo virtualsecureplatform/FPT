@@ -6,7 +6,7 @@ From: ubuntu:24.04
     org.opencontainers.image.source https://github.com/virtualsecureplatform/FPT
     org.opencontainers.image.description C++/TFHEpp, Chisel, SGen, HOGE, and Verilator test toolchain for FPT
     org.fpt.toolchain.sbt 1.11.6
-    org.fpt.toolchain.verilator 5.026
+    org.fpt.toolchain.verilator 5.050
 
 %files
     chisel/build.sbt /opt/fpt-sbt-projects/chisel/build.sbt
@@ -53,8 +53,8 @@ From: ubuntu:24.04
     rm -f /opt/sbt/bin/sbtn-*
     ln -s /opt/sbt/bin/sbt /usr/local/bin/sbt
 
-    verilator_version=5.026
-    verilator_sha256=87fdecf3967007d9ee8c30191ff2476f2a33635d0e0c6e3dbf345cc2f0c50b78
+    verilator_version=5.050
+    verilator_sha256=ec6723f30c1798b1fbbbed97364f09c431fb4875577c314f37240e99b60a4a04
     curl -fL --retry 3 \
         -o /tmp/verilator.tar.gz \
         "https://github.com/verilator/verilator/archive/refs/tags/v${verilator_version}.tar.gz"
@@ -67,6 +67,13 @@ From: ubuntu:24.04
     if [ "$build_jobs" -gt 8 ]; then build_jobs=8; fi
     make -j"$build_jobs"
     make install
+    # Verilator 5.050 emits <header>.fast.gch and <header>.slow.gch, then asks
+    # GCC to include <header>.fast/slow. GCC requires those underlying header
+    # names to exist before it will use the adjacent precompiled headers.
+    sed -i \
+        -e '/^  %.fast.gch: %$/{n;s|^\t|\tcp $< $*.fast; |;}' \
+        -e '/^  %.slow.gch: %$/{n;s|^\t|\tcp $< $*.slow; |;}' \
+        /usr/local/share/verilator/include/verilated.mk
     rm -f \
         /usr/local/bin/verilator_bin_dbg \
         /usr/local/bin/verilator_coverage_bin_dbg \
@@ -119,7 +126,7 @@ From: ubuntu:24.04
     c++ --version
     java -version
     test "$(sbt --script-version)" = "1.11.6"
-    verilator --version | grep -F "Verilator 5.026"
+    verilator --version | grep -F "Verilator 5.050"
 
 %runscript
     exec /bin/bash "$@"

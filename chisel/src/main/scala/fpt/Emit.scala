@@ -81,6 +81,9 @@ private object SynthesisEmitter {
   def addUltraRamStyle(systemVerilog: Path, memoryModule: String): Unit =
     addRamStyle(systemVerilog, memoryModule, "ultra")
 
+  def addDistributedRamStyle(systemVerilog: Path, memoryModule: String): Unit =
+    addRamStyle(systemVerilog, memoryModule, "distributed")
+
   /** Resolve an emitter-generated memory name by its stable logical prefix.
     * Array dimensions vary with the selected transform parallelism.
     */
@@ -101,6 +104,15 @@ private object SynthesisEmitter {
 
   def addUltraRamStyleByPrefix(systemVerilog: Path, prefix: String): Unit =
     addUltraRamStyle(systemVerilog, generatedModuleWithPrefix(systemVerilog, prefix))
+
+  def addDistributedRamStyleByPrefix(
+      systemVerilog: Path,
+      prefix: String
+  ): Unit =
+    addDistributedRamStyle(
+      systemVerilog,
+      generatedModuleWithPrefix(systemVerilog, prefix)
+    )
 
   /** CIRCT gives a SyncReadMem's read and write ports distinct clock names
     * even when both connect to the enclosing Chisel clock. UltraRAM inference

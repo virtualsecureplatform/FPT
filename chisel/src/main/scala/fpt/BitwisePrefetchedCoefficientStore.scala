@@ -37,6 +37,9 @@ final class BitwisePrefetchedBatchedCmuxCoefficientStore(
   )
 
   val memory = Module(new ReplicatedAccumulatorBanks(memoryConfig))
+  memory.io.drainStart := false.B
+  memory.io.drainContext := 0.U
+  memory.io.drainReady := false.B
   val cores = Seq.fill(coreCount) {
     Module(new BitwiseCmuxForwardFrontend(config, bitsPerCycle))
   }

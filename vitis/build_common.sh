@@ -30,6 +30,22 @@ if [[ -n $build_tag && ! $build_tag =~ ^[A-Za-z0-9_-]+$ ]]; then
     exit 1
 fi
 artifact_suffix=${build_tag:+_$build_tag}
+hard_floorplan_mode=${FPT_HARD_FLOORPLAN_MODE:-partition}
+forward_partition=${FPT_SGEN_FORWARD_PARTITION:-none}
+if [[ $target == hw && $floorplan == A &&
+      $hard_floorplan_mode != whole_forward &&
+      $forward_partition == none ]]; then
+    forward_partition=stage2spill
+fi
+forward_radix2k_mdc=${FPT_SGEN_FORWARD_RADIX2K_MDC:-${FPT_SGEN_FORWARD_SWITCH_TRANSPOSE:-}}
+if [[ $forward_partition != none ]]; then
+    if [[ -n $forward_radix2k_mdc && $forward_radix2k_mdc != 1 ]]; then
+        echo "FPT_SGEN_FORWARD_PARTITION=$forward_partition requires FPT_SGEN_FORWARD_RADIX2K_MDC=1" >&2
+        exit 1
+    fi
+    forward_radix2k_mdc=1
+fi
+forward_radix2k_mdc=${forward_radix2k_mdc:-0}
 
 if [[ -f /opt/xilinx/Vitis/2023.2/settings64.sh ]]; then
     source /opt/xilinx/Vitis/2023.2/settings64.sh
@@ -50,8 +66,8 @@ FPT_ARITHMETIC_PROFILE=paper-set-ii \
     IFFT_LOG_LANES=${IFFT_LOG_LANES:-6} \
     RADIX_LOG=${RADIX_LOG:-3} \
     IFFT_RADIX_LOG=${IFFT_RADIX_LOG:-3} \
-    FPT_SGEN_FORWARD_RADIX2K_MDC=${FPT_SGEN_FORWARD_RADIX2K_MDC:-${FPT_SGEN_FORWARD_SWITCH_TRANSPOSE:-0}} \
-    FPT_SGEN_FORWARD_PARTITION=${FPT_SGEN_FORWARD_PARTITION:-none} \
+    FPT_SGEN_FORWARD_RADIX2K_MDC=$forward_radix2k_mdc \
+    FPT_SGEN_FORWARD_PARTITION=$forward_partition \
     FPT_SGEN_FORWARD_BOUNDARY_REGISTERS=${FPT_SGEN_FORWARD_BOUNDARY_REGISTERS:-2} \
     FPT_SGEN_INVERSE_RADIX2K_MDC=${FPT_SGEN_INVERSE_RADIX2K_MDC:-${FPT_SGEN_INVERSE_SWITCH_TRANSPOSE:-0}} \
     "$repo_dir/tools/generate_sgen_fpt.sh" \
@@ -76,7 +92,10 @@ if [[ $target == hw && $floorplan == A ]]; then
         printf '\n[vivado]\n'
         printf 'prop=run.impl_1.STEPS.PLACE_DESIGN.TCL.PRE=%s\n' \
             "$vitis_dir/scripts/apply_fpt_hard_floorplan.tcl"
+        printf 'prop=run.impl_1.STEPS.ROUTE_DESIGN.TCL.POST=%s\n' \
+            "$vitis_dir/scripts/check_fpt_post_route.tcl"
     } >> "$link_config"
+    export FPT_POST_ROUTE_METRICS="$build_dir/post_route_${target}_${floorplan}${artifact_suffix}.tsv"
 fi
 debug_options=()
 if [[ $target == hw ]]; then

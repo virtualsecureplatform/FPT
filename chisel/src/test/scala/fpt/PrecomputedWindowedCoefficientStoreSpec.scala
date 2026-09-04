@@ -28,6 +28,8 @@ final class PrecomputedWindowedCoefficientStoreSpec
   private val commandInterval = config.components * config.levels *
     config.forwardBeats
   private val torusMask = (BigInt(1) << config.torusWidth) - 1
+  private val preprocessGuardBits =
+    sys.env.get("FPT_TEST_COEFFICIENT_GUARD_BITS").map(_.toInt)
 
   private def initial(context: Int, component: Int, index: Int): BigInt =
     BigInt(context * 97 + component * 53 + index * 29 + 7) & torusMask
@@ -39,17 +41,23 @@ final class PrecomputedWindowedCoefficientStoreSpec
       level: Int,
       index: Int
   ): BigInt = {
+    val preprocessWidth = preprocessGuardBits
+      .map(config.levels * config.baseBits + _)
+      .getOrElse(config.torusWidth)
+    val discardBits = config.torusWidth - preprocessWidth
+    val preprocessMask = (BigInt(1) << preprocessWidth) - 1
     val rotation = exponent & (config.polynomialSize - 1)
     val sourceIndex = (index - rotation) & (config.polynomialSize - 1)
-    val source = initial(context, component, sourceIndex)
-    val current = initial(context, component, index)
+    val source = initial(context, component, sourceIndex) >> discardBits
+    val current = initial(context, component, index) >> discardBits
     val highNegate = (exponent & config.polynomialSize) != 0
     val wraps = index < rotation
     val rotated =
-      if (wraps ^ highNegate) (-source) & torusMask else source
+      if (wraps ^ highNegate) (-source) & preprocessMask else source
     val biased =
-      (rotated - current + config.decompositionBias) & torusMask
-    val shift = config.torusWidth - (level + 1) * config.baseBits
+      (rotated - current + (config.decompositionBias >> discardBits)) &
+        preprocessMask
+    val shift = preprocessWidth - (level + 1) * config.baseBits
     val digit = (biased >> shift) &
       ((BigInt(1) << config.baseBits) - 1)
     val centered = digit - (BigInt(1) << (config.baseBits - 1))
@@ -60,7 +68,11 @@ final class PrecomputedWindowedCoefficientStoreSpec
 
   it should "time-share one rotator without changing the CMUX interval" in {
     test(
-      new PrecomputedWindowedBatchedCmuxCoefficientStore(config, contexts)
+      new PrecomputedWindowedBatchedCmuxCoefficientStore(
+        config,
+        contexts,
+        coefficientPreprocessGuardBits = preprocessGuardBits
+      )
     ).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
@@ -138,24 +150,28 @@ final class PrecomputedWindowedCoefficientStoreSpec
           val level = row % config.levels
           for (lane <- 0 until config.forwardLanes) {
             val point = beat * config.forwardLanes + lane
-            dut.io.coefficientLow(lane).expect(
-              expected(
-                transaction,
-                exponents(transaction),
-                component,
-                level,
-                point
-              ).S
-            )
-            dut.io.coefficientHigh(lane).expect(
-              expected(
-                transaction,
-                exponents(transaction),
-                component,
-                level,
-                config.points + point
-              ).S
-            )
+            withClue(
+              s"transaction=$transaction row=$row beat=$beat lane=$lane: "
+            ) {
+              dut.io.coefficientLow(lane).expect(
+                expected(
+                  transaction,
+                  exponents(transaction),
+                  component,
+                  level,
+                  point
+                ).S
+              )
+              dut.io.coefficientHigh(lane).expect(
+                expected(
+                  transaction,
+                  exponents(transaction),
+                  component,
+                  level,
+                  config.points + point
+                ).S
+              )
+            }
           }
           pairCount += 1
         }

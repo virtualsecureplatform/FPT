@@ -17,6 +17,7 @@ set jobs [lindex $argv 4]
 set floorplan_mode [lindex $argv 5]
 set force_high_fanout [lindex $argv 6]
 set pre_route_phys_opt [lindex $argv 7]
+set route_retry [lindex $argv 8]
 if {$input_checkpoint eq "" || $output_dir eq ""} {
     error "usage: POST_SYNTH_DCP OUTPUT_DIR ?CLOCK_PERIOD_NS? ?PLACE_DIRECTIVE? ?JOBS? ?FLOORPLAN_MODE? ?FORCE_MODE_0_NONE_1_ALL_2_ADDRESS_3_ADDRESS_AND_PENDING_4_ADDRESS_AND_COEFFICIENT_SELECTORS_5_ADDRESS_AND_OUTPUT_BOUNDARY? ?PRE_ROUTE_PHYS_OPT_AGGRESSIVE_OR_NONE?"
 }
@@ -26,6 +27,7 @@ if {$jobs eq ""} { set jobs 8 }
 if {$floorplan_mode eq ""} { set floorplan_mode full }
 if {$force_high_fanout eq ""} { set force_high_fanout 0 }
 if {$pre_route_phys_opt eq ""} { set pre_route_phys_opt aggressive }
+if {$route_retry eq ""} { set route_retry aggressive }
 if {![string is double -strict $clock_period] || $clock_period <= 0} {
     error "CLOCK_PERIOD_NS must be positive: $clock_period"
 }
@@ -41,6 +43,9 @@ if {![string is integer -strict $force_high_fanout] ||
 }
 if {$pre_route_phys_opt ni {aggressive none}} {
     error "PRE_ROUTE_PHYS_OPT must be aggressive or none: $pre_route_phys_opt"
+}
+if {$route_retry ni {aggressive none}} {
+    error "ROUTE_RETRY must be aggressive or none"
 }
 
 set top BufferedBlindRotateAccelerator
@@ -63,13 +68,16 @@ set_property HD.CLK_SRC $clock_root [get_ports $clock_port]
 
 set floorplan_cells [dict create \
     forward {engine/blindRotate/blindRotate/cmux/forward} \
+    forward_input_boundary {engine/blindRotate/blindRotate/cmux/forwardInputBoundary} \
     coefficients {engine/blindRotate/blindRotate/cmux/coefficients} \
     external {engine/blindRotate/blindRotate/cmux/external} \
     external_output {engine/blindRotate/blindRotate/cmux/externalOutputPipeline} \
     pending_requests {engine/blindRotate/blindRotate/cmux/pendingRequests} \
     forward_tags {engine/blindRotate/blindRotate/cmux/forwardTags} \
     inverse_boundary {engine/blindRotate/blindRotate/cmux/inverseBoundary} \
+    inverse_output_boundary {engine/blindRotate/blindRotate/cmux/inverseOutputBoundary} \
     inverse_tags {engine/blindRotate/blindRotate/cmux/inverseTags} \
+    component_join {engine/blindRotate/blindRotate/cmux/componentJoin} \
     key_buffer {engine/keyBuffer} \
     key_requests {engine/keyReadRequests} \
     sample_extract {engine/blindRotate/sampleExtract} \
@@ -88,7 +96,9 @@ dict for {name path} $floorplan_cells {
 
 create_pblock pb_forward
 resize_pblock pb_forward -add CLOCKREGION_X0Y0:CLOCKREGION_X7Y3
-add_cells_to_pblock pb_forward [dict get $resolved_cells forward]
+add_cells_to_pblock pb_forward [list \
+    [dict get $resolved_cells forward] \
+    [dict get $resolved_cells forward_input_boundary]]
 
 if {$floorplan_mode eq "digit-bram-forward"} {
     # The packed coefficient store reads a full forward beat directly from 72
@@ -174,7 +184,9 @@ if {$floorplan_mode eq "full"} {
         [dict get $resolved_cells pending_requests] \
         [dict get $resolved_cells forward_tags] \
         [dict get $resolved_cells inverse_boundary] \
+        [dict get $resolved_cells inverse_output_boundary] \
         [dict get $resolved_cells inverse_tags] \
+        [dict get $resolved_cells component_join] \
         [dict get $resolved_cells key_buffer] \
         [dict get $resolved_cells key_requests] \
         [dict get $resolved_cells sample_extract]]
@@ -243,32 +255,37 @@ if {$floorplan_mode eq "rotator-forward-control"} {
     puts "FPT_ROTATOR_FORWARD_EMIT_BOUNDARY registers=1 sll_registers=1"
 }
 
-# Guide the elastic forward-crossing payloads into the U280's dedicated
-# Laguna SLL registers. Vivado ignores USER_SLL_REG when a path does not
-# actually cross an SLR, so these hints remain safe when unconstrained
-# placement keeps a producer beside its consumer. Older checkpoints predate
-# the coefficient digit-output cut and therefore legitimately resolve none.
+# Use exactly one receiver-side Laguna register layer at each wide boundary.
+# The coefficient digit-output cut remains ordinary source-side fabric in
+# SLR1; marking both it and the forward receiver produced a fixed TX-to-RX
+# path that the router could not lengthen for hold. Payload and control tokens
+# are captured unconditionally at the receiver, so no cross-SLR signal drives
+# a wide register clock enable.
 set pending_guided_sll_registers [get_cells -hierarchical -quiet \
     -regexp {^.*/pendingRequests/(inputBoundary_.*_reg.*|inputBoundaryValid_reg.*)$}]
 set coefficient_digit_guided_sll_registers [get_cells -hierarchical -quiet \
     -regexp {^.*/coefficients/digitOutputBoundary/value_reg.*$}]
-if {[llength $coefficient_digit_guided_sll_registers] ni {0 2560}} {
-    error "Expected 0 or 2560 coefficient digit-output registers, found [llength $coefficient_digit_guided_sll_registers]"
+if {[llength $coefficient_digit_guided_sll_registers] != 2560} {
+    error "Expected 2560 coefficient digit-output fabric registers, found [llength $coefficient_digit_guided_sll_registers]"
+}
+set forward_input_guided_sll_registers [get_cells -hierarchical -quiet \
+    -regexp {^.*/forwardInputBoundary/output(Payload_payload|Control_control)Boundary/value_reg.*$}]
+if {[llength $forward_input_guided_sll_registers] != 7682} {
+    error "Expected 7682 forward receiver registers, found [llength $forward_input_guided_sll_registers]"
+}
+set inverse_output_guided_sll_registers [get_cells -hierarchical -quiet \
+    -regexp {^.*/inverseOutputBoundary/output(Payload_payload|Valid_valid)Boundary/value_reg.*$}]
+if {[llength $inverse_output_guided_sll_registers] != 3841} {
+    error "Expected 3841 inverse receiver registers, found [llength $inverse_output_guided_sll_registers]"
 }
 set guided_sll_registers [concat \
     $pending_guided_sll_registers \
-    $coefficient_digit_guided_sll_registers]
-set forward_input_guided_sll_registers [get_cells -hierarchical -quiet \
-    -regexp {^.*/forwardInputBoundary/(outputPayload_)?payload/value_reg.*$}]
-if {[llength $forward_input_guided_sll_registers] ni {0 7680}} {
-    error "Expected 0 or 7680 forward-input boundary registers, found [llength $forward_input_guided_sll_registers]"
-}
-set guided_sll_registers [concat \
-    $guided_sll_registers $forward_input_guided_sll_registers]
+    $forward_input_guided_sll_registers \
+    $inverse_output_guided_sll_registers]
 if {[llength $guided_sll_registers] > 0} {
     set_property USER_SLL_REG TRUE $guided_sll_registers
 }
-puts "FPT_GUIDED_SLL_REGISTERS count=[llength $guided_sll_registers] pending=[llength $pending_guided_sll_registers] coefficient_digit=[llength $coefficient_digit_guided_sll_registers] forward_input=[llength $forward_input_guided_sll_registers]"
+puts "FPT_GUIDED_SLL_REGISTERS count=[llength $guided_sll_registers] pending=[llength $pending_guided_sll_registers] coefficient_digit_fabric=[llength $coefficient_digit_guided_sll_registers] forward_receiver=[llength $forward_input_guided_sll_registers] inverse_receiver=[llength $inverse_output_guided_sll_registers]"
 
 set forced_high_fanout_nets {}
 if {$force_high_fanout} {
@@ -459,11 +476,12 @@ if {[llength $initial_paths] > 0} {
 }
 puts "FPT_CHECKPOINT_INITIAL_ROUTE routed=$initially_routed wns_ns=$initial_wns"
 
-if {$initially_routed && $initial_wns ne "NA" && $initial_wns < 0} {
+if {$route_retry eq "aggressive" && $initially_routed && \
+    $initial_wns ne "NA" && $initial_wns < 0} {
     phys_opt_design -directive AggressiveExplore
     phys_opt_design -slr_crossing_opt
     route_design -directive AggressiveExplore
-} elseif {!$initially_routed} {
+} elseif {$route_retry eq "aggressive" && !$initially_routed} {
     route_design -directive AggressiveExplore
 }
 
@@ -489,7 +507,9 @@ fpt_write_u280_metrics [file join $output_dir metrics.tsv] [list \
     floorplan_mode $floorplan_mode \
     force_high_fanout $force_high_fanout \
     pre_route_phys_opt $pre_route_phys_opt \
-    route_directive Explore/AggressiveExplore] $metrics
+    route_retry $route_retry \
+    route_directive [expr {$route_retry eq "aggressive" ? \
+        "Explore/AggressiveExplore" : "Explore"}]] $metrics
 
 set wns [dict get $metrics wns_ns]
 puts "FPT_CHECKPOINT_300MHZ_METRICS period_ns=$clock_period wns_ns=$wns achieved_mhz=[dict get $metrics achieved_mhz] routed=[dict get $metrics route_fully_routed] drc_errors=[dict get $metrics drc_error]"

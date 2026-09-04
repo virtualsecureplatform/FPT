@@ -32,10 +32,13 @@ set forward [get_cells -quiet ${cmux}/forward]
 set forward_input_boundary [get_cells -quiet ${cmux}/forwardInputBoundary]
 set pending_requests [get_cells -quiet ${cmux}/pendingRequests]
 set inverse_boundary [get_cells -quiet ${cmux}/inverseBoundary]
+set inverse_output_middle [get_cells -quiet ${cmux}/inverseOutputMiddleRelay]
+set inverse_output_destination [get_cells -quiet ${cmux}/inverseOutputDestinationRelay]
+set component_join [get_cells -quiet ${cmux}/componentJoin]
 set external_output_pipeline [get_cells -quiet ${cmux}/externalOutputPipeline]
 foreach required [list $coefficients $external $forward \
     $forward_input_boundary $pending_requests $inverse_boundary \
-    $external_output_pipeline] {
+    $inverse_output_middle $inverse_output_destination $component_join $external_output_pipeline] {
   if {[llength $required] != 1} {
     error "missing whole-module floorplan hierarchy: $required"
   }
@@ -48,13 +51,16 @@ if {$floorplan_mode eq "whole_forward"} {
   # the DSP/BRAM-rich SLR2.  forwardInputBoundary is the registered SLR1 relay
   # for the otherwise two-SLR coefficient-to-FFT hop.
   fpt_hard_pblock fpt_coefficients_inverse_slr0 SLR0 \
-    [concat $coefficients $inverse]
+    [concat $coefficients $inverse $inverse_output_middle \
+      $inverse_output_destination $component_join]
   fpt_hard_pblock fpt_external_relays_slr1 SLR1 \
     [concat $external $forward_input_boundary $pending_requests \
       $inverse_boundary $external_output_pipeline]
   fpt_hard_pblock fpt_forward_slr2 SLR2 $forward
 
-  set_property USER_SLR_ASSIGNMENT SLR0 [concat $coefficients $inverse]
+  set_property USER_SLR_ASSIGNMENT SLR0 \
+    [concat $coefficients $inverse $inverse_output_middle \
+      $inverse_output_destination $component_join]
   set_property USER_SLR_ASSIGNMENT SLR1 \
     [concat $external $forward_input_boundary $pending_requests \
       $inverse_boundary $external_output_pipeline]
@@ -64,7 +70,7 @@ if {$floorplan_mode eq "whole_forward"} {
   # All are already functional pipeline/FIFO state; the properties only make
   # their Laguna placement role explicit.
   set forward_relay_registers [get_cells -quiet -hierarchical \
-    -filter "NAME =~ ${forward_input_boundary}/outputPayload_payload/* && IS_SEQUENTIAL"]
+    -filter "NAME =~ ${forward_input_boundary}/outputPayload_payloadBoundary/value_reg* && IS_SEQUENTIAL"]
   set forward_output_registers [get_cells -quiet -hierarchical \
     -filter "NAME =~ ${pending_requests}/inputBoundary* && IS_SEQUENTIAL"]
   set inverse_sll_registers [get_cells -quiet -hierarchical \
@@ -82,11 +88,16 @@ if {$floorplan_mode eq "whole_forward"} {
 }
 
 fpt_hard_pblock fpt_inverse_slr0 SLR0 $inverse
+set_property USER_SLR_ASSIGNMENT SLR0 $inverse
 
 set forward_root ${cmux}/forward/core/backend/generated
 set forward_front [get_cells -quiet ${forward_root}/front]
 set forward_back [get_cells -quiet ${forward_root}/back]
 set forward_boundary [get_cells -quiet ${forward_root}/boundary]
+if {[llength $forward_front] != 1 || [llength $forward_back] != 1 || \
+    [llength $forward_boundary] != 1} {
+  error "partition floorplan requires generated front, boundary, and back hierarchies: front=[llength $forward_front] boundary=[llength $forward_boundary] back=[llength $forward_back]"
+}
 if {[llength $forward_front] == 1 && [llength $forward_back] == 1} {
   set forward_partition_tx [get_cells -quiet -hierarchical \
     -filter "NAME =~ ${forward_boundary}/tx_*"]
@@ -99,19 +110,28 @@ if {[llength $forward_front] == 1 && [llength $forward_back] == 1} {
     error "missing partition SLL registers: tx=[llength $forward_partition_tx] rx=[llength $forward_partition_rx]"
   }
   fpt_hard_pblock fpt_forward_coefficients_slr2 SLR2 \
-    [concat $forward_front $coefficients $forward_partition_tx]
+    [concat $forward_front $coefficients $forward_partition_tx \
+      $component_join $inverse_output_destination]
   fpt_hard_pblock fpt_forward_external_slr1 SLR1 \
     [concat $forward_back $external $forward_partition_rx \
-      $forward_partition_control]
+      $forward_partition_control $inverse_output_middle]
   set_property USER_SLR_ASSIGNMENT SLR2 \
-    [concat $forward_front $coefficients $forward_partition_tx]
+    [concat $forward_front $coefficients $forward_partition_tx \
+      $component_join $inverse_output_destination]
   set_property USER_SLR_ASSIGNMENT SLR1 \
     [concat $forward_back $external $forward_partition_rx \
-      $forward_partition_control]
+      $forward_partition_control $inverse_output_middle]
   set_property USER_SLL_REG TRUE \
     [concat $forward_partition_tx $forward_partition_rx]
+  set inverse_middle_registers [get_cells -quiet -hierarchical \
+    -filter "NAME =~ ${inverse_output_middle}/outputPayload_payloadBoundary/value_reg* && IS_SEQUENTIAL"]
+  set inverse_destination_registers [get_cells -quiet -hierarchical \
+    -filter "NAME =~ ${inverse_output_destination}/outputPayload_payloadBoundary/value_reg* && IS_SEQUENTIAL"]
+  if {[llength $inverse_middle_registers] < 3840 || \
+      [llength $inverse_destination_registers] < 3840} {
+    error "missing inverse output SLL banks: middle=[llength $inverse_middle_registers] destination=[llength $inverse_destination_registers]"
+  }
+  set_property USER_SLL_REG TRUE \
+    [concat $inverse_middle_registers $inverse_destination_registers]
   puts "FPT_HARD_FLOORPLAN forwardFront+coefficients=SLR2; forwardBack+external=SLR1; inverse=SLR0; boundaryTX=[llength $forward_partition_tx]; boundaryRX=[llength $forward_partition_rx]"
-} else {
-  fpt_hard_pblock fpt_forward_slr2 SLR2 $forward
-  puts "FPT_HARD_FLOORPLAN monolithic-forward=SLR2; inverse=SLR0"
 }

@@ -48,7 +48,8 @@ final case class ReplicatedAccumulatorBanksConfig(
   * avoids expanding every batch context into flip-flops.
   */
 final class ReplicatedAccumulatorBanks(
-    val config: ReplicatedAccumulatorBanksConfig
+    val config: ReplicatedAccumulatorBanksConfig,
+    val replicateReads: Boolean = true
 ) extends Module {
   private val coefficient = config.coefficient
   private val contextWidth = config.contextWidth
@@ -93,6 +94,20 @@ final class ReplicatedAccumulatorBanks(
     )
     val prefetchDone = Output(Bool())
 
+    val drainStart = Input(Bool())
+    val drainStartReady = Output(Bool())
+    val drainContext = Input(UInt(contextWidth.W))
+    val drainValid = Output(Bool())
+    val drainReady = Input(Bool())
+    val drain = Output(
+      Vec(
+        coefficient.components,
+        Vec(coefficient.inverseLanes, UInt(coefficient.torusWidth.W))
+      )
+    )
+    val drainDone = Output(Bool())
+    val drainDoneContext = Output(UInt(contextWidth.W))
+
     val updateValid = Input(Bool())
     val updateReady = Output(Bool())
     val updateFirst = Input(Bool())
@@ -122,9 +137,11 @@ final class ReplicatedAccumulatorBanks(
   val forwardMemories = Seq.fill(coefficient.inverseLanes) {
     SyncReadMem(config.addressDepth, wordType)
   }
-  val updateMemories = Seq.fill(coefficient.inverseLanes) {
-    SyncReadMem(config.addressDepth, wordType)
-  }
+  val updateMemories = if (replicateReads) {
+    Seq.fill(coefficient.inverseLanes) {
+      SyncReadMem(config.addressDepth, wordType)
+    }
+  } else Seq.empty
 
   def packedAddress(context: UInt, beat: UInt): UInt = {
     val address = Cat(context, beat(halfBeatWidth - 1, 0))
@@ -194,7 +211,14 @@ final class ReplicatedAccumulatorBanks(
     }
   }
 
-  // Register a forward-prefetch request before driving the 128 mirrored BRAM
+  // The update transaction state is declared before the shared-read
+  // arbitration. In single-image mode an update burst and a prefetch burst
+  // are each atomic and cannot own the one physical read port together.
+  val updateActive = RegInit(false.B)
+  val updateContextReg = Reg(UInt(contextWidth.W))
+  val updateBeat = Reg(UInt(halfBeatWidth.W))
+
+  // Register a forward-prefetch request before driving the lane-local BRAM
   // address ports. The request context otherwise crosses command arbitration
   // and the packed-address cone on the same cycle as prefetchStart, producing
   // a route-dominated path into the distributed BRAM columns. The complete
@@ -203,8 +227,21 @@ final class ReplicatedAccumulatorBanks(
   val prefetchActive = RegInit(false.B)
   val prefetchContextReg = Reg(UInt(contextWidth.W))
   val prefetchIssueBeat = Reg(UInt(halfBeatWidth.W))
+  val drainActive = RegInit(false.B)
+  val drainContextReg = Reg(UInt(contextWidth.W))
+  val drainIssueBeat = RegInit(0.U(loadBeatWidth.W))
+  class DrainResponse extends Bundle {
+    val data = chiselTypeOf(io.drain)
+    val last = Bool()
+  }
+  val drainResponses = Module(
+    new Queue(new DrainResponse, entries = 2, pipe = true, flow = true)
+  )
+  val drainDoneReg = RegInit(false.B)
+  val drainDoneContextReg = Reg(UInt(contextWidth.W))
+  val drainBusy = Wire(Bool())
   io.prefetchReady := !prefetchActive && !loadActive && !loadCommitValid &&
-    !io.loadStart
+    !io.loadStart && !drainBusy
   val prefetchFire = io.prefetchStart && io.prefetchReady
   val prefetchReadEnable = prefetchActive
   val activePrefetchContext = prefetchContextReg
@@ -213,9 +250,52 @@ final class ReplicatedAccumulatorBanks(
     activePrefetchContext,
     activePrefetchBeat
   )
-  val prefetchWords = forwardMemories.map(
-    _.read(prefetchAddress, prefetchReadEnable)
+  io.drainStartReady := !drainBusy && !prefetchActive && !updateActive &&
+    !loadActive && !loadCommitValid && !io.loadStart &&
+    !io.updateValid
+  val drainStartFire = io.drainStart && io.drainStartReady
+  val drainIssueEnable = Wire(Bool())
+  val drainIssueHigh = drainIssueBeat >= config.halfBeats.U
+  val drainAddress = packedAddress(
+    drainContextReg,
+    drainIssueBeat(halfBeatWidth - 1, 0)
   )
+  val sharedReadAddress = Wire(UInt(config.addressWidth.W))
+  val sharedReadEnable = Wire(Bool())
+  val prefetchWords = forwardMemories.map(
+    _.read(sharedReadAddress, sharedReadEnable)
+  )
+  val drainResponseValid = RegNext(drainIssueEnable, false.B)
+  val drainResponseHigh = RegEnable(drainIssueHigh, drainIssueEnable)
+  val drainResponseLast = RegEnable(
+    drainIssueBeat === (config.loadBeats - 1).U,
+    drainIssueEnable
+  )
+  drainResponses.io.enq.valid := drainResponseValid
+  drainResponses.io.enq.bits.last := drainResponseLast
+  for (component <- 0 until coefficient.components) {
+    for (lane <- 0 until coefficient.inverseLanes) {
+      drainResponses.io.enq.bits.data(component)(lane) := Mux(
+        drainResponseHigh,
+        prefetchWords(lane)(2 * component + 1),
+        prefetchWords(lane)(2 * component)
+      )
+    }
+  }
+  drainResponses.io.deq.ready := io.drainReady
+  val drainOutputFire = drainResponses.io.deq.valid && io.drainReady
+  val drainOccupancyAfterResponse =
+    drainResponses.io.count + drainResponseValid.asUInt -
+      drainOutputFire.asUInt
+  drainIssueEnable := drainActive && drainOccupancyAfterResponse < 2.U
+  drainBusy := drainActive || drainResponseValid ||
+    drainResponses.io.deq.valid
+  when(drainResponseValid) {
+    assert(
+      drainResponses.io.enq.ready,
+      "accumulator drain response queue overflow"
+    )
+  }
   val prefetchValid = RegNext(prefetchReadEnable, false.B)
   val prefetchBeatReg = RegEnable(activePrefetchBeat, prefetchReadEnable)
   val prefetchOutputContextReg = RegEnable(
@@ -245,7 +325,38 @@ final class ReplicatedAccumulatorBanks(
         prefetchOutputWords(lane)(2 * component)
       io.prefetchHigh(component)(lane) :=
         prefetchOutputWords(lane)(2 * component + 1)
+      io.drain(component)(lane) :=
+        drainResponses.io.deq.bits.data(component)(lane)
     }
+  }
+  io.drainValid := drainResponses.io.deq.valid
+  io.drainDone := drainDoneReg
+  io.drainDoneContext := drainDoneContextReg
+  drainDoneReg := false.B
+
+  when(drainStartFire) {
+    val selectedLoaded = loaded.zipWithIndex
+      .map { case (flag, context) =>
+        (io.drainContext === context.U) && flag
+      }
+      .reduce(_ || _)
+    assert(io.drainContext < config.batchContexts.U, "invalid drain context")
+    assert(selectedLoaded, "drain targets an unloaded context")
+    drainActive := true.B
+    drainContextReg := io.drainContext
+    drainIssueBeat := 0.U
+  }
+  when(drainIssueEnable) {
+    when(drainIssueBeat === (config.loadBeats - 1).U) {
+      drainActive := false.B
+      drainIssueBeat := 0.U
+    }.otherwise {
+      drainIssueBeat := drainIssueBeat + 1.U
+    }
+  }
+  when(drainOutputFire && drainResponses.io.deq.bits.last) {
+    drainDoneReg := true.B
+    drainDoneContextReg := drainContextReg
   }
 
   when(prefetchFire) {
@@ -272,15 +383,14 @@ final class ReplicatedAccumulatorBanks(
     }
   }
 
-  // The inverse stream is accepted without bubbles. Its old packed word is
-  // read from the second memory copy, and the Torus-domain sum is registered
-  // before it is written to both copies. The extra stage cuts the BRAM-output
-  // adder away from the two BRAM write inputs while preserving one beat per
-  // cycle.
-  val updateActive = RegInit(false.B)
-  val updateContextReg = Reg(UInt(contextWidth.W))
-  val updateBeat = Reg(UInt(halfBeatWidth.W))
-  io.updateReady := !loadActive && !loadCommitValid && !io.loadStart
+  // The inverse stream is accepted without bubbles when reads are replicated.
+  // With one physical image, an atomic coefficient prefetch has priority for
+  // eight cycles; the outer update queue retains this transaction's context,
+  // beat, and payload until the shared read port becomes available again.
+  io.updateReady := !loadActive && !loadCommitValid && !io.loadStart &&
+    !drainBusy &&
+    (if (replicateReads) true.B
+     else !prefetchActive && (updateActive || !io.prefetchStart))
   val updateFire = io.updateValid && io.updateReady
   val activeUpdateContext = Mux(
     updateActive,
@@ -291,7 +401,16 @@ final class ReplicatedAccumulatorBanks(
   val updateFinal = updateFire &&
     activeUpdateBeat === (config.halfBeats - 1).U
   val updateAddress = packedAddress(activeUpdateContext, activeUpdateBeat)
-  val updateWords = updateMemories.map(_.read(updateAddress, updateFire))
+  sharedReadEnable := prefetchReadEnable || drainIssueEnable ||
+    (if (replicateReads) false.B else updateFire)
+  sharedReadAddress := Mux(
+    prefetchReadEnable,
+    prefetchAddress,
+    Mux(drainIssueEnable, drainAddress, updateAddress)
+  )
+  val updateWords = if (replicateReads) {
+    updateMemories.map(_.read(updateAddress, updateFire))
+  } else prefetchWords
 
   val updateWriteValid = RegNext(updateFire, false.B)
   val updateWriteFinal = RegNext(updateFinal, false.B)
@@ -337,10 +456,14 @@ final class ReplicatedAccumulatorBanks(
   }
 
   when(prefetchReadEnable && updateFire) {
-    assert(
-      activePrefetchContext =/= activeUpdateContext,
-      "prefetch and update accessed the same accumulator context"
-    )
+    if (replicateReads) {
+      assert(
+        activePrefetchContext =/= activeUpdateContext,
+        "prefetch and update accessed the same accumulator context"
+      )
+    } else {
+      assert(false.B, "prefetch and update shared one accumulator read port")
+    }
   }
   when(loadCommitValid) {
     assert(!prefetchReadEnable, "load overlapped a forward prefetch")
@@ -401,6 +524,7 @@ final class ReplicatedAccumulatorBanks(
       !updateWriteValid && !updateCommitValid,
       "accumulator load started with an inverse update in flight"
     )
+    assert(!drainBusy, "accumulator load started while drain is active")
   }
   assert(
     !(loadCommitValid && updateCommitValid),
@@ -427,11 +551,22 @@ final class ReplicatedAccumulatorBanks(
       memoryWriteWord,
       memoryWriteMask.map(_ && memoryWriteEnable)
     )
-    updateMemories(lane).write(
-      memoryWriteAddress,
-      memoryWriteWord,
-      memoryWriteMask.map(_ && memoryWriteEnable)
-    )
+    if (replicateReads) {
+      updateMemories(lane).write(
+        memoryWriteAddress,
+        memoryWriteWord,
+        memoryWriteMask.map(_ && memoryWriteEnable)
+      )
+    }
+  }
+
+  if (!replicateReads) {
+    when(prefetchReadEnable && updateCommitValid) {
+      assert(
+        prefetchAddress =/= updateCommitAddress,
+        "prefetch collided with a delayed accumulator update write"
+      )
+    }
   }
 
   io.updateDone := updateCommitValid && updateCommitFinal

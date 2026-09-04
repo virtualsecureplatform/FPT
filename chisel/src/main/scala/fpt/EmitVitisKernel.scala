@@ -25,16 +25,20 @@ object EmitFptBlindRotateKernelController extends App {
   val systemVerilog = outputDirectory.resolve("FptBlindRotateKernelController.sv")
   SynthesisEmitter.removeInlineFileList(systemVerilog)
   SynthesisEmitter.addBlockRamStyle(systemVerilog, config.keyMemoryModuleName)
-  SynthesisEmitter.addBlockRamStyleByPrefix(systemVerilog, "digitMemories_")
-  SynthesisEmitter.useReadClockForMemoryWritesByPrefix(
+  SynthesisEmitter.addBlockRamStyleByPrefix(systemVerilog, "digitMemory_")
+  SynthesisEmitter.addDistributedRamStyleByPrefix(
     systemVerilog,
-    "accumulatorMemories_0_"
+    "firstComponentMemory_"
   )
   SynthesisEmitter.useReadClockForMemoryWritesByPrefix(
     systemVerilog,
-    "accumulatorMemories_1_"
+    "forwardMemories_"
   )
-  SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "accumulatorMemories_0_")
-  SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "accumulatorMemories_1_")
-  SynthesisEmitter.addBlockRamStyleByPrefix(systemVerilog, "componentOneMemory_")
+  SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "forwardMemories_")
+  if (
+    config.blindRotate.cmux.coefficientStorage ==
+      BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks
+  ) {
+    SynthesisEmitter.addDistributedRamStyleByPrefix(systemVerilog, "ram_8x")
+  }
 }

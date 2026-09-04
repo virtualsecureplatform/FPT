@@ -221,19 +221,12 @@ final class BootstrappingKeyPingPongBuffer(
     inputMatchingBank(bank) := resident || completing
   }
 
-  // Register the complete request next to the key memory. This removes the
-  // outer pending queue's distributed-RAM read and tag/address decode from
-  // the BRAM address path while retaining one request per cycle.
-  val requestValid = RegInit(false.B)
-  val requestBank = RegInit(0.U(bankWidth.W))
-  val requestAddress = RegInit(0.U(memoryAddressWidth.W))
-  val requestIndex = RegInit(0.U(config.dimensionWidth.W))
-  val requestRow = RegInit(0.U(config.rowWidth.W))
-  val requestBeat = RegInit(0.U(config.beatWidth.W))
+  // Issue the synchronous memory read directly from the accepted request.
+  // SyncReadMem supplies the response register, so an additional complete
+  // request stage only adds one cycle of latency and one very wide pending
+  // payload slot in the caller.
   val responseSlotReady = !responseValid || io.readResponseReady
-  val requestIssue = requestValid && responseSlotReady
-  val requestStageReady = !requestValid || requestIssue
-  io.readRequestReady := inputMatchingBank.asUInt.orR && requestStageReady &&
+  io.readRequestReady := inputMatchingBank.asUInt.orR && responseSlotReady &&
     io.readIndex < config.domainDimension.U &&
     io.readRow < external.rows.U &&
     io.readBeat < external.inputFrameBeats.U
@@ -242,7 +235,7 @@ final class BootstrappingKeyPingPongBuffer(
   val inputReadAddress = (
     selectedInputBank * config.wordsPerCoefficient.U + inputReadWord
   )(memoryAddressWidth - 1, 0)
-  val readData = memory.read(requestAddress, requestIssue)
+  val readData = memory.read(inputReadAddress, inputRequestFire)
 
   when(io.readRequestValid) {
     assert(
@@ -251,36 +244,27 @@ final class BootstrappingKeyPingPongBuffer(
     )
   }
   when(inputRequestFire) {
-    requestBank := selectedInputBank
-    requestAddress := inputReadAddress
-    requestIndex := io.readIndex
-    requestRow := io.readRow
-    requestBeat := io.readBeat
-  }
-  when(inputRequestFire =/= requestIssue) {
-    requestValid := inputRequestFire
-  }
-  when(requestIssue) {
     assert(
-      bankValid(requestBank) && bankIndex(requestBank) === requestIndex,
-      "staged bootstrapping-key request lost its resident bank"
+      inputMatchingBank.asUInt.orR,
+      "accepted bootstrapping-key request has no resident bank"
     )
-    responseBank := requestBank
-    responseIndex := requestIndex
-    responseRow := requestRow
-    responseBeat := requestBeat
+    responseBank := selectedInputBank
+    responseIndex := io.readIndex
+    responseRow := io.readRow
+    responseBeat := io.readBeat
     when(
-      bankReadCount(requestBank) ===
+      bankReadCount(selectedInputBank) ===
         (config.readsPerCoefficient - 1).U
     ) {
-      bankReadCount(requestBank) := 0.U
-      bankValid(requestBank) := false.B
+      bankReadCount(selectedInputBank) := 0.U
+      bankValid(selectedInputBank) := false.B
     }.otherwise {
-      bankReadCount(requestBank) := bankReadCount(requestBank) + 1.U
+      bankReadCount(selectedInputBank) :=
+        bankReadCount(selectedInputBank) + 1.U
     }
   }
-  when(responseFire =/= requestIssue) {
-    responseValid := requestIssue
+  when(responseFire =/= inputRequestFire) {
+    responseValid := inputRequestFire
   }
 
   for (lane <- 0 until external.inputLanes) {

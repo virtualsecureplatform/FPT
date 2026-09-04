@@ -40,6 +40,9 @@ final class PrefetchedBatchedCmuxCoefficientStore(
   )
 
   val memory = Module(new ReplicatedAccumulatorBanks(memoryConfig))
+  memory.io.drainStart := false.B
+  memory.io.drainContext := 0.U
+  memory.io.drainReady := false.B
   memory.io.loadStart := io.loadStart
   memory.io.loadContext := io.loadContext
   memory.io.loadValid := io.loadValid

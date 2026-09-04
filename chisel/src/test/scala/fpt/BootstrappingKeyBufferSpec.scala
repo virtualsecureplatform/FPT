@@ -111,8 +111,8 @@ final class BootstrappingKeyBufferSpec
       dut.io.readRequestValid.poke(true.B)
       dut.io.readIndex.poke(0.U)
       for (operation <- 0 until config.loadBeatsPerCoefficient) {
-        if (operation >= 2) {
-          expectResponse(0, operation - 2)
+        if (operation >= 1) {
+          expectResponse(0, operation - 1)
         } else {
           dut.io.readResponseValid.expect(false.B)
         }
@@ -126,11 +126,9 @@ final class BootstrappingKeyBufferSpec
       }
       dut.io.loadValid.poke(false.B)
       dut.io.readRequestValid.poke(false.B)
-      expectResponse(0, config.loadBeatsPerCoefficient - 2)
+      expectResponse(0, config.loadBeatsPerCoefficient - 1)
       dut.io.loadDone.expect(true.B)
       dut.io.loadDoneIndex.expect(1.U)
-      dut.clock.step()
-      expectResponse(0, config.loadBeatsPerCoefficient - 1)
 
       // Consume the final response, start reusing its retired bank, and issue
       // the first request from the other bank on the same clock edge.
@@ -145,18 +143,13 @@ final class BootstrappingKeyBufferSpec
       dut.clock.step()
       dut.io.loadStart.poke(false.B)
 
-      // The final key-2 load beat makes key 2 readable on the same edge. The
-      // registered request stage keeps serving key 1 while accepting the
-      // first key-2 request at the coefficient boundary.
+      // The final key-2 load beat makes key 2 readable on the same edge as
+      // the last key-1 response is consumed.
       dut.io.loadValid.poke(true.B)
       val observed = ArrayBuffer.empty[Int]
       for (operation <- 0 until config.loadBeatsPerCoefficient) {
-        if (operation == 0) {
-          dut.io.readResponseValid.expect(false.B)
-        } else {
-          expectResponse(1, operation - 1)
-          observed += operation - 1
-        }
+        expectResponse(1, operation)
+        observed += operation
         pokeLoad(2, operation)
         val nextIndex = if (
           operation == config.loadBeatsPerCoefficient - 1
@@ -172,14 +165,14 @@ final class BootstrappingKeyBufferSpec
       }
       dut.io.loadValid.poke(false.B)
       dut.io.readRequestValid.poke(false.B)
-      expectResponse(1, config.loadBeatsPerCoefficient - 1)
-      observed += config.loadBeatsPerCoefficient - 1
+      expectResponse(2, 0)
+      dut.io.readResponseReady.poke(false.B)
       observed.toSeq should be(0 until config.loadBeatsPerCoefficient)
       dut.io.loadDone.expect(true.B)
       dut.io.loadDoneIndex.expect(2.U)
 
-      // The final staged key-1 request retired its bank on the preceding
-      // edge. Reuse it while that response is consumed and key 2 issues.
+      // The final key-1 request retired its bank on the preceding edge. Reuse
+      // it while the first key-2 response is consumed.
       dut.io.loadIndex.poke(3.U)
       dut.io.loadStartReady.expect(true.B)
       dut.io.loadStart.poke(true.B)
@@ -202,12 +195,11 @@ final class BootstrappingKeyBufferSpec
       dut.io.readRow.poke(0.U)
       dut.io.readBeat.poke(1.U)
       dut.io.readRequestValid.poke(true.B)
+      dut.io.readRequestReady.expect(false.B)
+      dut.io.readResponseReady.poke(true.B)
       dut.io.readRequestReady.expect(true.B)
       dut.clock.step()
-      dut.io.readRequestReady.expect(false.B)
       dut.io.readRequestValid.poke(false.B)
-      dut.io.readResponseReady.poke(true.B)
-      dut.clock.step()
       expectResponse(2, 1)
       dut.clock.step()
       dut.io.readResponseValid.expect(false.B)

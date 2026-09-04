@@ -32,55 +32,54 @@ final class InverseComponentJoinSpec
       dut.clock.step(2)
       dut.reset.poke(false.B)
 
-      var cycle = 0
-      for (transaction <- 0 until transactions) {
-        for (component <- 0 until 2) {
-          for (beat <- 0 until frameBeats) {
-            var accepted = false
-            while (!accepted) {
-              val ready = component == 0 || cycle % 4 != 1
-              dut.io.outputReady.poke(ready.B)
-              dut.io.inputValid.poke(true.B)
-              for (lane <- 0 until lanes) {
-                dut.io.inputLow(lane).poke(
-                  low(transaction)(component)(beat)(lane).S
-                )
-                dut.io.inputHigh(lane).poke(
-                  high(transaction)(component)(beat)(lane).S
-                )
-              }
+      val inputs = for {
+        transaction <- 0 until transactions
+        component <- 0 until 2
+        beat <- 0 until frameBeats
+      } yield (transaction, component, beat)
+      val expected = for {
+        transaction <- 0 until transactions
+        beat <- 0 until frameBeats
+      } yield (transaction, beat)
 
-              if (component == 0) {
-                dut.io.outputValid.expect(false.B)
-                dut.io.inputReady.expect(true.B)
-              } else {
-                dut.io.outputValid.expect(true.B)
-                dut.io.outputFirst.expect((beat == 0).B)
-                dut.io.outputLast.expect((beat == frameBeats - 1).B)
-                for (lane <- 0 until lanes) {
-                  dut.io.outputLow(0)(lane).expect(
-                    low(transaction)(0)(beat)(lane).S
-                  )
-                  dut.io.outputHigh(0)(lane).expect(
-                    high(transaction)(0)(beat)(lane).S
-                  )
-                  dut.io.outputLow(1)(lane).expect(
-                    low(transaction)(1)(beat)(lane).S
-                  )
-                  dut.io.outputHigh(1)(lane).expect(
-                    high(transaction)(1)(beat)(lane).S
-                  )
-                }
-              }
-              accepted = dut.io.inputReady.peek().litToBoolean
-              dut.clock.step()
-              cycle += 1
-            }
+      var inputIndex = 0
+      var outputIndex = 0
+      var cycle = 0
+      while (outputIndex < expected.size && cycle < 200) {
+        val outputReady = cycle % 5 != 1 && cycle % 7 != 3
+        dut.io.outputReady.poke(outputReady.B)
+        if (inputIndex < inputs.size) {
+          val (transaction, component, beat) = inputs(inputIndex)
+          dut.io.inputValid.poke(true.B)
+          for (lane <- 0 until lanes) {
+            dut.io.inputLow(lane).poke(low(transaction)(component)(beat)(lane).S)
+            dut.io.inputHigh(lane).poke(high(transaction)(component)(beat)(lane).S)
+          }
+        } else {
+          dut.io.inputValid.poke(false.B)
+        }
+
+        val inputFire = inputIndex < inputs.size &&
+          dut.io.inputReady.peek().litToBoolean
+        val outputValid = dut.io.outputValid.peek().litToBoolean
+        if (outputValid) {
+          val (transaction, beat) = expected(outputIndex)
+          dut.io.outputFirst.expect((beat == 0).B)
+          dut.io.outputLast.expect((beat == frameBeats - 1).B)
+          for (lane <- 0 until lanes) {
+            dut.io.outputLow(0)(lane).expect(low(transaction)(0)(beat)(lane).S)
+            dut.io.outputHigh(0)(lane).expect(high(transaction)(0)(beat)(lane).S)
+            dut.io.outputLow(1)(lane).expect(low(transaction)(1)(beat)(lane).S)
+            dut.io.outputHigh(1)(lane).expect(high(transaction)(1)(beat)(lane).S)
           }
         }
+        dut.clock.step()
+        if (inputFire) inputIndex += 1
+        if (outputValid && outputReady) outputIndex += 1
+        cycle += 1
       }
-      dut.io.inputValid.poke(false.B)
-      dut.io.outputValid.expect(false.B)
+      outputIndex shouldBe expected.size
+      inputIndex shouldBe inputs.size
     }
   }
 }

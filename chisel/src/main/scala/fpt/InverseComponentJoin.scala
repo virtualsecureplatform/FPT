@@ -19,6 +19,7 @@ final class InverseComponentJoin(
   require(dataWidth >= 2)
 
   private val beatWidth = TransformUtil.counterWidth(frameBeats)
+  private val wordWidth = 2 * lanes * dataWidth
 
   val io = IO(new Bundle {
     val inputValid = Input(Bool())
@@ -34,27 +35,15 @@ final class InverseComponentJoin(
     val outputHigh = Output(Vec(2, Vec(lanes, SInt(dataWidth.W))))
   })
 
-  val firstLow = Reg(Vec(frameBeats, Vec(lanes, SInt(dataWidth.W))))
-  val firstHigh = Reg(Vec(frameBeats, Vec(lanes, SInt(dataWidth.W))))
+  val firstComponentMemory = Mem(frameBeats, UInt(wordWidth.W))
   val component = RegInit(0.U(1.W))
   val beat = RegInit(0.U(beatWidth.W))
   val secondComponent = component === 1.U
-
+  val inputWord = Cat(io.inputHigh.asUInt, io.inputLow.asUInt)
   io.inputReady := Mux(secondComponent, io.outputReady, true.B)
-  io.outputValid := io.inputValid && secondComponent
-  io.outputFirst := io.outputValid && beat === 0.U
-  io.outputLast := io.outputValid && beat === (frameBeats - 1).U
-  for (lane <- 0 until lanes) {
-    io.outputLow(0)(lane) := firstLow(beat)(lane)
-    io.outputHigh(0)(lane) := firstHigh(beat)(lane)
-    io.outputLow(1)(lane) := io.inputLow(lane)
-    io.outputHigh(1)(lane) := io.inputHigh(lane)
-  }
-
   val inputFire = io.inputValid && io.inputReady
   when(inputFire && !secondComponent) {
-    firstLow(beat) := io.inputLow
-    firstHigh(beat) := io.inputHigh
+    firstComponentMemory.write(beat, inputWord)
   }
   when(inputFire) {
     when(beat === (frameBeats - 1).U) {
@@ -64,4 +53,18 @@ final class InverseComponentJoin(
       beat := beat + 1.U
     }
   }
+
+  io.outputValid := io.inputValid && secondComponent
+  io.outputFirst := io.outputValid && beat === 0.U
+  io.outputLast := io.outputValid && beat === (frameBeats - 1).U
+  val firstUnpacked = firstComponentMemory(beat).asTypeOf(
+    Vec(2, Vec(lanes, SInt(dataWidth.W)))
+  )
+  val secondUnpacked = inputWord.asTypeOf(
+    Vec(2, Vec(lanes, SInt(dataWidth.W)))
+  )
+  io.outputLow(0) := firstUnpacked(0)
+  io.outputHigh(0) := firstUnpacked(1)
+  io.outputLow(1) := secondUnpacked(0)
+  io.outputHigh(1) := secondUnpacked(1)
 }

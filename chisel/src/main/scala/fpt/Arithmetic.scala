@@ -50,6 +50,131 @@ private[fpt] final class PhysicalCutRegister(val width: Int)
   )
 }
 
+/** A physically indivisible four-way read-response selector.
+  *
+  * Registering only replicated selector bits is insufficient: Vivado can
+  * merge the following slice muxes back into one full-word cone.  Keeping the
+  * selector register and its narrow data mux in this boundary makes every
+  * tile an independent placement object without adding a data-cycle delay.
+  */
+private[fpt] final class PhysicalFourWaySelect(val width: Int)
+    extends BlackBox(Map("WIDTH" -> IntParam(width)))
+    with HasBlackBoxInline {
+  require(width >= 1)
+  override def desiredName: String = "FptPhysicalFourWaySelect"
+
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val enable = Input(Bool())
+    val selectorInput = Input(UInt(2.W))
+    val input0 = Input(UInt(width.W))
+    val input1 = Input(UInt(width.W))
+    val input2 = Input(UInt(width.W))
+    val input3 = Input(UInt(width.W))
+    val outputData = Output(UInt(width.W))
+  })
+
+  setInline(
+    "FptPhysicalFourWaySelect.sv",
+    """(* KEEP_HIERARCHY = "yes", DONT_TOUCH = "yes" *)
+      |module FptPhysicalFourWaySelect #(
+      |  parameter integer WIDTH = 1
+      |) (
+      |  input  wire                 clock,
+      |  input  wire                 enable,
+      |  input  wire [1:0]           selectorInput,
+      |  input  wire [WIDTH-1:0]     input0,
+      |  input  wire [WIDTH-1:0]     input1,
+      |  input  wire [WIDTH-1:0]     input2,
+      |  input  wire [WIDTH-1:0]     input3,
+      |  output reg  [WIDTH-1:0]     outputData
+      |);
+      |  (* DONT_TOUCH = "yes" *) reg [1:0] selector;
+      |  always @(posedge clock) begin
+      |    if (enable)
+      |      selector <= selectorInput;
+      |  end
+      |  always @* begin
+      |    case (selector)
+      |      2'd0: outputData = input0;
+      |      2'd1: outputData = input1;
+      |      2'd2: outputData = input2;
+      |      2'd3: outputData = input3;
+      |    endcase
+      |  end
+      |endmodule
+      |""".stripMargin
+  )
+}
+
+/** Four-deep synchronous bank used by the final External Product image.
+  * Keeping the two physical implementations as distinct modules prevents
+  * Vivado from rebuilding one 15,360-bit memory and lets each component live
+  * close to its consumer muxes.
+  */
+private[fpt] abstract class FinalAccumulatorBank(
+    val width: Int,
+    style: String,
+    addressRegisteredRead: Boolean
+)
+    extends BlackBox(Map("WIDTH" -> IntParam(width)))
+    with HasBlackBoxInline {
+  require(width >= 1)
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val writeEnable = Input(Bool())
+    val writeAddress = Input(UInt(2.W))
+    val inputData = Input(UInt(width.W))
+    val readEnable = Input(Bool())
+    val readAddress = Input(UInt(2.W))
+    val outputData = Output(UInt(width.W))
+  })
+
+  protected def inline(moduleName: String): Unit = {
+    val outputDeclaration = if (addressRegisteredRead) "wire" else "reg"
+    val readState = if (addressRegisteredRead) "reg [1:0] readAddressCut;" else ""
+    val readOperation = if (addressRegisteredRead) {
+      "if (readEnable) readAddressCut <= readAddress;"
+    } else {
+      "if (readEnable) outputData <= memory[readAddress];"
+    }
+    val outputAssignment = if (addressRegisteredRead) {
+      "assign outputData = memory[readAddressCut];"
+    } else ""
+    setInline(
+      s"$moduleName.sv",
+      s"""(* KEEP_HIERARCHY = "yes" *)
+       |module $moduleName #(parameter integer WIDTH = 1) (
+       |  input wire clock, input wire writeEnable,
+       |  input wire [1:0] writeAddress, input wire [WIDTH-1:0] inputData,
+       |  input wire readEnable, input wire [1:0] readAddress,
+       |  output $outputDeclaration [WIDTH-1:0] outputData
+       |);
+       |  (* ram_style = "$style" *) reg [WIDTH-1:0] memory [0:3];
+       |  $readState
+       |  always @(posedge clock) begin
+       |    if (writeEnable) memory[writeAddress] <= inputData;
+       |    $readOperation
+       |  end
+       |  $outputAssignment
+       |endmodule
+       |""".stripMargin
+    )
+  }
+}
+
+private[fpt] final class FinalAccumulatorUltraBank(width: Int)
+    extends FinalAccumulatorBank(width, "ultra", false) {
+  override def desiredName = "FptFinalAccumulatorUltraBank"
+  inline(desiredName)
+}
+
+private[fpt] final class FinalAccumulatorDistributedBank(width: Int)
+    extends FinalAccumulatorBank(width, "distributed", true) {
+  override def desiredName = "FptFinalAccumulatorDistributedBank"
+  inline(desiredName)
+}
+
 final class GaussTwiddle(val twiddleWidth: Int) extends Bundle {
   val c = SInt(twiddleWidth.W)
   val cMinusD = SInt(twiddleWidth.W)

@@ -244,16 +244,16 @@ final class BatchedCmuxEngineSpec
       dut.clock.step(2)
       dut.reset.poke(false.B)
 
-      // The two output boundaries, one middle slice, and input boundary hold
-      // four requests while the consumer is stalled.
-      for (value <- 0 until 4) {
+      // The two output boundaries and input boundary hold three requests
+      // while the consumer is stalled; the redundant middle slice is gone.
+      for (value <- 0 until 3) {
         dut.io.enqValid.poke(true.B)
         dut.io.enqData.poke(value.U)
         dut.io.enqReady.expect(true.B)
         dut.clock.step()
       }
       dut.io.enqValid.poke(false.B)
-      dut.io.count.expect(1.U)
+      dut.io.count.expect(0.U)
       dut.io.outputCount.expect(2.U)
       dut.io.inputBoundaryValid.expect(true.B)
       dut.io.shiftReady.expect(false.B)
@@ -267,15 +267,14 @@ final class BatchedCmuxEngineSpec
       dut.io.shiftReady.expect(false.B)
       dut.clock.step()
 
-      // On the next cycle, the single middle entry moves forward while the
-      // held input word refills it. The resident output word hides that move,
-      // so all remaining requests drain on adjacent cycles and in order.
+      // On the next cycle, the input boundary moves directly into the output
+      // FIFO. The resident output word preserves adjacent-cycle draining.
       dut.io.outputEnqFire.expect(true.B)
       dut.io.outputDeqFire.expect(true.B)
       dut.io.queueDeqFire.expect(true.B)
       dut.io.shiftReady.expect(true.B)
       dut.io.enqFire.expect(true.B)
-      for (value <- 1 until 4) {
+      for (value <- 1 until 3) {
         dut.io.deqValid.expect(true.B)
         dut.io.deqData.expect(value.U)
         dut.clock.step()

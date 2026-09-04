@@ -16,6 +16,24 @@ import java.nio.file.Path
   * transpose.
   */
 private[fpt] object PaperU280BufferedBarrelConfig {
+  private def coefficientStorage: BatchedCoefficientStorage =
+    sys.env.getOrElse("FPT_ACCUMULATOR_ARCH", "buffered_single") match {
+      case "buffered_single" =>
+        BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks
+      case "replicated" =>
+        BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks
+      case value =>
+        throw new IllegalArgumentException(
+          s"FPT_ACCUMULATOR_ARCH must be buffered_single or replicated, got $value"
+        )
+    }
+
+  private def coefficientPreprocessGuardBits: Option[Int] =
+    sys.env.getOrElse("FPT_COEFFICIENT_PREPROCESS_GUARD_BITS", "4") match {
+      case "exact" => None
+      case value => Some(value.toInt)
+    }
+
   private def externalProductMultiplier: ExternalProductMultiplier =
     sys.env.getOrElse("FPT_EXTERNAL_PRODUCT_MULTIPLIER", "schoolbook") match {
       case "schoolbook" =>
@@ -51,14 +69,15 @@ private[fpt] object PaperU280BufferedBarrelConfig {
       BatchedCmuxEngineConfig(
         engine,
         batchContexts = PaperSetII.bitwiseBatchContexts,
-        coefficientStorage =
-          BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks,
+        coefficientStorage = coefficientStorage,
         serializeInverseComponents = true,
         useSynchronousExternalProductMemory = true,
         useRotatingThreeBankExternalProductMemory = true,
         decoupledBootstrappingKey = true,
         pendingKeyRequestEntries = 1,
-        registerForwardSlrInput = true
+        registerForwardSlrInput = true,
+        registerInverseSlrOutput = true,
+        coefficientPreprocessGuardBits = coefficientPreprocessGuardBits
       ),
       domainDimension
     )
@@ -101,15 +120,22 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
     config.keyMemoryModuleName
   )
   // The generated width tracks the selected transform parallelism.
-  SynthesisEmitter.addBlockRamStyleByPrefix(systemVerilog, "digitMemories_")
-  // Each 4 x 15,360-bit External Product ping-pong bank otherwise consumes
-  // 8,780 distributed-memory LUTs. Use the U280's otherwise-idle UltraRAM for
-  // the padded twin, but leave the other shallow bank distributed: mapping it
-  // to 213 RAMB36s leaves only seven free BRAM sites in the middle SLR and
-  // stretches the accumulator-bank BRAM-to-BRAM update paths across the die.
+  SynthesisEmitter.addBlockRamStyleByPrefix(systemVerilog, "digitMemory_")
+  SynthesisEmitter.addDistributedRamStyleByPrefix(
+    systemVerilog,
+    "firstComponentMemory_"
+  )
+  // Row-to-row sums remain in the feedback pipeline. Only the four final
+  // 15,360-bit words occupy physical memory.
   SynthesisEmitter.useReadClockForMemoryWritesByPrefix(
     systemVerilog,
-    "accumulatorMemories_0_"
+    "forwardMemories_"
   )
-  SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "accumulatorMemories_0_")
+  SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "forwardMemories_")
+  if (
+    config.blindRotate.cmux.coefficientStorage ==
+      BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks
+  ) {
+    SynthesisEmitter.addDistributedRamStyleByPrefix(systemVerilog, "ram_8x")
+  }
 }

@@ -379,12 +379,20 @@ final class DoubleBufferedExternalProductAccumulator(
         Vec(config.outputLanes, new ComplexSInt(config.accumulator.width))
       )
     )
+    val serializedOutput = Output(
+      Vec(config.outputLanes, new ComplexSInt(config.accumulator.width))
+    )
     val done = Output(Bool())
     val doneTag = Output(UInt(tagWidth.W))
     val busy = Output(Bool())
   })
 
   private val groupBits = log2Ceil(config.outputGroupsPerInputBeat)
+  io.serializedOutput := MuxLookup(io.outputComponent, io.output(0))(
+    (0 until config.outputComponents).map(component =>
+      component.U -> io.output(component)
+    )
+  )
 
   if (!useSynchronousMemory) {
     require(
@@ -634,6 +642,7 @@ final class DoubleBufferedExternalProductAccumulator(
     io.outputComponent := rotating.io.outputComponent
     io.outputTag := rotating.io.outputTag
     io.output := rotating.io.output
+    io.serializedOutput := rotating.io.serializedOutput
     io.done := rotating.io.done
     io.doneTag := rotating.io.doneTag
     io.busy := rotating.io.busy

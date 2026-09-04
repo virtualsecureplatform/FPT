@@ -83,11 +83,14 @@ if [[ $(rg -c 'ram_style = "block"' "$output_file") != 2 ]]; then
     echo "Emitted source does not tag exactly the key and digit memories as block RAM" >&2
     exit 1
 fi
-if [[ $(rg -c 'ram_style = "ultra"' "$output_file") != 1 ]]; then
-    echo "Emitted source does not tag exactly one External Product memory as UltraRAM" >&2
+if [[ $(rg -c 'ram_style = "ultra"' "$output_file") != 2 ]] || \
+   ! rg -q '^module FptFinalAccumulatorUltraBank' "$output_file"; then
+    echo "Emitted source is missing the coefficient and final-image UltraRAM banks" >&2
     exit 1
 fi
-if [[ $(rg -c 'ram_style = "distributed"' "$output_file") != 1 ]] || \
+if [[ $(rg -c 'ram_style = "distributed"' "$output_file") -lt 4 ]] || \
+   ! rg -q '^module FptFinalAccumulatorDistributedBank' "$output_file" || \
+   ! rg -q '^module firstComponentMemory_' "$output_file" || \
    ! rg -q '^module FptMultiportedCoefficientScratch #\(' "$output_file"; then
     echo "Emitted source is missing the multi-read distributed coefficient scratchpad" >&2
     exit 1

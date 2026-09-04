@@ -59,6 +59,9 @@ final class AccumulatorMemorySpec
     dut.io.loadValid.poke(false.B)
     dut.io.prefetchStart.poke(false.B)
     dut.io.prefetchContext.poke(0.U)
+    dut.io.drainStart.poke(false.B)
+    dut.io.drainContext.poke(0.U)
+    dut.io.drainReady.poke(false.B)
     dut.io.updateValid.poke(false.B)
     dut.io.updateFirst.poke(false.B)
     dut.io.updateContext.poke(0.U)
@@ -212,6 +215,149 @@ final class AccumulatorMemorySpec
         dut.clock.step()
         expectPrefetchBeat(dut, context = 2, beat, updated = false)
       }
+    }
+  }
+
+  it should "pause and resume a shared-port update around a prefetch" in {
+    test(new ReplicatedAccumulatorBanks(config, replicateReads = false)) { dut =>
+      clearInputs(dut)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+      loadContext(dut, context = 0)
+      loadContext(dut, context = 1)
+
+      def driveUpdateBeat(beat: Int): Unit = {
+        dut.io.updateContext.poke(1.U)
+        dut.io.updateFirst.poke((beat == 0).B)
+        for (component <- 0 until coefficient.components) {
+          for (lane <- 0 until coefficient.inverseLanes) {
+            val point = beat * coefficient.inverseLanes + lane
+            dut.io.updateLow(component)(lane).poke(
+              update(high = false, component, point).S
+            )
+            dut.io.updateHigh(component)(lane).poke(
+              update(high = true, component, point).S
+            )
+          }
+        }
+      }
+
+      dut.io.updateValid.poke(true.B)
+      for (beat <- 0 until 2) {
+        driveUpdateBeat(beat)
+        dut.io.updateReady.expect(true.B)
+        dut.clock.step()
+      }
+
+      // The prefetch request and update beat two are accepted together before
+      // the registered prefetch owns the read port. Beat three then remains
+      // stable until the atomic prefetch releases that port.
+      driveUpdateBeat(2)
+      dut.io.prefetchContext.poke(0.U)
+      dut.io.prefetchStart.poke(true.B)
+      dut.io.prefetchReady.expect(true.B)
+      dut.io.updateReady.expect(true.B)
+      dut.clock.step()
+      dut.io.prefetchStart.poke(false.B)
+      driveUpdateBeat(3)
+      dut.io.updateReady.expect(false.B)
+
+      var responseBeat = 0
+      var waitCycles = 0
+      while (!dut.io.updateReady.peek().litToBoolean) {
+        if (dut.io.prefetchValid.peek().litToBoolean) {
+          expectPrefetchBeat(dut, context = 0, responseBeat, updated = false)
+          responseBeat += 1
+        }
+        dut.clock.step()
+        waitCycles += 1
+        waitCycles should be < 16
+      }
+      responseBeat should be > 0
+
+      for (beat <- 3 until config.halfBeats) {
+        driveUpdateBeat(beat)
+        dut.io.updateReady.expect(true.B)
+        if (dut.io.prefetchValid.peek().litToBoolean) {
+          expectPrefetchBeat(dut, context = 0, responseBeat, updated = false)
+          responseBeat += 1
+        }
+        dut.clock.step()
+      }
+      dut.io.updateValid.poke(false.B)
+      dut.io.updateFirst.poke(false.B)
+      while (responseBeat < config.halfBeats) {
+        if (dut.io.prefetchValid.peek().litToBoolean) {
+          expectPrefetchBeat(dut, context = 0, responseBeat, updated = false)
+          responseBeat += 1
+        }
+        dut.clock.step()
+      }
+
+      var done = dut.io.updateDone.peek().litToBoolean
+      var doneWait = 0
+      while (!done) {
+        dut.clock.step()
+        done = dut.io.updateDone.peek().litToBoolean
+        doneWait += 1
+        doneWait should be < 8
+      }
+      dut.io.updateDoneContext.expect(1.U)
+
+      dut.clock.step()
+      dut.io.prefetchContext.poke(1.U)
+      dut.io.prefetchStart.poke(true.B)
+      dut.io.prefetchReady.expect(true.B)
+      dut.clock.step()
+      dut.io.prefetchStart.poke(false.B)
+      dut.clock.step(2)
+      for (beat <- 0 until config.halfBeats) {
+        expectPrefetchBeat(dut, context = 1, beat, updated = true)
+        dut.clock.step()
+      }
+    }
+  }
+
+  it should "drain the full-width accumulator without using coefficient scratch" in {
+    test(new ReplicatedAccumulatorBanks(config, replicateReads = false)) { dut =>
+      clearInputs(dut)
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+      loadContext(dut, context = 1)
+
+      dut.io.drainContext.poke(1.U)
+      dut.io.drainStartReady.expect(true.B)
+      dut.io.drainStart.poke(true.B)
+      dut.clock.step()
+      dut.io.drainStart.poke(false.B)
+
+      var beat = 0
+      var cycles = 0
+      while (beat < config.loadBeats) {
+        val ready = cycles % 3 != 1
+        dut.io.drainReady.poke(ready.B)
+        if (dut.io.drainValid.peek().litToBoolean) {
+          val high = beat >= config.halfBeats
+          val halfBeat = beat & (config.halfBeats - 1)
+          for (component <- 0 until coefficient.components) {
+            for (lane <- 0 until coefficient.inverseLanes) {
+              val point = halfBeat * coefficient.inverseLanes + lane
+              val index = point + (if (high) coefficient.points else 0)
+              dut.io.drain(component)(lane).expect(
+                initial(1, component, index).U
+              )
+            }
+          }
+          if (ready) beat += 1
+        }
+        dut.clock.step()
+        cycles += 1
+        cycles should be < 100
+      }
+      dut.io.drainDone.expect(true.B)
+      dut.io.drainDoneContext.expect(1.U)
     }
   }
 

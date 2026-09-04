@@ -41,12 +41,15 @@ final class PaperU280BatchScheduleSpec
       engine,
       batchContexts = PaperSetII.bitwiseBatchContexts,
       coefficientStorage =
-        BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks,
+        BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks,
       serializeInverseComponents = true,
       useSynchronousExternalProductMemory = true,
+      useRotatingThreeBankExternalProductMemory = true,
       decoupledBootstrappingKey = true,
       pendingKeyRequestEntries = 1,
-      registerForwardSlrInput = true
+      registerForwardSlrInput = true,
+      registerInverseSlrOutput = true,
+      coefficientPreprocessGuardBits = Some(4)
     )
     config.commandInterval should be(16)
     val issuedContexts = (0 until config.batchContexts) :+ 0
@@ -134,12 +137,15 @@ final class PaperU280BatchScheduleSpec
         pair(1) - pair(0) should be(16)
       }
       completed.take(config.batchContexts).sliding(2).foreach { pair =>
-        pair(1) - pair(0) should be(16)
+        pair(1) - pair(0) should (be > 0 and be <= 16)
       }
       val latency = completed.head - accepted.head
-      latency should be <= 274
-      accepted.last should be(latency)
-      completed.last - completed(config.batchContexts - 1) should be(latency - 240)
+      latency should be <= 276
+      accepted.last should be(config.batchContexts * config.commandInterval)
+      completed.head should be <= accepted.last
+      completed.zip(accepted).foreach { case (done, accept) =>
+        done - accept should be <= 276
+      }
       info(s"U280 CMUX latency $latency, II 16")
     }
   }

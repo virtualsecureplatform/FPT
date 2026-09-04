@@ -21,7 +21,12 @@ private[fpt] object PaperVerilator {
       "--output-split",
       split.toString,
       "--output-split-cfuncs",
-      split.toString
+      split.toString,
+      // ChiselTest 6.0 still emits Verilator's pre-5.038 WData name in its
+      // generated harness. Newer Verilator releases use IData for the same
+      // 32-bit storage word, so retain source compatibility at C++ compile.
+      "-CFLAGS",
+      "-DWData=IData"
     )
     sys.env.get("FPT_VERILATOR_COMPILER").foreach { compiler =>
       require(compiler.nonEmpty, "FPT_VERILATOR_COMPILER must not be empty")
