@@ -12,6 +12,8 @@ array set mock_drc_counts {
 }
 set mock_wns 0.024
 set mock_whs 0.005
+set ::env(FPT_POST_ROUTE_DIAGNOSTICS) 0
+set mock_diagnostics {}
 
 proc get_clocks {args} { return {clk_kernel_00_unbuffered_net} }
 proc get_property {property object} {
@@ -23,6 +25,10 @@ proc get_property {property object} {
 }
 proc report_route_status {args} {
   global mock_route_fully_routed mock_route_errors mock_route_counts
+  if {[lsearch -exact $args -file] >= 0} {
+    lappend ::mock_diagnostics route_status
+    return
+  }
   set boolean_index [lsearch -exact $args -boolean_check]
   if {$boolean_index >= 0} {
     set check [lindex $args [expr {$boolean_index + 1}]]
@@ -35,6 +41,9 @@ proc report_route_status {args} {
   return [lrepeat $mock_route_counts($route_type) mock_net]
 }
 proc report_drc {args} { return }
+proc report_timing_summary {args} { lappend ::mock_diagnostics timing_summary }
+proc report_timing {args} { lappend ::mock_diagnostics kernel_paths }
+proc report_utilization {args} { lappend ::mock_diagnostics utilization }
 proc get_drc_violations {args} {
   global mock_drc_counts
   set filter_index [lsearch -exact $args -filter]
@@ -77,3 +86,20 @@ assert_rejected {fpt_check_vitis_post_route $metrics_path} "negative hold slack"
 set mock_whs 0.005
 fpt_check_vitis_post_route $metrics_path
 puts "Vitis post-route gate Tcl tests passed"
+
+set ::env(FPT_POST_ROUTE_DIAGNOSTICS) 1
+set mock_wns -0.001
+if {![catch {fpt_check_vitis_post_route $metrics_path} message] ||
+    [string first "WNS=-0.001" $message] < 0} {
+  error "diagnostic mode did not preserve strict negative-slack rejection: $message"
+}
+if {$mock_diagnostics ne {timing_summary kernel_paths route_status utilization utilization}} {
+  error "diagnostics were not captured before rejection: $mock_diagnostics"
+}
+puts "Vitis post-route diagnostics-before-failure test passed"
+set ::env(FPT_POST_ROUTE_MAX_PATHS) 200
+set mock_wns 0.024
+fpt_check_vitis_post_route $metrics_path
+set ::env(FPT_POST_ROUTE_MAX_PATHS) 0
+assert_rejected {fpt_check_vitis_post_route $metrics_path} "zero diagnostic path count"
+unset ::env(FPT_POST_ROUTE_MAX_PATHS)

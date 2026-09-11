@@ -128,7 +128,11 @@ final class PaperCmuxScheduleSpec
             s"latency: $cycles cycles after acceptance " +
             s"(${cycles + 1} launch-inclusive cycles)"
         )
-        cycles should be(if (bitwise) 224 else 207)
+        val forwardLatency = "latency of (\\d+) cycles".r
+          .findFirstMatchIn(Files.readString(forwardPath)).get.group(1).toInt
+        val inverseLatency = "latency of (\\d+) cycles".r
+          .findFirstMatchIn(Files.readString(inversePath)).get.group(1).toInt
+        cycles should be((if (bitwise) 224 else 207) + forwardLatency - 70 + inverseLatency - 112)
 
         dut.io.drainStart.poke(true.B)
         dut.clock.step()

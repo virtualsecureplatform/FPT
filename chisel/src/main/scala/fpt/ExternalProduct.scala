@@ -332,12 +332,18 @@ final class DoubleBufferedExternalProductAccumulator(
     val tagWidth: Int,
     val serializeComponents: Boolean = false,
     val useSynchronousMemory: Boolean = false,
-    val useRotatingThreeBankMemory: Boolean = false
+    val useRotatingThreeBankMemory: Boolean = false,
+    val finalBankTileLanes: Int = 0,
+    val rowControlTileLanes: Int = 0
 ) extends Module {
   import TransformUtil._
   require(tagWidth >= 1)
   require(!serializeComponents || config.outputComponents >= 2)
   require(!useRotatingThreeBankMemory || useSynchronousMemory)
+  require(Set(0, 6).contains(finalBankTileLanes))
+  require(finalBankTileLanes == 0 || useRotatingThreeBankMemory)
+  require(Set(0, 6).contains(rowControlTileLanes))
+  require(rowControlTileLanes == 0 || (useRotatingThreeBankMemory && finalBankTileLanes == rowControlTileLanes))
 
   private val rowWidth = counterWidth(config.rows)
   private val inputBeatWidth = counterWidth(config.inputFrameBeats)
@@ -624,7 +630,7 @@ final class DoubleBufferedExternalProductAccumulator(
   }
   } else if (useRotatingThreeBankMemory) {
     val rotating = Module(
-      new RotatingThreeBankExternalProductAccumulator(config, tagWidth)
+      new RotatingThreeBankExternalProductAccumulator(config, tagWidth, finalBankTileLanes, rowControlTileLanes)
     )
     rotating.io.inputValid := io.inputValid
     io.inputReady := rotating.io.inputReady

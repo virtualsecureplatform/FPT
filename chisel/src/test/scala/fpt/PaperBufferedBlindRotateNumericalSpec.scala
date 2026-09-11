@@ -148,6 +148,7 @@ final class PaperBufferedBlindRotateNumericalSpec
         dut.reset.poke(true.B)
         dut.clock.step(2)
         dut.reset.poke(false.B)
+        if (SGenFrameRecovery.configuredCycles > 0) dut.clock.step(SGenFrameRecovery.configuredCycles)
 
         dut.io.keyLoadIndex.poke(0.U)
         dut.io.keyLoadStartReady.expect(true.B)
@@ -214,12 +215,14 @@ final class PaperBufferedBlindRotateNumericalSpec
         val errors = scala.collection.mutable.Map.empty[Int, Int]
           .withDefaultValue(0)
         val observedContexts = ArrayBuffer.empty[Int]
+        val resultDigest = java.security.MessageDigest.getInstance("SHA-256")
         var outputIndex = 0
         var exact = 0
         var withinOne = 0
         var maximumError = BigInt(0)
         var computeDoneCycle = Option.empty[Int]
         var firstResultCycle = Option.empty[Int]
+        var blockedOutputCycles = 0
         var cycle = 0
         var finalDone = false
         while (!finalDone) {
@@ -229,10 +232,14 @@ final class PaperBufferedBlindRotateNumericalSpec
             computeDoneCycle = Some(cycle)
           }
           val fire = dut.io.resultValid.peek().litToBoolean && ready
+          if (dut.io.resultValid.peek().litToBoolean && !ready) blockedOutputCycles += 1
           if (fire) {
             if (firstResultCycle.isEmpty) firstResultCycle = Some(cycle)
             outputIndex should be < expected.size
             val actual = dut.io.result.peek().litValue
+            for (byte <- 0 until (coefficient.torusWidth + 7) / 8) {
+              resultDigest.update(((actual >> (8 * byte)) & 255).toByte)
+            }
             val error = wrappedDifference(
               actual,
               expected(outputIndex),
@@ -269,6 +276,18 @@ final class PaperBufferedBlindRotateNumericalSpec
         dut.io.active.expect(false.B)
         dut.io.runReady.expect(false.B)
         val histogram = errors.toSeq.sortBy(_._1).mkString("[", ",", "]")
+        val digest = resultDigest.digest().map(byte => f"${byte & 255}%02x").mkString
+        info(s"batch result SHA256=$digest")
+        sys.env.get("FPT_EXPECTED_BLIND_ROTATE_SHA256").foreach { expectedDigest =>
+          digest should be(expectedDigest)
+        }
+        info(s"batch schedule: computeDone=${computeDoneCycle.get}, firstResult=${firstResultCycle.get}, completed=$cycle, blockedOutputCycles=$blockedOutputCycles")
+        sys.env.get("FPT_EXPECTED_BLIND_ROTATE_CYCLES").foreach { expectedCycles =>
+          cycle should be(expectedCycles.toInt)
+        }
+        sys.env.get("FPT_MAX_BLIND_ROTATE_CYCLES").foreach { maximumCycles =>
+          cycle should be <= maximumCycles.toInt
+        }
         info(
           s"physical ${profile.profileName} Blind Rotate: cycles=$cycle, " +
             s"maximum Torus error=$maximumError " +

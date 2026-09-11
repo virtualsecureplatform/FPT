@@ -48,6 +48,9 @@ cmake -S "$repo_root" -B "$cmake_output" \
 cmake --build "$cmake_output" -j --target fpt_paper_sgen_vectors
 
 test_suites='testOnly fpt.PaperSGenNumericalSpec'
+if [[ ${FPT_PRECOMPUTED_TWIDDLE_EQUIVALENCE:-0} == 1 ]]; then
+    test_suites+=' fpt.PrecomputedTwiddleEquivalenceSpec'
+fi
 if [[ $arithmetic_profile == paper-set-ii ]]; then
     cmake --build "$cmake_output" -j --target fpt_paper_cmux_vectors
     test_suites+=' fpt.PaperCmuxNumericalSpec'

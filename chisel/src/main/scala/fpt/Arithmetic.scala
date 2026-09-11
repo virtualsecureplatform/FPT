@@ -50,6 +50,55 @@ private[fpt] final class PhysicalCutRegister(val width: Int)
   )
 }
 
+/** Preserve each unreset row-control island, including equivalent instances. */
+private[fpt] final class PhysicalRowControlRegister(val width: Int = 2)
+    extends BlackBox(Map("WIDTH" -> IntParam(width))) with HasBlackBoxInline {
+  require(width >= 1)
+  override def desiredName: String = "FptPhysicalRowControlRegister"
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val enable = Input(Bool())
+    val inputData = Input(UInt(width.W))
+    val outputData = Output(UInt(width.W))
+  })
+  setInline("FptPhysicalRowControlRegister.sv",
+    """(* KEEP_HIERARCHY = "yes", DONT_TOUCH = "yes" *)
+      |module FptPhysicalRowControlRegister #(parameter integer WIDTH = 2) (
+      |  input wire clock, input wire enable,
+      |  input wire [WIDTH-1:0] inputData, output wire [WIDTH-1:0] outputData);
+      |  (* DONT_TOUCH = "yes", KEEP = "yes", SHREG_EXTRACT = "no" *) reg [WIDTH-1:0] value;
+      |  always @(posedge clock) if (enable) value <= inputData;
+      |  assign outputData = value;
+      |endmodule
+      |""".stripMargin)
+}
+
+/** Narrow local controls must survive equivalent-register merging. */
+private[fpt] final class PhysicalControlRegister(val width: Int)
+    extends BlackBox(Map("WIDTH" -> IntParam(width))) with HasBlackBoxInline {
+  require(width >= 1)
+  override def desiredName: String = "FptPhysicalControlRegister"
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val reset = Input(Bool())
+    val inputData = Input(UInt(width.W))
+    val outputData = Output(UInt(width.W))
+  })
+  setInline("FptPhysicalControlRegister.sv",
+    """(* KEEP_HIERARCHY = "yes" *) module FptPhysicalControlRegister #(
+      |  parameter integer WIDTH = 1
+      |)(input wire clock, input wire reset,
+      |  input wire [WIDTH-1:0] inputData, output wire [WIDTH-1:0] outputData);
+      |  (* DONT_TOUCH = "yes", KEEP = "yes", SHREG_EXTRACT = "no" *) reg [WIDTH-1:0] value;
+      |  always @(posedge clock) begin
+      |    if (reset) value <= 0;
+      |    else value <= inputData;
+      |  end
+      |  assign outputData = value;
+      |endmodule
+      |""".stripMargin)
+}
+
 /** A physically indivisible four-way read-response selector.
   *
   * Registering only replicated selector bits is insufficient: Vivado can
@@ -173,6 +222,61 @@ private[fpt] final class FinalAccumulatorDistributedBank(width: Int)
     extends FinalAccumulatorBank(width, "distributed", true) {
   override def desiredName = "FptFinalAccumulatorDistributedBank"
   inline(desiredName)
+}
+
+/** Final-image slice with controls captured at existing commit/drain edges.
+  * No payload stage is added. Only these narrow control FFs are preserved.
+  */
+private[fpt] final class FinalAccumulatorLocalBank(width: Int, ultra: Boolean)
+    extends BlackBox(Map("WIDTH" -> IntParam(width))) with HasBlackBoxInline {
+  require(width >= 1)
+  override def desiredName: String =
+    if (ultra) "FptFinalAccumulatorLocalUltraBank" else "FptFinalAccumulatorLocalDistributedBank"
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val reset = Input(Bool())
+    val pendingWrite = Input(Bool())
+    val pendingWriteAddress = Input(UInt(2.W))
+    val inputData = Input(UInt(width.W))
+    val nextReadEnable = Input(Bool())
+    val nextReadAddress = Input(UInt(2.W))
+    val outputData = Output(UInt(width.W))
+  })
+  private val keep = "(* KEEP = \"yes\", DONT_TOUCH = \"yes\", SHREG_EXTRACT = \"no\" *)"
+  private val readState = if (ultra) "" else s"$keep reg [1:0] readAddressCut;"
+  private val readOperation = if (ultra) "outputData <= memory[readAddress];" else "readAddressCut <= readAddress;"
+  private val readAssignment = if (ultra) "" else "assign outputData = memory[readAddressCut];"
+  setInline(s"$desiredName.sv", s"""(* KEEP_HIERARCHY = "yes" *)
+    |module $desiredName #(parameter integer WIDTH = 1)(
+    |  input wire clock, reset, pendingWrite,
+    |  input wire [1:0] pendingWriteAddress,
+    |  input wire [WIDTH-1:0] inputData,
+    |  input wire nextReadEnable, input wire [1:0] nextReadAddress,
+    |  output ${if (ultra) "reg" else "wire"} [WIDTH-1:0] outputData
+    |);
+    |  $keep reg writeEnable;
+    |  $keep reg [1:0] writeAddress;
+    |  $keep reg readEnable;
+    |  $keep reg [1:0] readAddress;
+    |  $readState
+    |  (* ram_style = "${if (ultra) "ultra" else "distributed"}" *) reg [WIDTH-1:0] memory [0:3];
+    |  always @(posedge clock) begin
+    |    if (reset) begin
+    |      writeEnable <= 0;
+    |      readEnable <= 0;
+    |      readAddress <= 0;
+    |    end else begin
+    |      writeEnable <= pendingWrite;
+    |      readEnable <= nextReadEnable;
+    |      readAddress <= nextReadAddress;
+    |    end
+    |    writeAddress <= pendingWriteAddress;
+    |    if (writeEnable) memory[writeAddress] <= inputData;
+    |    if (readEnable) $readOperation
+    |  end
+    |  $readAssignment
+    |endmodule
+    |""".stripMargin)
 }
 
 final class GaussTwiddle(val twiddleWidth: Int) extends Bundle {

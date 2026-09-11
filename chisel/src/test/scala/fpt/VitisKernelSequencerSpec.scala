@@ -61,6 +61,14 @@ final class VitisKernelSequencerSpec
 
   private def launch(dut: FptBlindRotateKernelSequencer): Unit = {
     dut.io.start.poke(true.B)
+    var waited = 0
+    while (!dut.io.ready.peek().litToBoolean && waited < SGenFrameRecovery.configuredCycles) {
+      dut.io.inputCommand.valid.expect(false.B)
+      dut.io.keyLowCommand.valid.expect(false.B)
+      dut.io.outputCommand.valid.expect(false.B)
+      dut.clock.step()
+      waited += 1
+    }
     dut.io.ready.expect(true.B)
     dut.clock.step()
     dut.io.start.poke(false.B)

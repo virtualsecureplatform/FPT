@@ -113,7 +113,8 @@ final class FptBlindRotateKernelSequencer(
   val errorSticky = RegInit(false.B)
   val errorChannel = RegInit(0.U(3.W))
   val errorCode = RegInit(0.U(8.W))
-  val launch = io.start && !busy
+  private val frameRecoveryReady = SGenFrameRecovery.ready(SGenFrameRecovery.configuredCycles)
+  val launch = io.start && !busy && frameRecoveryReady
   donePulse := false.B
   io.idle := !busy
   io.done := donePulse

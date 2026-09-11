@@ -86,6 +86,26 @@ proc fpt_check_vitis_post_route {metrics_path} {
 
   fpt_vitis_write_metrics $metrics_path $metrics
 
+  # Preserve diagnostics before the strict timing failure below stops Vitis.
+  # Opt-in reporting does not change any route, DRC, or timing acceptance rule.
+  if {[info exists ::env(FPT_POST_ROUTE_DIAGNOSTICS)] &&
+      $::env(FPT_POST_ROUTE_DIAGNOSTICS) eq "1"} {
+    set prefix [file rootname $metrics_path]
+    set kernel_path_count 10
+    if {[info exists ::env(FPT_POST_ROUTE_MAX_PATHS)]} {
+      set kernel_path_count $::env(FPT_POST_ROUTE_MAX_PATHS)
+      if {![string is integer -strict $kernel_path_count] || $kernel_path_count < 1} {
+        error "FPT_POST_ROUTE_MAX_PATHS must be a positive integer"
+      }
+    }
+    report_timing_summary -max_paths 10 -file ${prefix}_timing_summary.rpt
+    report_timing -from $kernel_clocks -to $kernel_clocks -max_paths $kernel_path_count \
+      -file ${prefix}_kernel_paths.rpt
+    report_route_status -file ${prefix}_route_status.rpt
+    report_utilization -slr -file ${prefix}_slr_utilization.rpt
+    report_utilization -hierarchical -file ${prefix}_hierarchy.rpt
+  }
+
   set failures {}
   if {[dict get $metrics route_fully_routed] != 1} {
     lappend failures "design is not fully routed"

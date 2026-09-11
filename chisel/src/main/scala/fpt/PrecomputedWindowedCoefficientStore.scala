@@ -19,14 +19,21 @@ private[fpt] final class MultiportedCoefficientScratch(
     val addressWidth: Int,
     val wordWidth: Int,
     val readPorts: Int,
-    val banks: Int
+    val banks: Int,
+    val fieldSelected: Boolean = false,
+    val components: Int = 1,
+    val fieldWidth: Int = 1,
+    val groupedControls: Boolean = false
 ) extends BlackBox(
       Map(
         "DEPTH" -> IntParam(depth),
         "ADDRESS_WIDTH" -> IntParam(addressWidth),
         "WORD_WIDTH" -> IntParam(wordWidth),
         "READ_PORTS" -> IntParam(readPorts),
-        "BANKS" -> IntParam(banks)
+        "BANKS" -> IntParam(banks),
+        "FIELD_SELECTED" -> IntParam(if (fieldSelected) 1 else 0),
+        "COMPONENTS" -> IntParam(components),
+        "FIELD_WIDTH" -> IntParam(fieldWidth)
       )
     )
     with HasBlackBoxInline {
@@ -36,8 +43,16 @@ private[fpt] final class MultiportedCoefficientScratch(
   require(readPorts >= 1)
   require(banks >= 1 && isPow2(banks))
   require(wordWidth % banks == 0)
+  require(components >= 1 && fieldWidth >= 1)
+  require(!fieldSelected || (readPorts >= 2 && readPorts % 2 == 0))
+  require(!fieldSelected || wordWidth % (banks * 2 * components * fieldWidth) == 0)
+  val componentWidth: Int = TransformUtil.counterWidth(components)
+  val selectedBlockWidth: Int = wordWidth / (2 * components)
+  val responseWidth: Int = if (fieldSelected)
+    (readPorts + components - 1) * selectedBlockWidth else readPorts * wordWidth
 
-  override def desiredName: String = "FptMultiportedCoefficientScratch"
+  override def desiredName: String =
+    if (groupedControls) "FptGroupedCoefficientScratch" else "FptMultiportedCoefficientScratch"
 
   val io = IO(new Bundle {
     val clock = Input(Clock())
@@ -48,7 +63,9 @@ private[fpt] final class MultiportedCoefficientScratch(
     val primeData = Output(UInt(wordWidth.W))
     val readEnables = Input(UInt(readPorts.W))
     val readAddresses = Input(UInt((readPorts * addressWidth).W))
-    val outputData = Output(UInt((readPorts * wordWidth).W))
+    val readComponent = Input(UInt(componentWidth.W))
+    val readHalves = Input(UInt(readPorts.W))
+    val outputData = Output(UInt(responseWidth.W))
   })
 
   setInline(
@@ -57,21 +74,33 @@ private[fpt] final class MultiportedCoefficientScratch(
       |module FptCoefficientScratchBank #(
       |  parameter integer DEPTH = 2,
       |  parameter integer ADDRESS_WIDTH = 1,
-      |  parameter integer BANK_WIDTH = 1
+      |  parameter integer BANK_WIDTH = 1,
+      |  parameter integer PRESERVE_WRITE = 0,
+      |  parameter integer FIELD_SELECTED = 0,
+      |  parameter integer COMPONENTS = 1,
+      |  parameter integer FIELD_WIDTH = 1,
+      |  parameter integer ALL_COMPONENTS = 0,
+      |  parameter integer COMPONENT_WIDTH = (COMPONENTS > 1) ? $clog2(COMPONENTS) : 1,
+      |  parameter integer BANK_LANES = BANK_WIDTH / (2*COMPONENTS*FIELD_WIDTH),
+      |  parameter integer RESPONSE_WIDTH = FIELD_SELECTED ? BANK_LANES*FIELD_WIDTH*(ALL_COMPONENTS ? COMPONENTS : 1) : BANK_WIDTH
       |) (
       |  input  wire                       clock,
       |  input  wire                       writeEnable,
       |  input  wire [ADDRESS_WIDTH-1:0]   writeAddress,
       |  input  wire [BANK_WIDTH-1:0]      writeData,
       |  input  wire [ADDRESS_WIDTH-1:0]   readAddress,
-      |  output reg  [BANK_WIDTH-1:0]      readData
+      |  input  wire [COMPONENT_WIDTH-1:0] readComponent,
+      |  input  wire                       readHalf,
+      |  output reg  [RESPONSE_WIDTH-1:0]  readData
       |);
       |  // Retain one local control register per narrow bank. Unlike
       |  // DONT_TOUCH, KEEP still permits physical optimization to replicate
       |  // the register if placement finds that profitable.
       |  (* keep = "true", max_fanout = 256 *)
+      |  (* dont_touch = PRESERVE_WRITE ? "true" : "false" *)
       |  reg [ADDRESS_WIDTH-1:0] writeAddressCut;
       |  (* keep = "true", max_fanout = 256 *)
+      |  (* dont_touch = PRESERVE_WRITE ? "true" : "false" *)
       |  reg writeEnableCut;
       |  // Keep one address pipeline per narrow bank. Without DONT_TOUCH,
       |  // synthesis merges these equivalent copies and recreates a single
@@ -89,8 +118,38 @@ private[fpt] final class MultiportedCoefficientScratch(
       |      memory[writeAddressCut] <= writeData;
       |    // Validity is pipelined separately, so bubble reads are harmless
       |    // and avoid a word-wide clock-enable broadcast.
-      |    readData <= memory[readAddressCut];
       |  end
+      |  generate if (FIELD_SELECTED) begin : selected_read
+      |    (* keep = "true", dont_touch = "true", max_fanout = 64 *)
+      |    reg halfCut;
+      |    always @(posedge clock) begin
+      |      halfCut <= readHalf;
+      |    end
+      |    genvar lane, component;
+      |    if (ALL_COMPONENTS) begin : tail
+      |      for (lane = 0; lane < BANK_LANES; lane = lane + 1) begin : lanes
+      |        for (component = 0; component < COMPONENTS; component = component + 1) begin : components
+      |          always @(posedge clock)
+      |            readData[(lane*COMPONENTS+component)*FIELD_WIDTH +: FIELD_WIDTH] <=
+      |              memory[readAddressCut][(lane*COMPONENTS*2+component*2+halfCut)*FIELD_WIDTH +: FIELD_WIDTH];
+      |        end
+      |      end
+      |    end else begin : single_component
+      |      // Keep the selector and its consumers in the same lexical scope.
+      |      // XSim 2023.2 crashes resolving a sibling generate-block reference
+      |      // to this register inside the variable memory part-select.
+      |      (* keep = "true", dont_touch = "true", max_fanout = 64 *)
+      |      reg [COMPONENT_WIDTH-1:0] componentCut;
+      |      always @(posedge clock) componentCut <= readComponent;
+      |      for (lane = 0; lane < BANK_LANES; lane = lane + 1) begin : lanes
+      |        always @(posedge clock)
+      |          readData[lane*FIELD_WIDTH +: FIELD_WIDTH] <=
+      |            memory[readAddressCut][(lane*COMPONENTS*2+componentCut*2+halfCut)*FIELD_WIDTH +: FIELD_WIDTH];
+      |      end
+      |    end
+      |  end else begin : wide_read
+      |    always @(posedge clock) readData <= memory[readAddressCut];
+      |  end endgenerate
       |endmodule
       |
       |module FptCoefficientScratchPrimeBank #(
@@ -117,18 +176,27 @@ private[fpt] final class MultiportedCoefficientScratch(
       |  parameter integer ADDRESS_WIDTH = 1,
       |  parameter integer WORD_WIDTH = 1,
       |  parameter integer BANKS = 1,
-      |  parameter integer BANK_WIDTH = WORD_WIDTH / BANKS
+      |  parameter integer BANK_WIDTH = WORD_WIDTH / BANKS,
+      |  parameter integer PRESERVE_WRITE = 0,
+      |  parameter integer FIELD_SELECTED = 0,
+      |  parameter integer COMPONENTS = 1,
+      |  parameter integer FIELD_WIDTH = 1,
+      |  parameter integer ALL_COMPONENTS = 0,
+      |  parameter integer COMPONENT_WIDTH = (COMPONENTS > 1) ? $clog2(COMPONENTS) : 1,
+      |  parameter integer RESPONSE_WIDTH = FIELD_SELECTED ? WORD_WIDTH/(2*COMPONENTS)*(ALL_COMPONENTS ? COMPONENTS : 1) : WORD_WIDTH
       |) (
       |  input  wire                       clock,
       |  input  wire                       writeEnable,
       |  input  wire [ADDRESS_WIDTH-1:0]   writeAddress,
       |  input  wire [WORD_WIDTH-1:0]      writeData,
       |  input  wire [ADDRESS_WIDTH-1:0]   readAddress,
-      |  output wire [WORD_WIDTH-1:0]      readData
+      |  input  wire [COMPONENT_WIDTH-1:0] readComponent,
+      |  input  wire                       readHalf,
+      |  output wire [RESPONSE_WIDTH-1:0]  readData
       |);
       |  // An 8,192-bit monolithic replica made every write-address bit drive
       |  // more than 9,000 placed loads. Slice it into independent lane/field
-      |  // banks while retaining the same five logical synchronous reads.
+      |  // banks while retaining the same logical synchronous reads.
       |  genvar bank;
       |  generate
       |    for (bank = 0; bank < BANKS; bank = bank + 1) begin : memory_banks
@@ -136,14 +204,18 @@ private[fpt] final class MultiportedCoefficientScratch(
       |      FptCoefficientScratchBank #(
       |        .DEPTH(DEPTH),
       |        .ADDRESS_WIDTH(ADDRESS_WIDTH),
-      |        .BANK_WIDTH(BANK_WIDTH)
+      |        .BANK_WIDTH(BANK_WIDTH),
+      |        .PRESERVE_WRITE(PRESERVE_WRITE),
+      |        .FIELD_SELECTED(FIELD_SELECTED), .COMPONENTS(COMPONENTS),
+      |        .FIELD_WIDTH(FIELD_WIDTH), .ALL_COMPONENTS(ALL_COMPONENTS)
       |      ) bank_memory (
       |        .clock(clock),
       |        .writeEnable(writeEnable),
       |        .writeAddress(writeAddress),
       |        .writeData(writeData[bank*BANK_WIDTH +: BANK_WIDTH]),
       |        .readAddress(readAddress),
-      |        .readData(readData[bank*BANK_WIDTH +: BANK_WIDTH])
+      |        .readComponent(readComponent), .readHalf(readHalf),
+      |        .readData(readData[bank*(RESPONSE_WIDTH/BANKS) +: RESPONSE_WIDTH/BANKS])
       |      );
       |    end
       |  endgenerate
@@ -154,7 +226,13 @@ private[fpt] final class MultiportedCoefficientScratch(
       |  parameter integer ADDRESS_WIDTH = 1,
       |  parameter integer WORD_WIDTH = 1,
       |  parameter integer READ_PORTS = 1,
-      |  parameter integer BANKS = 1
+      |  parameter integer BANKS = 1,
+      |  parameter integer PRESERVE_WRITE = 0,
+      |  parameter integer FIELD_SELECTED = 0,
+      |  parameter integer COMPONENTS = 1,
+      |  parameter integer FIELD_WIDTH = 1,
+      |  parameter integer COMPONENT_WIDTH = (COMPONENTS > 1) ? $clog2(COMPONENTS) : 1,
+      |  parameter integer RESPONSE_WIDTH = FIELD_SELECTED ? (READ_PORTS+COMPONENTS-1)*WORD_WIDTH/(2*COMPONENTS) : READ_PORTS*WORD_WIDTH
       |) (
       |  input  wire                                  clock,
       |  input  wire                                  writeEnable,
@@ -164,7 +242,9 @@ private[fpt] final class MultiportedCoefficientScratch(
       |  output wire [WORD_WIDTH-1:0]                 primeData,
       |  input  wire [READ_PORTS-1:0]                 readEnables,
       |  input  wire [READ_PORTS*ADDRESS_WIDTH-1:0]   readAddresses,
-      |  output wire [READ_PORTS*WORD_WIDTH-1:0]      outputData
+      |  input  wire [COMPONENT_WIDTH-1:0]            readComponent,
+      |  input  wire [READ_PORTS-1:0]                 readHalves,
+      |  output wire [RESPONSE_WIDTH-1:0]             outputData
       |);
       |  reg [WORD_WIDTH-1:0] writeDataCut;
       |  localparam integer BANK_WIDTH = WORD_WIDTH / BANKS;
@@ -199,12 +279,19 @@ private[fpt] final class MultiportedCoefficientScratch(
       |  generate
       |    for (replica = 0; replica < READ_PORTS;
       |         replica = replica + 1) begin : scratch_replicas
+      |      localparam integer TAIL = READ_PORTS/2-1;
+      |      localparam integer BLOCK_WIDTH = WORD_WIDTH/(2*COMPONENTS);
+      |      localparam integer PORT_WIDTH = FIELD_SELECTED ? BLOCK_WIDTH*((replica == TAIL) ? COMPONENTS : 1) : WORD_WIDTH;
+      |      localparam integer PORT_OFFSET = FIELD_SELECTED ? BLOCK_WIDTH*(replica+((replica > TAIL) ? COMPONENTS-1 : 0)) : replica*WORD_WIDTH;
       |      (* keep_hierarchy = "yes" *)
       |      FptCoefficientScratchReplica #(
       |        .DEPTH(DEPTH),
       |        .ADDRESS_WIDTH(ADDRESS_WIDTH),
       |        .WORD_WIDTH(WORD_WIDTH),
-      |        .BANKS(BANKS)
+      |        .BANKS(BANKS),
+      |        .PRESERVE_WRITE(PRESERVE_WRITE),
+      |        .FIELD_SELECTED(FIELD_SELECTED), .COMPONENTS(COMPONENTS),
+      |        .FIELD_WIDTH(FIELD_WIDTH), .ALL_COMPONENTS(replica == TAIL)
       |      ) replica_memory (
       |        .clock(clock),
       |        .writeEnable(writeEnable),
@@ -213,10 +300,115 @@ private[fpt] final class MultiportedCoefficientScratch(
       |        .readAddress(
       |          readAddresses[replica*ADDRESS_WIDTH +: ADDRESS_WIDTH]
       |        ),
-      |        .readData(outputData[replica*WORD_WIDTH +: WORD_WIDTH])
+      |        .readComponent(readComponent), .readHalf(readHalves[replica]),
+      |        .readData(outputData[PORT_OFFSET +: PORT_WIDTH])
       |      );
       |    end
       |  endgenerate
+      |endmodule
+
+      |// One control hop per lane group. The flat child retains bank-local
+      |// cuts, giving three-cycle reads and matched three-edge fill commits.
+      |(* keep_hierarchy="yes", dont_touch="yes" *) module FptCoefficientScratchLaneGroup #(
+      |  parameter integer DEPTH=2, ADDRESS_WIDTH=1, WORD_WIDTH=1,
+      |  parameter integer READ_PORTS=1, BANKS=1, FIELD_SELECTED=0,
+      |  parameter integer COMPONENTS=1, FIELD_WIDTH=1,
+      |  parameter integer COMPONENT_WIDTH=(COMPONENTS>1)?$clog2(COMPONENTS):1,
+      |  parameter integer RESPONSE_WIDTH=FIELD_SELECTED?(READ_PORTS+COMPONENTS-1)*WORD_WIDTH/(2*COMPONENTS):READ_PORTS*WORD_WIDTH
+      |) (
+      |  input wire clock, writeEnable, primeCapture,
+      |  input wire [ADDRESS_WIDTH-1:0] writeAddress,
+      |  input wire [WORD_WIDTH-1:0] inputData,
+      |  output wire [WORD_WIDTH-1:0] primeData,
+      |  input wire [READ_PORTS-1:0] readEnables,
+      |  input wire [READ_PORTS*ADDRESS_WIDTH-1:0] readAddresses,
+      |  input wire [COMPONENT_WIDTH-1:0] readComponent,
+      |  input wire [READ_PORTS-1:0] readHalves,
+      |  output wire [RESPONSE_WIDTH-1:0] outputData
+      |);
+      |  localparam integer GROUP_BANKS=BANKS;
+      |  localparam integer GROUPS=BANKS/GROUP_BANKS;
+      |  localparam integer GROUP_WIDTH=WORD_WIDTH/GROUPS;
+      |  genvar g, p;
+      |  generate for (g=0; g<GROUPS; g=g+1) begin : lane_groups
+      |    (* keep="true", dont_touch="true" *) reg [ADDRESS_WIDTH-1:0] writeAddressGroup;
+      |    (* keep="true", dont_touch="true" *) reg writeEnableGroup, primeCaptureGroup;
+      |    (* keep="true", dont_touch="true" *) reg [READ_PORTS*ADDRESS_WIDTH-1:0] readAddressesGroup;
+      |    (* keep="true", dont_touch="true" *) reg [COMPONENT_WIDTH-1:0] readComponentGroup;
+      |    (* keep="true", dont_touch="true" *) reg [READ_PORTS-1:0] readHalvesGroup;
+      |    reg [GROUP_WIDTH-1:0] writeDataGroup;
+      |    always @(posedge clock) begin
+      |      writeAddressGroup <= writeAddress;
+      |      writeEnableGroup <= writeEnable;
+      |      primeCaptureGroup <= primeCapture;
+      |      readAddressesGroup <= readAddresses;
+      |      readComponentGroup <= readComponent;
+      |      readHalvesGroup <= readHalves;
+      |      writeDataGroup <= inputData[g*GROUP_WIDTH +: GROUP_WIDTH];
+      |    end
+      |    wire [RESPONSE_WIDTH/GROUPS-1:0] groupOutput;
+      |    (* keep_hierarchy="yes", dont_touch="yes" *) FptMultiportedCoefficientScratch #(
+      |      .DEPTH(DEPTH), .ADDRESS_WIDTH(ADDRESS_WIDTH), .WORD_WIDTH(GROUP_WIDTH),
+      |      .READ_PORTS(READ_PORTS), .BANKS(GROUP_BANKS),
+      |      .PRESERVE_WRITE(1),
+      |      .FIELD_SELECTED(FIELD_SELECTED), .COMPONENTS(COMPONENTS), .FIELD_WIDTH(FIELD_WIDTH)
+      |    ) local_scratch (
+      |      .clock(clock), .writeEnable(writeEnableGroup), .writeAddress(writeAddressGroup),
+      |      .inputData(writeDataGroup), .primeCapture(primeCaptureGroup),
+      |      .primeData(primeData[g*GROUP_WIDTH +: GROUP_WIDTH]),
+      |      .readEnables({READ_PORTS{1'b1}}), .readAddresses(readAddressesGroup),
+      |      .readComponent(readComponentGroup), .readHalves(readHalvesGroup),
+      |      .outputData(groupOutput)
+      |    );
+      |    for (p=0; p<READ_PORTS; p=p+1) begin : responses
+      |      localparam integer TAIL=READ_PORTS/2-1;
+      |      localparam integer BLOCK_WIDTH=WORD_WIDTH/(2*COMPONENTS);
+      |      localparam integer PORT_WIDTH=FIELD_SELECTED?BLOCK_WIDTH*((p==TAIL)?COMPONENTS:1):WORD_WIDTH;
+      |      localparam integer PORT_OFFSET=FIELD_SELECTED?BLOCK_WIDTH*(p+((p>TAIL)?COMPONENTS-1:0)):p*WORD_WIDTH;
+      |      assign outputData[PORT_OFFSET+g*(PORT_WIDTH/GROUPS) +: PORT_WIDTH/GROUPS] =
+      |        groupOutput[PORT_OFFSET/GROUPS +: PORT_WIDTH/GROUPS];
+      |    end
+      |  end endgenerate
+      |endmodule
+      |
+      |module FptGroupedCoefficientScratch #(
+      |  parameter integer DEPTH=2, ADDRESS_WIDTH=1, WORD_WIDTH=1,
+      |  parameter integer READ_PORTS=1, BANKS=1, FIELD_SELECTED=0,
+      |  parameter integer COMPONENTS=1, FIELD_WIDTH=1,
+      |  parameter integer COMPONENT_WIDTH=(COMPONENTS>1)?$clog2(COMPONENTS):1,
+      |  parameter integer RESPONSE_WIDTH=FIELD_SELECTED?(READ_PORTS+COMPONENTS-1)*WORD_WIDTH/(2*COMPONENTS):READ_PORTS*WORD_WIDTH
+      |)(input wire clock, writeEnable, primeCapture,
+      |  input wire [ADDRESS_WIDTH-1:0] writeAddress,
+      |  input wire [WORD_WIDTH-1:0] inputData,
+      |  output wire [WORD_WIDTH-1:0] primeData,
+      |  input wire [READ_PORTS-1:0] readEnables,
+      |  input wire [READ_PORTS*ADDRESS_WIDTH-1:0] readAddresses,
+      |  input wire [COMPONENT_WIDTH-1:0] readComponent,
+      |  input wire [READ_PORTS-1:0] readHalves,
+      |  output wire [RESPONSE_WIDTH-1:0] outputData);
+      |  localparam integer GROUP_BANKS=(BANKS<4)?BANKS:4;
+      |  localparam integer GROUPS=BANKS/GROUP_BANKS;
+      |  genvar g,p;
+      |  generate for(g=0;g<GROUPS;g=g+1) begin: lane_groups
+      |    wire [RESPONSE_WIDTH/GROUPS-1:0] groupOutput;
+      |    FptCoefficientScratchLaneGroup #(
+      |      .DEPTH(DEPTH), .ADDRESS_WIDTH(ADDRESS_WIDTH), .WORD_WIDTH(WORD_WIDTH/GROUPS),
+      |      .READ_PORTS(READ_PORTS), .BANKS(GROUP_BANKS), .FIELD_SELECTED(FIELD_SELECTED),
+      |      .COMPONENTS(COMPONENTS), .FIELD_WIDTH(FIELD_WIDTH)
+      |    ) island(.clock(clock), .writeEnable(writeEnable), .primeCapture(primeCapture),
+      |      .writeAddress(writeAddress), .inputData(inputData[g*(WORD_WIDTH/GROUPS) +: WORD_WIDTH/GROUPS]),
+      |      .primeData(primeData[g*(WORD_WIDTH/GROUPS) +: WORD_WIDTH/GROUPS]),
+      |      .readEnables(readEnables), .readAddresses(readAddresses), .readComponent(readComponent),
+      |      .readHalves(readHalves), .outputData(groupOutput));
+      |    for(p=0;p<READ_PORTS;p=p+1) begin: responses
+      |      localparam integer TAIL=READ_PORTS/2-1;
+      |      localparam integer BLOCK_WIDTH=WORD_WIDTH/(2*COMPONENTS);
+      |      localparam integer PORT_WIDTH=FIELD_SELECTED?BLOCK_WIDTH*((p==TAIL)?COMPONENTS:1):WORD_WIDTH;
+      |      localparam integer PORT_OFFSET=FIELD_SELECTED?BLOCK_WIDTH*(p+((p>TAIL)?COMPONENTS-1:0)):p*WORD_WIDTH;
+      |      assign outputData[PORT_OFFSET+g*(PORT_WIDTH/GROUPS) +: PORT_WIDTH/GROUPS] =
+      |        groupOutput[PORT_OFFSET/GROUPS +: PORT_WIDTH/GROUPS];
+      |    end
+      |  end endgenerate
       |endmodule
       |""".stripMargin
   )
@@ -259,11 +451,15 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     override val config: CmuxCoefficientConfig,
     override val batchContexts: Int,
     val bufferedSingleAccumulator: Boolean = false,
-    val coefficientPreprocessGuardBits: Option[Int] = None
+    val coefficientPreprocessGuardBits: Option[Int] = None,
+    val fieldSelectedScratchReads: Boolean = false,
+    val groupedScratchControls: Boolean = false,
+    val coefficientLocality: Boolean = false
 ) extends BatchedCmuxCoefficientStoreBase(config, batchContexts) {
   import TransformUtil._
 
   require(batchContexts >= 2)
+  require(!coefficientLocality || !fieldSelectedScratchReads)
   require(config.windowedRotator)
   coefficientPreprocessGuardBits.foreach { guardBits =>
     require(guardBits >= 0 && guardBits < config.remainingBits)
@@ -345,7 +541,8 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   val memory = Module(
     new ReplicatedAccumulatorBanks(
       memoryConfig,
-      replicateReads = !bufferedSingleAccumulator
+      replicateReads = !bufferedSingleAccumulator,
+      localWriteControls = coefficientLocality
     )
   )
   memory.io.loadStart := io.loadStart
@@ -411,11 +608,11 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   io.contextBusy := busy
 
   // Pack all components and polynomial halves for one inverse-width block
-  // into a single shallow word. The paper configuration has five read ports:
-  // three consecutive blocks for rotation and two for the current beat.
+  // into a single shallow word. Two reads extend the rolling rotated span
+  // and two read the current beat; the leading span block is reused.
   val sourceScratchBanks = math.min(
     32,
-    Integer.lowestOneBit(sourceScratchWordWidth)
+    if (fieldSelectedScratchReads) blockLanes else Integer.lowestOneBit(sourceScratchWordWidth)
   )
   val sourceScratch = Module(
     new MultiportedCoefficientScratch(
@@ -423,9 +620,15 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
       sourceScratchAddressWidth,
       sourceScratchWordWidth,
       sourceScratchReadPorts,
-      banks = sourceScratchBanks
+      banks = sourceScratchBanks,
+      fieldSelected = fieldSelectedScratchReads,
+      components = config.components,
+      fieldWidth = coefficientPreprocessWidth,
+      groupedControls = groupedScratchControls
     )
   )
+  private val scratchReadCycles = if (groupedScratchControls) 3 else 2
+  private val sourceReleaseCycles = 1 + scratchReadCycles
   sourceScratch.io.clock := clock
   val bufferOccupied = RegInit(VecInit(Seq.fill(bufferCount)(false.B)))
   val bufferExponent = Reg(Vec(bufferCount, UInt(config.exponentWidth.W)))
@@ -697,16 +900,16 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     }
   }
 
-  // The final source span is fully captured by the candidate registers three
-  // clocks after launch. Releasing there, instead of waiting for the entire
+  // Release follows the configured scratch read latency plus selection.
+  // The final source span is fully captured before this ownership handoff. Releasing there, instead of waiting for the entire
   // rotator pipeline, preserves the two-buffer prefetch cadence.
   sourceReleaseValid := ShiftRegister(
     preprocessFinalHalfLaunch,
-    3,
+    sourceReleaseCycles,
     false.B,
     true.B
   )
-  sourceReleaseBuffer := ShiftRegister(preprocessSourceBuffer, 3)
+  sourceReleaseBuffer := ShiftRegister(preprocessSourceBuffer, sourceReleaseCycles)
 
   val drainCanStart = !fillOutstanding && memory.io.drainStartReady &&
     bufferedUpdatesIdle &&
@@ -846,29 +1049,102 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
       )
   }
 
-  val sourceScratchReadData = sourceScratch.io.outputData.asTypeOf(
-    Vec(sourceScratchReadPorts, UInt(sourceScratchWordWidth.W))
-  )
-  val sourceScratchReadWords = VecInit(
-    sourceScratchReadData.map(_.asTypeOf(chiselTypeOf(sourceScratchWriteWord)))
-  )
+  sourceScratch.io.readComponent := selectionComponent
+  sourceScratch.io.readHalves := VecInit(
+    (1 until spanBlocks).map(block => spanBlockIndices(block)(blockIndexWidth - 1)) ++
+      Seq.fill(outputBlocks)(selectionHalf)
+  ).asUInt
+
+  // The trailing rotated block retains every component for rolling-head
+  // reuse. Other ports already selected their component inside the bank.
+  private def scratchField(port: Int, lane: Int, component: UInt, half: UInt): UInt = {
+    if (fieldSelectedScratchReads) {
+      val tailPort = newSpanBlocks - 1
+      val firstField = port + (if (port > tailPort) config.components - 1 else 0)
+      val blockWidth = blockLanes * coefficientPreprocessWidth
+      val fields = if (port == tailPort) config.components else 1
+      val response = sourceScratch.io.outputData(
+        (firstField + fields) * blockWidth - 1, firstField * blockWidth
+      ).asTypeOf(Vec(blockLanes, Vec(fields, UInt(coefficientPreprocessWidth.W))))
+      if (port == tailPort) response(lane)(component) else response(lane)(0)
+    } else {
+      sourceScratch.io.outputData(
+        (port + 1) * sourceScratchWordWidth - 1, port * sourceScratchWordWidth
+      ).asTypeOf(chiselTypeOf(sourceScratchWriteWord))(lane)(component)(half)
+    }
+  }
   // Each physical scratch bank owns a preserved read-address register. Delay
-  // the narrow metadata by the same two cycles as address cut plus LUTRAM
-  // output register; requests still launch every cycle.
-  val candidateValid = ShiftRegister(selectionValid, 2, false.B, true.B)
-  val candidateOffset = ShiftRegister(offset, 2)
-  val candidateFirstRing = ShiftRegister(firstRing, 2)
-  val candidateDigitBuffer = ShiftRegister(selectionDigitBuffer, 2)
-  val candidateComponent = ShiftRegister(selectionComponent, 2)
-  val candidateHalf = ShiftRegister(selectionHalf, 2)
-  val candidateBeat = ShiftRegister(selectionBeat, 2)
+  // the narrow metadata by the same latency as group cut (when enabled),
+  // address cut, and LUTRAM output register; requests still launch every cycle.
+  val candidateValid = ShiftRegister(selectionValid, scratchReadCycles, false.B, true.B)
+  val candidateOffset = ShiftRegister(offset, scratchReadCycles)
+  val candidateFirstRing = ShiftRegister(firstRing, scratchReadCycles)
+  val candidateDigitBuffer = ShiftRegister(selectionDigitBuffer, scratchReadCycles)
+  val candidateComponent = ShiftRegister(selectionComponent, scratchReadCycles)
+  val candidateHalf = ShiftRegister(selectionHalf, scratchReadCycles)
+  val candidateBeat = ShiftRegister(selectionBeat, scratchReadCycles)
+  if (groupedScratchControls) {
+    // Verification of the unchanged admission schedule: queued preprocessing
+    // may start before the last physical write, but consumption must not.
+    val fillCommitted = RegInit(VecInit(Seq.fill(bufferCount)(false.B)))
+    val committedValid = ShiftRegister(memory.io.prefetchDone, 2, false.B, true.B)
+    val committedBuffer = ShiftRegister(fillBuffer, 2)
+    when(committedValid) { fillCommitted(committedBuffer) := true.B }
+    when(commandFire) { fillCommitted(freeBuffer) := false.B }
+    val candidateSourceBuffer = ShiftRegister(selectionSourceBuffer, scratchReadCycles)
+    when(candidateValid) {
+      assert(fillCommitted(candidateSourceBuffer), "scratch consumed before fill committed")
+    }
+    val primeCommitted = RegInit(false.B)
+    when(ShiftRegister(sourceScratch.io.primeCapture, 2, false.B, true.B)) {
+      primeCommitted := true.B
+    }
+    when(commandFire) { primeCommitted := false.B }
+    when(candidateValid && candidateComponent === 0.U &&
+        candidateBeat === 0.U && !candidateHalf) {
+      assert(primeCommitted, "scratch consumed before prime capture committed")
+    }
+  }
   val candidateSpanHalves = ShiftRegister(
     VecInit(spanBlockIndices.map(_(blockIndexWidth - 1))),
-    2
+    scratchReadCycles
   )
 
   val primeScratchWord =
     sourceScratch.io.primeData.asTypeOf(chiselTypeOf(sourceScratchWriteWord))
+  // These local selectors capture on the same edge as the scratch response.
+  // Each source and eight-lane group owns its own preserved control FFs.
+  val localSelectors = if (coefficientLocality) {
+    val preComponent = ShiftRegister(selectionComponent, scratchReadCycles - 1)
+    val preHalf = ShiftRegister(selectionHalf, scratchReadCycles - 1)
+    val preBeat = ShiftRegister(selectionBeat, scratchReadCycles - 1)
+    val preSpanHalves = ShiftRegister(
+      VecInit(spanBlockIndices.map(_(blockIndexWidth - 1))), scratchReadCycles - 1)
+    val preRollingHalf = Mux(preBeat === 0.U, !preHalf, preHalf)
+    val sources = Seq("prime" -> preSpanHalves(0), "rolling" -> preRollingHalf) ++
+      (0 until newSpanBlocks).map(p => s"span$p" -> preSpanHalves(p + 1)) ++
+      (0 until outputBlocks).map(p => s"current$p" -> preHalf)
+    sources.map { case (name, half) =>
+      Seq.tabulate((blockLanes + 7) / 8) { group =>
+        val cut = Module(new PhysicalControlRegister(componentWidth + 1))
+        cut.suggestName(s"scratchSelector_${name}_$group")
+        cut.io.clock := clock
+        cut.io.reset := reset.asBool
+        cut.io.inputData := Cat(preComponent, half)
+        cut.io.outputData
+      }
+    }
+  } else Seq.empty
+  private def candidateScratchField(port: Int, lane: Int): UInt = {
+    if (coefficientLocality) {
+      val select = localSelectors(2 + port)(lane / 8)
+      scratchField(port, lane, select(componentWidth, 1), select(0))
+    } else {
+      val half = if (port < newSpanBlocks) candidateSpanHalves(port + 1)
+        else candidateHalf
+      scratchField(port, lane, candidateComponent, half)
+    }
+  }
   // Low and high halves now launch on alternating cycles. Keep one narrow
   // trailing block for each logical half so beat N+1 can reuse beat N's tail
   // without restoring the eliminated fifth scratch read. At a component
@@ -901,9 +1177,7 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   val candidateSpan = VecInit(
     candidateSpanHead ++ (1 until spanBlocks).flatMap { block =>
       (0 until blockLanes).map { lane =>
-        sourceScratchReadWords(block - 1)(lane)(candidateComponent)(
-          candidateSpanHalves(block)
-        )
+        candidateScratchField(block - 1, lane)
       }
     }
   )
@@ -917,18 +1191,16 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     when(deferFirstLowTail) {
       for (lane <- 0 until blockLanes) {
         deferredFirstLowTail(lane) :=
-          sourceScratchReadWords(newSpanBlocks - 1)(lane)(candidateComponent)(
-            candidateSpanHalves(spanBlocks - 1)
-          )
+          candidateScratchField(newSpanBlocks - 1, lane)
       }
       deferredFirstLowTailValid := true.B
     }.otherwise {
       for (component <- 0 until config.components) {
         for (lane <- 0 until blockLanes) {
           rollingSpanHeads(candidateHalf.asUInt)(component)(lane) :=
-            sourceScratchReadWords(newSpanBlocks - 1)(lane)(component)(
-              candidateSpanHalves(spanBlocks - 1)
-            )
+            scratchField(newSpanBlocks - 1, lane, component.U,
+              if (coefficientLocality) localSelectors(2 + newSpanBlocks - 1)(lane / 8)(0)
+              else candidateSpanHalves(spanBlocks - 1))
         }
       }
     }
@@ -948,9 +1220,7 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   }
   val candidateCurrent = VecInit((0 until outputBlocks).flatMap { block =>
     (0 until blockLanes).map { lane =>
-      sourceScratchReadWords(newSpanBlocks + block)(lane)(candidateComponent)(
-        candidateHalf.asUInt
-      )
+      candidateScratchField(newSpanBlocks + block, lane)
     }
   })
   val candidateFirst = candidateFirstComponentBeat && !candidateHalf
@@ -959,12 +1229,47 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     primeOccupied := false.B
   }
 
+  // Snapshot both heads before the existing recurrence updates on this edge.
+  // No scratch/prime storage is needed beyond this first capture, so source
+  // ownership and the deferred-tail schedule retain their original timing.
+  private def fieldCapture(name: String, data: Vec[UInt]): Vec[UInt] = {
+    val cut = Module(new PhysicalCutRegister(data.getWidth))
+    cut.suggestName(s"scratchFieldStage_$name")
+    cut.io.clock := clock
+    cut.io.enable := true.B
+    cut.io.inputData := data.asUInt
+    cut.io.outputData.asTypeOf(chiselTypeOf(data))
+  }
+  val selectionStageSpan = if (coefficientLocality) {
+    val prime = fieldCapture("prime", VecInit((0 until blockLanes).map { lane =>
+      val select = localSelectors(0)(lane / 8)
+      primeScratchWord(lane)(select(componentWidth, 1))(select(0))
+    }))
+    val rolling = fieldCapture("rolling", VecInit((0 until blockLanes).map { lane =>
+      val select = localSelectors(1)(lane / 8)
+      rollingSpanHeads(select(0))(select(componentWidth, 1))(lane)
+    }))
+    val usePrime = Seq.tabulate((blockLanes + 7) / 8) { group =>
+      val cut = Module(new PhysicalControlRegister(1))
+      cut.suggestName(s"scratchHeadChoice_$group")
+      cut.io.clock := clock
+      cut.io.reset := reset.asBool
+      cut.io.inputData := candidateFirstComponentBeat
+      cut.io.outputData(0)
+    }
+    val tail = fieldCapture("span", VecInit(candidateSpan.drop(blockLanes)))
+    VecInit((0 until blockLanes).map(lane =>
+      Mux(usePrime(lane / 8), prime(lane), rolling(lane))) ++ tail)
+  } else candidateSpan
+  val selectionStageCurrent = if (coefficientLocality)
+    fieldCapture("current", candidateCurrent) else candidateCurrent
+
   val selectedSpanBoundary = Module(
     new PhysicalCutRegister(spanSize * coefficientPreprocessWidth)
   )
   selectedSpanBoundary.io.clock := clock
   selectedSpanBoundary.io.enable := true.B
-  selectedSpanBoundary.io.inputData := candidateSpan.asUInt
+  selectedSpanBoundary.io.inputData := selectionStageSpan.asUInt
   val boundarySpan = selectedSpanBoundary.io.outputData.asTypeOf(candidateSpan)
 
   val currentBoundary = Module(
@@ -972,17 +1277,18 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   )
   currentBoundary.io.clock := clock
   currentBoundary.io.enable := true.B
-  currentBoundary.io.inputData := candidateCurrent.asUInt
+  currentBoundary.io.inputData := selectionStageCurrent.asUInt
   val boundaryCurrent =
     currentBoundary.io.outputData.asTypeOf(candidateCurrent)
 
-  val boundaryValid = RegNext(candidateValid, false.B)
-  val boundaryOffset = RegNext(candidateOffset)
-  val boundaryFirstRing = RegNext(candidateFirstRing)
-  val boundaryDigitBuffer = RegNext(candidateDigitBuffer)
-  val boundaryComponent = RegNext(candidateComponent)
-  val boundaryHalf = RegNext(candidateHalf)
-  val boundaryBeat = RegNext(candidateBeat)
+  private val selectionCycles = if (coefficientLocality) 2 else 1
+  val boundaryValid = ShiftRegister(candidateValid, selectionCycles, false.B, true.B)
+  val boundaryOffset = ShiftRegister(candidateOffset, selectionCycles)
+  val boundaryFirstRing = ShiftRegister(candidateFirstRing, selectionCycles)
+  val boundaryDigitBuffer = ShiftRegister(candidateDigitBuffer, selectionCycles)
+  val boundaryComponent = ShiftRegister(candidateComponent, selectionCycles)
+  val boundaryHalf = ShiftRegister(candidateHalf, selectionCycles)
+  val boundaryBeat = ShiftRegister(candidateBeat, selectionCycles)
 
   val window = Module(
     new PipelinedWindowedNegacyclicRotatorSpan(

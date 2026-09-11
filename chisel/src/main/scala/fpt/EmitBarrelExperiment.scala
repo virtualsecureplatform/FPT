@@ -16,6 +16,28 @@ import java.nio.file.Path
   * transpose.
   */
 private[fpt] object PaperU280BufferedBarrelConfig {
+  private def enabled(name: String): Boolean = sys.env.getOrElse(name, "0") match {
+    case "0" => false
+    case "1" => true
+    case value => throw new IllegalArgumentException(s"$name must be 0 or 1, got $value")
+  }
+  private def fieldSelectedScratchReads: Boolean =
+    sys.env.getOrElse("FPT_COEFFICIENT_SCRATCH_READOUT", "wide") match {
+      case "wide" => false
+      case "selected" => true
+      case value => throw new IllegalArgumentException(
+        s"FPT_COEFFICIENT_SCRATCH_READOUT must be wide or selected, got $value"
+      )
+    }
+
+  private def groupedScratchControls: Boolean =
+    sys.env.getOrElse("FPT_COEFFICIENT_SCRATCH_CONTROL", "flat") match {
+      case "flat" => false
+      case "grouped" => true
+      case value => throw new IllegalArgumentException(
+        s"FPT_COEFFICIENT_SCRATCH_CONTROL must be flat or grouped, got $value")
+    }
+
   private def coefficientStorage: BatchedCoefficientStorage =
     sys.env.getOrElse("FPT_ACCUMULATOR_ARCH", "buffered_single") match {
       case "buffered_single" =>
@@ -77,7 +99,15 @@ private[fpt] object PaperU280BufferedBarrelConfig {
         pendingKeyRequestEntries = 1,
         registerForwardSlrInput = true,
         registerInverseSlrOutput = true,
-        coefficientPreprocessGuardBits = coefficientPreprocessGuardBits
+        coefficientPreprocessGuardBits = coefficientPreprocessGuardBits,
+        fieldSelectedScratchReads = fieldSelectedScratchReads,
+        groupedScratchControls = groupedScratchControls,
+        pairedInverseSlrOutput = enabled("FPT_U280_PAIRED_INVERSE_SLR_OUTPUT"),
+        coefficientLocality = enabled("FPT_U280_COEFFICIENT_LOCALITY"),
+        coefficientSlr0NarrowLink = enabled("FPT_U280_COEFFICIENT_SLR0_NARROW_LINK"),
+        fixedRateInverseInputLink = enabled("FPT_U280_FIXED_RATE_INVERSE_INPUT_LINK"),
+        externalProductFinalBankTileLanes = sys.env.getOrElse("FPT_U280_EP_FINAL_BANK_TILE_LANES", "0").toInt,
+        externalProductRowControlTileLanes = sys.env.getOrElse("FPT_U280_EP_ROW_CONTROL_TILE_LANES", "0").toInt
       ),
       domainDimension
     )

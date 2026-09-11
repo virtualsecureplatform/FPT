@@ -12,6 +12,58 @@ arithmetic_profile=${FPT_ARITHMETIC_PROFILE:-custom}
 sgen_ram_style=${FPT_SGEN_RAM_STYLE:-block}
 forward_partition=${FPT_SGEN_FORWARD_PARTITION:-none}
 forward_boundary_registers=${FPT_SGEN_FORWARD_BOUNDARY_REGISTERS:-2}
+preserve_partition_registers=${FPT_SGEN_PRESERVE_PARTITION_REGISTERS:-0}
+if [[ $preserve_partition_registers != 0 && $preserve_partition_registers != 1 ]]; then
+    echo "FPT_SGEN_PRESERVE_PARTITION_REGISTERS must be 0 or 1" >&2
+    exit 1
+fi
+if [[ $preserve_partition_registers == 1 && $forward_partition == none ]]; then
+    echo "preserved partition registers require a forward partition" >&2
+    exit 1
+fi
+forward_permutation_arch=${FPT_SGEN_FORWARD_PERMUTATION_ARCH:-legacy}
+frame_control=${FPT_SGEN_FRAME_CONTROL:-legacy}
+case "$frame_control" in
+    legacy|token) ;;
+    *) echo "FPT_SGEN_FRAME_CONTROL must be legacy or token" >&2; exit 1 ;;
+esac
+case "$forward_permutation_arch" in
+    legacy) ;;
+    banked_tiles|banked_local_control|commutator_tiles)
+        if [[ $forward_partition != stage2spill ]]; then
+            echo "$forward_permutation_arch requires FPT_SGEN_FORWARD_PARTITION=stage2spill" >&2
+            exit 1
+        fi ;;
+    *) echo "FPT_SGEN_FORWARD_PERMUTATION_ARCH must be legacy or banked_tiles or banked_local_control or commutator_tiles" >&2; exit 1 ;;
+esac
+forward_precompute_rom=${FPT_SGEN_FORWARD_PRECOMPUTE_ROM_ADD_SUB:-0}
+forward_twiddle_consumers=${FPT_SGEN_FORWARD_TWIDDLE_ISLAND_CONSUMERS:-0}
+case "$forward_twiddle_consumers" in
+    0|4) ;;
+    *) echo "FPT_SGEN_FORWARD_TWIDDLE_ISLAND_CONSUMERS must be 0 or 4" >&2; exit 1 ;;
+esac
+if [[ $forward_twiddle_consumers != 0 && $forward_partition != stage2spill ]]; then
+    echo "local forward twiddles require stage2spill" >&2; exit 1
+fi
+forward_mux_control_max_bits=${FPT_SGEN_FORWARD_MUX_CONTROL_MAX_BITS:-0}
+inverse_mux_control_max_bits=${FPT_SGEN_INVERSE_MUX_CONTROL_MAX_BITS:-0}
+inverse_mux_island_bits=${FPT_SGEN_INVERSE_MUX_ISLAND_BITS:-0}
+case "$inverse_mux_island_bits" in
+    0|120) ;;
+    *) echo "FPT_SGEN_INVERSE_MUX_ISLAND_BITS must be 0 or 120" >&2; exit 1 ;;
+esac
+if [[ ! $inverse_mux_control_max_bits =~ ^[0-9]+$ ]] || (( inverse_mux_control_max_bits > 2147483647 )); then
+    echo "FPT_SGEN_INVERSE_MUX_CONTROL_MAX_BITS must be a nonnegative 32-bit integer" >&2
+    exit 1
+fi
+if [[ ! $forward_mux_control_max_bits =~ ^[0-9]+$ ]] || (( forward_mux_control_max_bits > 2147483647 )); then
+    echo "FPT_SGEN_FORWARD_MUX_CONTROL_MAX_BITS must be a nonnegative 32-bit integer" >&2
+    exit 1
+fi
+if [[ $forward_precompute_rom != 0 && $forward_precompute_rom != 1 ]]; then
+    echo "FPT_SGEN_FORWARD_PRECOMPUTE_ROM_ADD_SUB must be 0 or 1" >&2
+    exit 1
+fi
 
 case "$sgen_ram_style" in
     auto|hybrid|block|distributed) ;;
@@ -105,6 +157,11 @@ case "$integrated_tangent:$forward_radix2k_mdc" in
         exit 1
         ;;
 esac
+if [[ $forward_permutation_arch != legacy ]] &&
+   [[ $forward_transform != fptradix2kdft || $fft_log_points != 9 || $fft_log_lanes != 7 || $radix_log != 3 ]]; then
+    echo "$forward_permutation_arch requires the 512-point, 128-lane radix-8 integrated forward transform" >&2
+    exit 1
+fi
 case "$integrated_tangent:$inverse_radix2k_mdc" in
     1:0)
         inverse_transform=fptidft
@@ -140,15 +197,32 @@ if ! rg -q 'Seq\.fill\(rightShift\)\(sign\)' \
     exit 1
 fi
 mkdir -p "$output_dir"
+if [[ $frame_control == token ]] && [[ $forward_permutation_arch != commutator_tiles || $forward_partition != stage2spill || $fft_log_points != 9 || $fft_log_lanes != 7 ]]; then
+    echo "token frame control requires the U280 512-point, 128-lane stage2spill commutator profile" >&2
+    exit 1
+fi
 SGEN_RAM_STYLE="$sgen_ram_style" \
+    SGEN_FPT_FORWARD_TWIDDLE_ISLAND_CONSUMERS="$forward_twiddle_consumers" \
+    SGEN_FPT_FRAME_CONTROL="$frame_control" \
+    SGEN_PRECOMPUTE_ROM_ADD_SUB="$forward_precompute_rom" \
+    SGEN_MUX_CONTROL_MAX_BITS="$forward_mux_control_max_bits" \
+    SGEN_MUX_ISLAND_BITS=0 \
+    SGEN_FPT_FORWARD_PERMUTATION_ARCH="$forward_permutation_arch" \
     SGEN_FPT_FORWARD_PARTITION="$forward_partition" \
     SGEN_FPT_BOUNDARY_REGISTERS="$forward_boundary_registers" \
+    SGEN_FPT_PRESERVE_PARTITION_REGISTERS="$preserve_partition_registers" \
     "$sgen_dir/sgen.bat" -nologo \
     -n "$fft_log_points" -k "$fft_log_lanes" -r "$radix_log" \
     "${transform_flags[@]}" \
     -hw complex fixedpoint "$fft_integer_bits" "$fft_fractional_bits" \
     -o "$output_dir/forward.raw.v" "$forward_transform"
 SGEN_RAM_STYLE="$sgen_ram_style" \
+    SGEN_FPT_FORWARD_TWIDDLE_ISLAND_CONSUMERS=0 \
+    SGEN_FPT_FRAME_CONTROL="$frame_control" \
+    SGEN_PRECOMPUTE_ROM_ADD_SUB=0 \
+    SGEN_MUX_CONTROL_MAX_BITS="$inverse_mux_control_max_bits" \
+    SGEN_MUX_ISLAND_BITS="$inverse_mux_island_bits" \
+    SGEN_FPT_FORWARD_PERMUTATION_ARCH=legacy \
     "$sgen_dir/sgen.bat" -nologo \
     -n "$fft_log_points" -k "$ifft_log_lanes" -r "$ifft_radix_log" \
     "${transform_flags[@]}" \
@@ -174,7 +248,26 @@ sed \
     -e "0,/module main(/s//module $inverse_module(/" \
     "$output_dir/inverse.raw.v" > "$output_dir/inverse.v"
 rm -f "$output_dir/forward.raw.v" "$output_dir/inverse.raw.v"
+sed -n 's@^[[:space:]]*// BANKED_@@p' "$output_dir/forward.v" > "$output_dir/banked_permutation_manifest.txt"
+sed -n 's@^[[:space:]]*// COMMUTATOR_@@p' "$output_dir/forward.v" > "$output_dir/commutator_permutation_manifest.txt"
 
-printf 'Generated FPT-adapted SGen transforms in %s (integrated tangent: %s, forward radix-2^k MDC: %s, inverse radix-2^k MDC: %s, forward partition: %s, profile: %s, RAM style: %s)\n' \
+{
+    printf 'frame_control\t%s\n' "$frame_control"
+    printf 'forward_precompute_rom_add_sub\t%s\n' "$forward_precompute_rom"
+    printf 'forward_twiddle_island_consumers\t%s\n' "$forward_twiddle_consumers"
+    printf 'forward_mux_control_max_bits\t%s\n' "$forward_mux_control_max_bits"
+    printf 'inverse_mux_control_max_bits\t%s\n' "$inverse_mux_control_max_bits"
+    printf 'inverse_mux_island_bits\t%s\n' "$inverse_mux_island_bits"
+    printf 'forward_permutation_arch\t%s\n' "$forward_permutation_arch"
+    printf 'preserve_partition_registers\t%s\n' "$preserve_partition_registers"
+    printf 'sgen_commit\t%s\n' "$(git -C "$sgen_dir" rev-parse HEAD)"
+    printf 'sgen_tracked_diff_sha256\t'
+    git -C "$sgen_dir" diff HEAD -- src/main | sha256sum
+    (cd "$sgen_dir"; rg --files src/main | LC_ALL=C sort | xargs -d '\n' sha256sum)
+    sha256sum "$sgen_dir/sgen.bat" "${BASH_SOURCE[0]}" \
+        "$output_dir/forward.v" "$output_dir/inverse.v"
+} > "$output_dir/generation_manifest.txt"
+
+printf 'Generated FPT-adapted SGen transforms in %s (integrated tangent: %s, forward radix-2^k MDC: %s, inverse radix-2^k MDC: %s, forward partition: %s, profile: %s, RAM style: %s, precomputed ROM arithmetic: %s)\n' \
     "$output_dir" "$integrated_tangent" "$forward_radix2k_mdc" \
-    "$inverse_radix2k_mdc" "$forward_partition" "$arithmetic_profile" "$sgen_ram_style"
+    "$inverse_radix2k_mdc" "$forward_partition" "$arithmetic_profile" "$sgen_ram_style" "$forward_precompute_rom"

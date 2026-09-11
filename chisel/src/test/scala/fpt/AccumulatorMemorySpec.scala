@@ -2,6 +2,7 @@ package fpt
 
 import chisel3._
 import chiseltest._
+import chiseltest.simulator.VerilatorBackendAnnotation
 import circt.stage.ChiselStage
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -22,6 +23,7 @@ final class AccumulatorMemorySpec
     inverseFormat = FixedFormat(27, 14)
   )
   private val contexts = 3
+  private val localControls = sys.env.get("FPT_U280_COEFFICIENT_LOCALITY").contains("1")
   private val config = ReplicatedAccumulatorBanksConfig(
     coefficient,
     contexts
@@ -141,7 +143,8 @@ final class AccumulatorMemorySpec
     config.logicalBits should be(BigInt(6144))
     config.replicatedBits should be(BigInt(12288))
 
-    test(new ReplicatedAccumulatorBanks(config)) { dut =>
+    test(new ReplicatedAccumulatorBanks(config, localWriteControls = localControls))
+      .withAnnotations(Seq(VerilatorBackendAnnotation, PaperVerilator.flags)) { dut =>
       clearInputs(dut)
       dut.reset.poke(true.B)
       dut.clock.step(2)
@@ -219,7 +222,8 @@ final class AccumulatorMemorySpec
   }
 
   it should "pause and resume a shared-port update around a prefetch" in {
-    test(new ReplicatedAccumulatorBanks(config, replicateReads = false)) { dut =>
+    test(new ReplicatedAccumulatorBanks(config, replicateReads = false, localWriteControls = localControls))
+      .withAnnotations(Seq(VerilatorBackendAnnotation, PaperVerilator.flags)) { dut =>
       clearInputs(dut)
       dut.reset.poke(true.B)
       dut.clock.step(2)
@@ -320,7 +324,8 @@ final class AccumulatorMemorySpec
   }
 
   it should "drain the full-width accumulator without using coefficient scratch" in {
-    test(new ReplicatedAccumulatorBanks(config, replicateReads = false)) { dut =>
+    test(new ReplicatedAccumulatorBanks(config, replicateReads = false, localWriteControls = localControls))
+      .withAnnotations(Seq(VerilatorBackendAnnotation, PaperVerilator.flags)) { dut =>
       clearInputs(dut)
       dut.reset.poke(true.B)
       dut.clock.step(2)

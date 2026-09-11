@@ -49,7 +49,8 @@ final case class ReplicatedAccumulatorBanksConfig(
   */
 final class ReplicatedAccumulatorBanks(
     val config: ReplicatedAccumulatorBanksConfig,
-    val replicateReads: Boolean = true
+    val replicateReads: Boolean = true,
+    val localWriteControls: Boolean = false
 ) extends Module {
   private val coefficient = config.coefficient
   private val contextWidth = config.contextWidth
@@ -537,25 +538,65 @@ final class ReplicatedAccumulatorBanks(
     loadCommitAddress,
     updateCommitAddress
   )
+  // Move address/mask selection before the existing commit edge. Local
+  // copies drive only four lane banks, without changing the write schedule.
+  class LocalWriteControl extends Bundle {
+    val address = UInt(config.addressWidth.W)
+    val isLoad = Bool()
+    val mask = Vec(config.wordFields, Bool())
+  }
+  val localControls = if (localWriteControls) {
+    val input = Wire(new LocalWriteControl)
+    input.address := Mux(loadFire, loadAddress, updateWriteAddress)
+    input.isLoad := loadFire
+    for (field <- 0 until config.wordFields) {
+      val halfSelected = if ((field & 1) == 0) !loadHighHalf else loadHighHalf
+      input.mask(field) := Mux(loadFire, halfSelected, updateWriteValid)
+    }
+    Seq.tabulate((coefficient.inverseLanes + 3) / 4) { group =>
+      val cut = Module(new PhysicalControlRegister(input.getWidth))
+      cut.suggestName(s"localWriteControl_$group")
+      cut.io.clock := clock
+      cut.io.reset := reset.asBool
+      cut.io.inputData := input.asUInt
+      val output = cut.io.outputData.asTypeOf(new LocalWriteControl)
+      assert(output.mask.asUInt.orR === memoryWriteEnable,
+        "local write enable changed commit timing")
+      when(memoryWriteEnable) {
+        assert(output.address === memoryWriteAddress,
+          "local write address diverged from the commit stage")
+        assert(output.isLoad === loadCommitValid,
+          "local write data selection diverged from the commit stage")
+        for (field <- 0 until config.wordFields) {
+          assert(output.mask(field) === Mux(loadCommitValid, loadMask(field), true.B),
+            "local write mask diverged from the commit stage")
+        }
+      }
+      output
+    }
+  } else Seq.empty
   for (lane <- 0 until coefficient.inverseLanes) {
+    val writeIsLoad = if (localWriteControls) localControls(lane / 4).isLoad else loadCommitValid
+    val writeAddress = if (localWriteControls) localControls(lane / 4).address else memoryWriteAddress
     val memoryWriteWord = Mux(
-      loadCommitValid,
+      writeIsLoad,
       loadWords(lane),
       updateCommitWords(lane)
     )
     val memoryWriteMask = Seq.tabulate(config.wordFields) { field =>
-      Mux(loadCommitValid, loadMask(field), true.B)
+      if (localWriteControls) localControls(lane / 4).mask(field)
+      else Mux(loadCommitValid, loadMask(field), true.B) && memoryWriteEnable
     }
     forwardMemories(lane).write(
-      memoryWriteAddress,
+      writeAddress,
       memoryWriteWord,
-      memoryWriteMask.map(_ && memoryWriteEnable)
+      memoryWriteMask
     )
     if (replicateReads) {
       updateMemories(lane).write(
-        memoryWriteAddress,
+        writeAddress,
         memoryWriteWord,
-        memoryWriteMask.map(_ && memoryWriteEnable)
+        memoryWriteMask
       )
     }
   }

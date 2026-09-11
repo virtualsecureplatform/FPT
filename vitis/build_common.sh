@@ -61,6 +61,14 @@ mkdir -p "$generated_dir" "$build_dir/xo" "$build_dir/xclbin" \
 if [[ ! -x $repo_dir/third_party/SGen/sgen.bat ]]; then
     (cd "$repo_dir/third_party/SGen" && sbt assembly)
 fi
+if [[ -n ${FPT_SGEN_PREGENERATED_DIR:-} ]]; then
+    # Use the exact RTL already validated by a frozen implementation trial.
+    # The trial driver checks its hashes before and after packaging.
+    test -s "$FPT_SGEN_PREGENERATED_DIR/forward.v"
+    test -s "$FPT_SGEN_PREGENERATED_DIR/inverse.v"
+    cp "$FPT_SGEN_PREGENERATED_DIR/forward.v" "$generated_dir/forward.v"
+    cp "$FPT_SGEN_PREGENERATED_DIR/inverse.v" "$generated_dir/inverse.v"
+else
 FPT_ARITHMETIC_PROFILE=paper-set-ii \
     FFT_LOG_LANES=${FFT_LOG_LANES:-7} \
     IFFT_LOG_LANES=${IFFT_LOG_LANES:-6} \
@@ -72,6 +80,7 @@ FPT_ARITHMETIC_PROFILE=paper-set-ii \
     FPT_SGEN_INVERSE_RADIX2K_MDC=${FPT_SGEN_INVERSE_RADIX2K_MDC:-${FPT_SGEN_INVERSE_SWITCH_TRANSPOSE:-0}} \
     "$repo_dir/tools/generate_sgen_fpt.sh" \
     "$repo_dir/third_party/SGen" "$generated_dir"
+fi
 (cd "$repo_dir/chisel" && sbt -J-Xmx12G \
     "runMain fpt.EmitFptBlindRotateKernelController $generated_dir $generated_dir/forward.v $generated_dir/inverse.v")
 

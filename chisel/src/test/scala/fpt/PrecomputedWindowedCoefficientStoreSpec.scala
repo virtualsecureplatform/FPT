@@ -66,14 +66,32 @@ final class PrecomputedWindowedCoefficientStoreSpec
 
   behavior of "the precomputed windowed coefficient frontend"
 
-  it should "time-share one rotator without changing the CMUX interval" in {
+  for (exponentBase <- 0 until 2 * config.polynomialSize by contexts) {
+  it should s"preserve data and cycles for exponents $exponentBase through ${exponentBase + contexts - 1}" in {
     test(
-      new PrecomputedWindowedBatchedCmuxCoefficientStore(
+      if (sys.env.get("FPT_U280_COEFFICIENT_LOCALITY").contains("1")) {
+        new PrecomputedWindowedBatchedCmuxCoefficientStore(
+          config, contexts,
+          bufferedSingleAccumulator = sys.env.get("FPT_TEST_SINGLE_ACCUMULATOR").contains("1"),
+          coefficientPreprocessGuardBits = preprocessGuardBits,
+          coefficientLocality = true,
+          groupedScratchControls = sys.env.get("FPT_COEFFICIENT_SCRATCH_CONTROL").contains("grouped")
+        )
+      } else if (sys.env.get("FPT_COEFFICIENT_SCRATCH_CONTROL").contains("grouped")) {
+        new PrecomputedWindowedBatchedCmuxCoefficientStore(
+          config, contexts,
+          bufferedSingleAccumulator = sys.env.get("FPT_TEST_SINGLE_ACCUMULATOR").contains("1"),
+          coefficientPreprocessGuardBits = preprocessGuardBits,
+          fieldSelectedScratchReads = true,
+          groupedScratchControls = true
+        )
+      } else new FieldSelectedFrontendMiter(
         config,
         contexts,
-        coefficientPreprocessGuardBits = preprocessGuardBits
+        guardBits = preprocessGuardBits,
+        singleAccumulator = sys.env.get("FPT_TEST_SINGLE_ACCUMULATOR").contains("1")
       )
-    ).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    ).withAnnotations(Seq(VerilatorBackendAnnotation, PaperVerilator.flags)) { dut =>
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
       dut.io.commandValid.poke(false.B)
@@ -118,12 +136,7 @@ final class PrecomputedWindowedCoefficientStoreSpec
         dut.clock.step()
       }
 
-      val exponents = Seq(
-        5,
-        config.polynomialSize + 3,
-        0,
-        config.polynomialSize + 11
-      )
+      val exponents = Seq.tabulate(contexts)(exponentBase + _)
       var cycle = 0
       var pairCount = 0
       val backpressureCycles = 3
@@ -263,6 +276,8 @@ final class PrecomputedWindowedCoefficientStoreSpec
       acceptCycles.toSeq should be(
         Seq.tabulate(contexts)(_ * commandInterval)
       )
+      info(s"locality=${sys.env.getOrElse("FPT_U280_COEFFICIENT_LOCALITY", "0")} " +
+        s"firstPairCycles=${firstPairCycles.mkString(",")}")
       firstPairCycles.sliding(2).foreach { pair =>
         withClue(s"firstPairCycles=$firstPairCycles: ") {
           pair(1) - pair(0) should be(commandInterval)
@@ -288,5 +303,6 @@ final class PrecomputedWindowedCoefficientStoreSpec
           row * config.forwardBeats - 1 + markerStallDelay)
       }
     }
+  }
   }
 }

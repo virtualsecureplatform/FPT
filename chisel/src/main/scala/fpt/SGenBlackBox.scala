@@ -113,7 +113,14 @@ final class SGenCyclicBackend(
   }
   generated.io.clockPort := clock
   generated.io.resetPort := reset.asBool
-  generated.io.nextPort := io.start
+  private val frameRecoveryCycles = SGenFrameRecovery.cycles(verilogPath, config.frameBeats, inputLeadCycles)
+  private val admissionReady = SGenFrameRecovery.ready(frameRecoveryCycles)
+  private val frameReady = if (frameRecoveryCycles == 0) true.B else
+    admissionReady && !reset.asBool
+  // Do not reintroduce a combinational global-reset path through the token.
+  // The resettable recovery counter suppresses admission after the reset edge.
+  generated.io.nextPort := io.start && admissionReady
+  when(io.start) { assert(frameReady, "SGen start before reset recovery completed") }
   for (lane <- 0 until config.lanes) {
     generated.io.inputPorts(lane) := Cat(
       io.input(lane).imag.asUInt,
@@ -197,13 +204,14 @@ final class SGenCyclicBackend(
   val outputBeat = RegInit(0.U(beatWidth.W))
   val doneReg = RegInit(false.B)
   doneReg := false.B
-  io.outputValid := generated.io.nextOutPort || outputActive
+  private val outputToken = generated.io.nextOutPort && frameReady
+  io.outputValid := (outputToken || outputActive) && frameReady
   io.done := doneReg
 
   when(io.outputValid) {
     assert(io.outputReady, "SGen outputs cannot be backpressured")
   }
-  when(generated.io.nextOutPort) {
+  when(outputToken) {
     if (config.frameBeats == 1) {
       outputActive := false.B
       doneReg := true.B

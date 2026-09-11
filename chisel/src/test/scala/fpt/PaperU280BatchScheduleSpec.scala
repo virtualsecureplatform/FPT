@@ -26,36 +26,22 @@ final class PaperU280BatchScheduleSpec
     require(Files.isRegularFile(forwardPath), s"missing $forwardPath")
     require(Files.isRegularFile(inversePath), s"missing $inversePath")
 
-    val base = PaperSetII.cmuxEngine(
+    val config = PaperU280BufferedBarrelConfig(
       forwardPath.toString,
       inversePath.toString,
+      domainDimension = 1,
       includeVerilogSource = true
-    )
-    val engine = base.copy(
-      coefficient = base.coefficient.copy(windowedRotator = true),
-      externalProduct = base.externalProduct.copy(
-        multiplier = ExternalProductMultiplier.ExactPipelinedSchoolbookDsp
-      )
-    )
-    val config = BatchedCmuxEngineConfig(
-      engine,
-      batchContexts = PaperSetII.bitwiseBatchContexts,
-      coefficientStorage =
-        BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks,
-      serializeInverseComponents = true,
-      useSynchronousExternalProductMemory = true,
-      useRotatingThreeBankExternalProductMemory = true,
-      decoupledBootstrappingKey = true,
-      pendingKeyRequestEntries = 1,
-      registerForwardSlrInput = true,
-      registerInverseSlrOutput = true,
-      coefficientPreprocessGuardBits = Some(4)
-    )
+    ).blindRotate.cmux
+    val engine = config.engine
+    info(s"coefficientSlr0NarrowLink=${config.coefficientSlr0NarrowLink}")
+    info(s"externalProductFinalBankTileLanes=${config.externalProductFinalBankTileLanes}")
+    info(s"externalProductRowControlTileLanes=${config.externalProductRowControlTileLanes}")
     config.commandInterval should be(16)
     val issuedContexts = (0 until config.batchContexts) :+ 0
 
     test(new BatchedCmuxEngine(config)).withAnnotations(
-      Seq(VerilatorBackendAnnotation, PaperVerilator.flags)
+      Seq(VerilatorBackendAnnotation, PaperVerilator.flags) ++
+        (if (sys.env.get("FPT_U280_SCHEDULE_TRACE").contains("1")) Seq(WriteVcdAnnotation) else Seq.empty)
     ) { dut =>
       dut.io.loadStart.poke(false.B)
       dut.io.loadValid.poke(false.B)
@@ -86,6 +72,7 @@ final class PaperU280BatchScheduleSpec
       dut.reset.poke(true.B)
       dut.clock.step(2)
       dut.reset.poke(false.B)
+      if (SGenFrameRecovery.configuredCycles > 0) dut.clock.step(SGenFrameRecovery.configuredCycles)
 
       for (context <- 0 until config.batchContexts) {
         dut.io.loadContext.poke(context.U)
@@ -140,6 +127,12 @@ final class PaperU280BatchScheduleSpec
         pair(1) - pair(0) should (be > 0 and be <= 16)
       }
       val latency = completed.head - accepted.head
+      sys.env.get("FPT_EXPECTED_U280_CMUX_CYCLES").foreach { expected =>
+        latency should be(expected.toInt)
+      }
+      if (config.groupedScratchControls) {
+        latency should be <= 253
+      }
       latency should be <= 276
       accepted.last should be(config.batchContexts * config.commandInterval)
       completed.head should be <= accepted.last

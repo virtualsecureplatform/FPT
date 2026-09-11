@@ -12,11 +12,17 @@ import chisel3.util._
   */
 final class RotatingThreeBankExternalProductAccumulator(
     val config: ExternalProductConfig,
-    val tagWidth: Int
+    val tagWidth: Int,
+    val finalBankTileLanes: Int = 0,
+    val rowControlTileLanes: Int = 0
 ) extends Module {
   import TransformUtil._
 
   require(tagWidth >= 1)
+  require(Set(0, 6).contains(finalBankTileLanes))
+  require(Set(0, 6).contains(rowControlTileLanes))
+  require(rowControlTileLanes == 0 || finalBankTileLanes == rowControlTileLanes)
+  require(finalBankTileLanes == 0 || (config.outputLanes >= 2 && config.outputLanes % 2 == 0))
   require(config.rows == 4)
   require(config.inputFrameBeats == 4)
   require(config.outputGroupsPerInputBeat == 2)
@@ -196,10 +202,47 @@ final class RotatingThreeBankExternalProductAccumulator(
   private val pendingBeat = ShiftRegister(firstPendingBeat, remainingProductCycles)
   private val pendingTag = ShiftRegister(firstPendingTag, remainingProductCycles)
 
+  // Branch at all three existing product-alignment edges. Replicating only
+  // the last edge leaves a single predecessor driving the whole accumulator.
+  private def rowCut(name: String, in: UInt, enable: Bool = true.B): UInt = {
+    val cut = Module(new PhysicalRowControlRegister(in.getWidth))
+    cut.suggestName(name)
+    cut.io.clock := clock
+    cut.io.enable := enable
+    cut.io.inputData := in
+    cut.io.outputData
+  }
+  private val rowTiles = if (rowControlTileLanes == 0) 0 else
+    (config.outputLanes + rowControlTileLanes - 1) / rowControlTileLanes
+  private val localRows = if (rowControlTileLanes == 0) None else {
+    require(PipelinedExactSchoolbookComplexMultiply.latency == 3)
+    val flags = Cat(activeRow === (config.rows - 1).U, activeRow === 0.U)
+    Some(Seq.tabulate(2, config.outputComponents) { (group, component) =>
+      val root = rowCut(s"rowRoot_${group}_${component}", flags, inputFire)
+      val regions = (0 until (rowTiles + 3) / 4).map { region =>
+        rowCut(s"rowRegion_${group}_${component}_$region", root)
+      }
+      (0 until rowTiles).map { tile =>
+        val region = regions(tile / 4)
+        // One first-row selector per three lanes; last-row still serves the
+        // original six-lane bank. Both copies use the same alignment edge.
+        rowCut(s"rowLeaf_${group}_${component}_$tile", Cat(region(0), region))
+      }
+    })
+  }
+  private def pendingFirst(group: Int, component: Int, lane: Int): Bool =
+    localRows.map(_(group)(component)(lane / rowControlTileLanes)(
+      if (lane % rowControlTileLanes < 3) 0 else 2))
+      .getOrElse(pendingRow === 0.U)
+  private def pendingLast(group: Int, component: Int, tile: Int): Bool =
+    localRows.map(_(group)(component)(tile)(1))
+      .getOrElse(pendingRow === (config.rows - 1).U)
+
   private val writeValid = RegNext(pendingValid, false.B)
   private val writeRow = RegEnable(pendingRow, pendingValid)
   private val writeBeat = RegEnable(pendingBeat, pendingValid)
   private val writeTag = RegEnable(pendingTag, pendingValid)
+  private val writeLast = RegEnable(pendingLast(0, 0, 0), pendingValid)
 
   // A committed beat appears in the same cycle that the corresponding beat
   // of the following row enters.  Delay it through the same alignment stages
@@ -219,7 +262,7 @@ final class RotatingThreeBankExternalProductAccumulator(
         accumulatedWord(group)(component)(lane).real :=
           FixedPointBits.lowSigned(
             Mux(
-              pendingRow === 0.U,
+              pendingFirst(group, component, lane),
               0.S(config.accumulator.width.W),
               previous.real
             ) + product.real,
@@ -228,7 +271,7 @@ final class RotatingThreeBankExternalProductAccumulator(
         accumulatedWord(group)(component)(lane).imag :=
           FixedPointBits.lowSigned(
             Mux(
-              pendingRow === 0.U,
+              pendingFirst(group, component, lane),
               0.S(config.accumulator.width.W),
               previous.imag
             ) + product.imag,
@@ -250,7 +293,8 @@ final class RotatingThreeBankExternalProductAccumulator(
     assert(writeRow + 1.U === activeRow, "feedback row is misaligned")
   }
 
-  private val finalWrite = writeValid && writeRow === (config.rows - 1).U
+  private val finalWrite = writeValid && (if (rowControlTileLanes == 0)
+    writeRow === (config.rows - 1).U else writeLast)
 
   // The first read starts one cycle after final beat zero is committed.  A
   // new transaction's final beat zero arrives with the preceding transaction's
@@ -265,7 +309,8 @@ final class RotatingThreeBankExternalProductAccumulator(
   // Four independently placeable component banks replace the monolithic
   // 15,360-bit UltraRAM word. Group zero remains in UltraRAM; group one uses
   // shallow distributed storage, relieving the SLR1 URAM column pressure.
-  private val finalBanks = Seq.tabulate(2, config.outputComponents) {
+  private val finalBankOutputs = if (finalBankTileLanes == 0) {
+    val finalBanks = Seq.tabulate(2, config.outputComponents) {
     (group, component) =>
       val bank = if (group == 0) {
         Module(new FinalAccumulatorUltraBank(componentWidth))
@@ -279,6 +324,36 @@ final class RotatingThreeBankExternalProductAccumulator(
       bank.io.readEnable := drainReadIssue
       bank.io.readAddress := drainReadAddress
       bank
+    }
+    finalBanks.map(_.map(_.io.outputData))
+  } else {
+    // Mirror the next values of the existing drain state, not its current
+    // outputs: the bank-local registers replace that edge, not add an edge.
+    val nextDrainActive = Mux(drainActive,
+      Mux(drainIssueIndex === 15.U, finalCommitStart, true.B), finalCommitStart)
+    val nextDrainIndex = Mux(drainActive && drainIssueIndex =/= 15.U,
+      drainIssueIndex + 1.U, 0.U(4.W))
+    val pendingFinalWrite = pendingValid && pendingRow === (config.rows - 1).U
+    val laneStarts = 0 until config.outputLanes by finalBankTileLanes
+    val finalBankTiles = Seq.tabulate(2, config.outputComponents) { (group, component) =>
+      laneStarts.map { firstLane =>
+        val lanes = math.min(finalBankTileLanes, config.outputLanes - firstLane)
+        val width = lanes * 2 * config.accumulator.width
+        val offset = firstLane * 2 * config.accumulator.width
+        val bank = Module(new FinalAccumulatorLocalBank(width, ultra = group == 0))
+        bank.suggestName(s"finalBankTiles_${group}_${component}_${firstLane / finalBankTileLanes}")
+        bank.io.clock := clock
+        bank.io.reset := reset.asBool
+        bank.io.pendingWrite := (if (rowControlTileLanes == 0) pendingFinalWrite
+          else pendingValid && pendingLast(group, component, firstLane / rowControlTileLanes))
+        bank.io.pendingWriteAddress := pendingBeat
+        bank.io.inputData := committedWord(group)(component).asUInt(offset + width - 1, offset)
+        bank.io.nextReadEnable := nextDrainActive
+        bank.io.nextReadAddress := nextDrainIndex(2, 1)
+        bank
+      }
+    }
+    finalBankTiles.map(_.map(banks => Cat(banks.reverse.map(_.io.outputData))))
   }
 
   when(drainActive) {
@@ -330,7 +405,7 @@ final class RotatingThreeBankExternalProductAccumulator(
     select.io.selectorInput := Cat(drainIssueIndex(3), drainIssueIndex(0))
     val tileOffset = tile * selectedTileWidth
     def slice(group: Int, component: Int): UInt =
-      finalBanks(group)(component).io.outputData(
+      finalBankOutputs(group)(component)(
         tileOffset + selectedTileWidth - 1,
         tileOffset
       )

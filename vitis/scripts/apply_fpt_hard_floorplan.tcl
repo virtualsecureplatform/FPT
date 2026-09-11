@@ -17,8 +17,16 @@ set floorplan_mode partition
 if {[info exists ::env(FPT_HARD_FLOORPLAN_MODE)]} {
   set floorplan_mode $::env(FPT_HARD_FLOORPLAN_MODE)
 }
-if {$floorplan_mode ni {whole_forward partition partition_spill}} {
-  error "FPT_HARD_FLOORPLAN_MODE must be whole_forward, partition, or partition_spill"
+if {$floorplan_mode ni {whole_forward partition partition_spill coefficient_slr0_narrow}} {
+  error "FPT_HARD_FLOORPLAN_MODE must be whole_forward, partition, partition_spill, or coefficient_slr0_narrow"
+}
+if {$floorplan_mode eq "coefficient_slr0_narrow"} {
+  source [file join [file dirname [info script]] apply_fpt_coefficient_slr0.tcl]
+  fpt_apply_coefficient_slr0 $cmux
+  return
+}
+if {[llength [get_cells -quiet ${cmux}/coefficientDigitLink]] != 0} {
+  error "narrow coefficient RTL requires coefficient_slr0_narrow floorplan"
 }
 
 set inverse [get_cells -quiet ${cmux}/inverse]
@@ -34,14 +42,27 @@ set pending_requests [get_cells -quiet ${cmux}/pendingRequests]
 set inverse_boundary [get_cells -quiet ${cmux}/inverseBoundary]
 set inverse_output_middle [get_cells -quiet ${cmux}/inverseOutputMiddleRelay]
 set inverse_output_destination [get_cells -quiet ${cmux}/inverseOutputDestinationRelay]
+set inverse_output_source [get_cells -quiet ${cmux}/inverseOutputSourceTx]
+set paired_inverse [expr {[llength $inverse_output_source] == 1}]
+if {$paired_inverse} {
+  if {$floorplan_mode eq "whole_forward"} { error "paired inverse links require partition floorplan" }
+  set inverse_output_middle [get_cells -quiet [list ${cmux}/inverseOutputMiddleRx ${cmux}/inverseOutputMiddleTx]]
+  set inverse_output_destination [get_cells -quiet ${cmux}/inverseOutputDestinationRx]
+  if {[llength $inverse_output_middle] != 2 || [llength $inverse_output_destination] != 1} {
+    error "paired inverse link bank missing"
+  }
+}
 set component_join [get_cells -quiet ${cmux}/componentJoin]
 set external_output_pipeline [get_cells -quiet ${cmux}/externalOutputPipeline]
 foreach required [list $coefficients $external $forward \
     $forward_input_boundary $pending_requests $inverse_boundary \
-    $inverse_output_middle $inverse_output_destination $component_join $external_output_pipeline] {
+    $component_join $external_output_pipeline] {
   if {[llength $required] != 1} {
     error "missing whole-module floorplan hierarchy: $required"
   }
+}
+if {!$paired_inverse && ([llength $inverse_output_middle] != 1 || [llength $inverse_output_destination] != 1)} {
+  error "legacy inverse relay missing"
 }
 
 if {$floorplan_mode eq "whole_forward"} {
@@ -87,8 +108,8 @@ if {$floorplan_mode eq "whole_forward"} {
   return
 }
 
-fpt_hard_pblock fpt_inverse_slr0 SLR0 $inverse
-set_property USER_SLR_ASSIGNMENT SLR0 $inverse
+fpt_hard_pblock fpt_inverse_slr0 SLR0 [concat $inverse $inverse_output_source]
+set_property USER_SLR_ASSIGNMENT SLR0 [concat $inverse $inverse_output_source]
 
 set forward_root ${cmux}/forward/core/backend/generated
 set forward_front [get_cells -quiet ${forward_root}/front]
@@ -123,6 +144,15 @@ if {[llength $forward_front] == 1 && [llength $forward_back] == 1} {
       $forward_partition_control $inverse_output_middle]
   set_property USER_SLL_REG TRUE \
     [concat $forward_partition_tx $forward_partition_rx]
+  if {$paired_inverse} {
+    foreach bank [concat $inverse_output_source $inverse_output_middle $inverse_output_destination] {
+      set registers [get_cells -quiet -hierarchical \
+        -filter "NAME =~ ${bank}/outputPayload_payloadBoundary/value_reg* && IS_SEQUENTIAL"]
+      if {[llength $registers] != 3840} { error "paired inverse payload count: $bank [llength $registers]" }
+      set_property USER_SLL_REG TRUE $registers
+      set_property DONT_TOUCH TRUE $registers
+    }
+  } else {
   set inverse_middle_registers [get_cells -quiet -hierarchical \
     -filter "NAME =~ ${inverse_output_middle}/outputPayload_payloadBoundary/value_reg* && IS_SEQUENTIAL"]
   set inverse_destination_registers [get_cells -quiet -hierarchical \
@@ -133,5 +163,6 @@ if {[llength $forward_front] == 1 && [llength $forward_back] == 1} {
   }
   set_property USER_SLL_REG TRUE \
     [concat $inverse_middle_registers $inverse_destination_registers]
+  }
   puts "FPT_HARD_FLOORPLAN forwardFront+coefficients=SLR2; forwardBack+external=SLR1; inverse=SLR0; boundaryTX=[llength $forward_partition_tx]; boundaryRX=[llength $forward_partition_rx]"
 }
