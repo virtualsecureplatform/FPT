@@ -74,6 +74,9 @@ final class PaperU280BatchScheduleSpec
       dut.reset.poke(false.B)
       if (SGenFrameRecovery.configuredCycles > 0) dut.clock.step(SGenFrameRecovery.configuredCycles)
 
+      dut.io.loadDescriptor.foreach { d =>
+        d.positive.poke(0.U); d.negative.poke(0.U); d.exponent.poke(0.U)
+      }
       for (context <- 0 until config.batchContexts) {
         dut.io.loadContext.poke(context.U)
         dut.io.loadStart.poke(true.B)

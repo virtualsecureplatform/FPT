@@ -6,7 +6,9 @@ import chisel3.util._
 final case class BufferedBlindRotateConfig(
     blindRotate: BatchedBlindRotateEngineConfig,
     keyLoadLanes: Int,
-    keyBanks: Int = 2
+    keyBanks: Int = 2,
+    keyWriteTileLanes: Int = 0,
+    minimalMetadataReset: Boolean = false
 ) {
   require(
     blindRotate.cmux.decoupledBootstrappingKey,
@@ -19,14 +21,17 @@ final case class BufferedBlindRotateConfig(
       blindRotate.batchContexts,
       blindRotate.domainDimension,
       keyLoadLanes,
-      keyBanks
+      keyBanks,
+      writeTileLanes = keyWriteTileLanes,
+      minimalMetadataReset = minimalMetadataReset
     )
   val keyMemoryDepth: Int = keyBanks * keyBuffer.wordsPerCoefficient
   val keyMemoryWordBits: Int =
     keyBuffer.complexValuesPerRead *
       2 * keyBuffer.externalProduct.bootstrappingKey.width
   val keyMemoryModuleName: String =
-    s"memory_${keyMemoryDepth}x${keyMemoryWordBits}"
+    if (keyWriteTileLanes == 0) s"memory_${keyMemoryDepth}x${keyMemoryWordBits}"
+    else s"memory_${keyMemoryDepth}x${keyMemoryWordBits / keyBuffer.writeTiles}"
 }
 
 private final class BufferedKeyReadRequest(

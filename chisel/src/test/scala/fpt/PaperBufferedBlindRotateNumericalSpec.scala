@@ -156,6 +156,7 @@ final class PaperBufferedBlindRotateNumericalSpec
         dut.clock.step()
         dut.io.keyLoadStart.poke(false.B)
         dut.io.keyLoadValid.poke(true.B)
+        var initialKeyLoadCycles = 0
         for (
           word <- 0 until config.keyBuffer.wordsPerCoefficient;
           group <- 0 until config.keyBuffer.loadGroupsPerRead
@@ -175,10 +176,18 @@ final class PaperBufferedBlindRotateNumericalSpec
           }
           dut.io.keyLoadReady.expect(true.B)
           dut.clock.step()
+          initialKeyLoadCycles += 1
         }
         dut.io.keyLoadValid.poke(false.B)
+        if (config.keyBuffer.writeTileLanes > 0) {
+          dut.io.keyLoadDone.expect(false.B)
+          dut.clock.step()
+          initialKeyLoadCycles += 1
+        }
         dut.io.keyLoadDone.expect(true.B)
         dut.io.keyLoadDoneIndex.expect(0.U)
+        info(s"initial key load: accepted=${config.keyBuffer.loadBeatsPerCoefficient} " +
+          s"cycles=$initialKeyLoadCycles commitExtra=${initialKeyLoadCycles - config.keyBuffer.loadBeatsPerCoefficient}")
         dut.clock.step()
 
         for (context <- 0 until contexts) {
@@ -215,6 +224,7 @@ final class PaperBufferedBlindRotateNumericalSpec
         val errors = scala.collection.mutable.Map.empty[Int, Int]
           .withDefaultValue(0)
         val observedContexts = ArrayBuffer.empty[Int]
+        val observedResults = ArrayBuffer.empty[String]
         val resultDigest = java.security.MessageDigest.getInstance("SHA-256")
         var outputIndex = 0
         var exact = 0
@@ -237,6 +247,7 @@ final class PaperBufferedBlindRotateNumericalSpec
             if (firstResultCycle.isEmpty) firstResultCycle = Some(cycle)
             outputIndex should be < expected.size
             val actual = dut.io.result.peek().litValue
+            observedResults += actual.toString
             for (byte <- 0 until (coefficient.torusWidth + 7) / 8) {
               resultDigest.update(((actual >> (8 * byte)) & 255).toByte)
             }
@@ -300,6 +311,9 @@ final class PaperBufferedBlindRotateNumericalSpec
         maximumError should be <= maximumRawError * rawUnit
         exact * 4 should be > expected.size
         withinOne * 3 should be > expected.size * 2
+        sys.env.get("FPT_BLIND_ROTATE_RESULT_FILE").foreach { output =>
+          Files.write(Path.of(output), observedResults.asJava)
+        }
       }
   }
 }

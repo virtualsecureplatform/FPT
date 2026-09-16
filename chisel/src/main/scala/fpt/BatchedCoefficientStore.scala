@@ -5,7 +5,8 @@ import chisel3.util._
 
 final class BatchedCmuxCoefficientStoreIO(
     val config: CmuxCoefficientConfig,
-    val batchContexts: Int
+    val batchContexts: Int,
+    val bankLocalAccumulatorInit: Boolean = false
 ) extends Bundle {
   private val contextWidth = TransformUtil.counterWidth(batchContexts)
   private val rowWidth = TransformUtil.counterWidth(
@@ -16,6 +17,8 @@ final class BatchedCmuxCoefficientStoreIO(
   val loadContext = Input(UInt(contextWidth.W))
   val loadValid = Input(Bool())
   val loadReady = Output(Bool())
+  val loadDescriptor = if (bankLocalAccumulatorInit)
+    Some(Input(new AccumulatorInitDescriptor(config))) else None
   val load = Input(
     Vec(
       config.components,
@@ -80,9 +83,10 @@ final class BatchedCmuxCoefficientStoreIO(
 
 abstract class BatchedCmuxCoefficientStoreBase(
     val config: CmuxCoefficientConfig,
-    val batchContexts: Int
+    val batchContexts: Int,
+    val bankLocalAccumulatorInit: Boolean = false
 ) extends Module {
-  val io = IO(new BatchedCmuxCoefficientStoreIO(config, batchContexts))
+  val io = IO(new BatchedCmuxCoefficientStoreIO(config, batchContexts, bankLocalAccumulatorInit))
 }
 
 /** Multi-context coefficient storage for FPT batch bootstrapping.

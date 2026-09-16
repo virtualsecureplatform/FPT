@@ -1,3 +1,4 @@
+set ::fpt_final_role_cache [dict create]
 proc fpt_control_loads {cell pin} {
   set nets [get_nets -segments -of_objects [get_pins -of_objects $cell -filter "REF_PIN_NAME == $pin"]]
   return [get_pins -leaf -of_objects $nets -filter {DIRECTION == IN}]
@@ -31,6 +32,9 @@ proc fpt_check_ifft_controls {out expected} {
     set manifests [regexp -all -inline -line {^// mux_island name=\S+ source=\S+ cycles=\d+ bit=-?\d+ bits=\d+ muxes=\S+ captures=\S+} $rtl]
     if {[llength $manifests] != [llength $islands]} {error "IFFT island count differs from manifest"}
     set expected [regexp -all -line {^// mux_control_copy } $rtl]
+    set islandLimit 120
+    if {[info exists ::env(FPT_SGEN_INVERSE_MUX_ISLAND_BITS)]} {set islandLimit $::env(FPT_SGEN_INVERSE_MUX_ISLAND_BITS)}
+    set selectorLimit [expr {$islandLimit == 30 ? 32 : 128}]
     foreach island $islands {
       set name [get_property NAME $island]
       set short [file tail $name]
@@ -38,12 +42,12 @@ proc fpt_check_ifft_controls {out expected} {
       foreach entry $manifests {
         if {[regexp "name=$short source=.* bits=(\\d+) " $entry -> width]} {break}
       }
-      if {$width < 1 || $width > 120} {error "invalid IFFT island width: $name"}
+      if {$width < 1 || $width > $islandLimit} {error "invalid IFFT island width: $name"}
       set selector [get_cells -quiet "$name/select_local_reg"]
       if {[llength $selector] != 1 || ![get_property DONT_TOUCH $selector]} {error "missing preserved island selector: $name"}
       set q [fpt_control_loads $selector Q]
       set d [fpt_control_loads $selector D]
-      if {[llength $q] > 128 || [llength $q] == 0 || [llength $d] > 256} {error "island fanout: $name Q=[llength $q] D=[llength $d]"}
+      if {[llength $q] > $selectorLimit || [llength $q] == 0 || [llength $d] > 256} {error "island fanout: $name Q=[llength $q] D=[llength $d]"}
       foreach pin $q {
         if {![string match "$name/*" $pin]} {error "island selector escapes: $pin"}
       }
@@ -68,29 +72,39 @@ proc fpt_check_ifft_controls {out expected} {
     if {$q == 0 || $q > 256} {error "IFFT selector fanout is not bounded: $cell Q=$q"}
   }
 }
-proc fpt_check_final_bank_controls {out bank distributed} {
+proc fpt_check_final_bank_controls {out bank distributed {limit 512}} {
   set prefix [expr {$bank eq "" ? "" : "$bank/"}]
+  global fpt_final_role_cache
   set roles {writeEnable 1 writeAddress 2 readEnable 1 readAddress 2}
   if {$distributed} {lappend roles readAddressCut 2}
   foreach {role expected} $roles {
     # Include vector bit names, but not readAddressCut when matching readAddress.
-    set cells [get_cells -hier -filter "NAME =~ ${prefix}${role}_reg* && REF_NAME =~ FD*"]
+    if {![dict exists $fpt_final_role_cache $role]} {
+      dict set fpt_final_role_cache $role [get_cells -hier -filter "NAME =~ *${role}_reg* && REF_NAME =~ FD*"]
+    }
+    set cells {}
+    foreach candidate [dict get $fpt_final_role_cache $role] {
+      set name [get_property NAME $candidate]
+      if {[string first $prefix $name] == 0 && [string match ${role}_reg* [string range $name [string length $prefix] end]]} {
+        lappend cells $candidate
+      }
+    }
     if {[llength $cells] != $expected} {error "local control $prefix$role count [llength $cells] != $expected"}
     foreach cell $cells {
       if {![get_property DONT_TOUCH $cell]} {error "local control lost preservation: $cell"}
       set loads [fpt_control_loads $cell Q]
       set q [llength $loads]
       puts $out "EP\t$cell\t[llength [fpt_control_loads $cell D]]\t$q"
-      if {$q == 0 || $q > 512} {error "EP local control fanout is not bounded: $cell Q=$q"}
+      if {$q == 0 || $q > $limit} {error "EP local control fanout is not bounded: $cell Q=$q"}
       foreach sink [get_cells -of_objects $loads] {
-        if {$prefix ne "" && ![string match ${prefix}* $sink]} {error "bank control escaped its bank: $cell -> $sink"}
+        if {$prefix ne "" && [string first $prefix [get_property NAME $sink]] != 0} {error "bank control escaped its bank: $cell -> $sink"}
       }
     }
   }
 }
 proc fpt_final_local_banks {} {
   # Chisel prepends the enclosing val to explicit suggested names.
-  return [get_cells -hier -filter {NAME =~ */*finalBankTiles_* && REF_NAME =~ *FptFinalAccumulatorLocal* && IS_PRIMITIVE == 0}]
+  return [get_cells -hier -filter {NAME =~ */*finalBankTiles_* && REF_NAME =~ *FptFinalAccumulatorLocal* && REF_NAME !~ *DistributedChild* && IS_PRIMITIVE == 0}]
 }
 proc fpt_check_local_controls {report expected {placed 0}} {
   set out [open $report w]
@@ -104,7 +118,11 @@ proc fpt_check_local_controls {report expected {placed 0}} {
   foreach bank $banks {
     set is_distributed [string match *Distributed* [get_property REF_NAME $bank]]
     if {$is_distributed} {incr distributed} else {incr ultra}
-    fpt_check_final_bank_controls $out $bank $is_distributed
+    if {[string match *Subtiled* [get_property REF_NAME $bank]]} {
+      set children [get_cells -hier -filter "NAME =~ ${bank}/* && REF_NAME =~ *DistributedChild* && IS_PRIMITIVE == 0"]
+      if {[llength $children] != 2} {error "EP subtile count [llength $children] != 2: $bank"}
+      foreach child $children {fpt_check_final_bank_controls $out $child 1 256}
+    } else {fpt_check_final_bank_controls $out $bank $is_distributed}
     lappend urams {*}[get_cells -hier -filter "NAME =~ $bank/* && REF_NAME =~ URAM*"]
     if {$placed} {
       foreach cell [get_cells -hier -filter "NAME =~ $bank/* && IS_PRIMITIVE && REF_NAME != VCC && REF_NAME != GND"] {

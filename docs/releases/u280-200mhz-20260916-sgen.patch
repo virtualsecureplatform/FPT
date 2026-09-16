@@ -1,0 +1,118 @@
+diff --git a/src/main/scala/backends/TwiddleIslandVerilog.scala b/src/main/scala/backends/TwiddleIslandVerilog.scala
+index bfb149f..299fdd3 100644
+--- a/src/main/scala/backends/TwiddleIslandVerilog.scala
++++ b/src/main/scala/backends/TwiddleIslandVerilog.scala
+@@ -74,7 +74,9 @@ object TwiddleIslandVerilog:
+     components.foreach(visit)
+     memo.collect { case (c, Some(t)) => c -> t }.toMap
+ 
+-  def emit(components: Seq[Component], name: Component => String, maxConsumers: Int): Emission =
++  def emit(components: Seq[Component], name: Component => String, maxConsumers: Int,
++      regionIslands: Int = sys.env.getOrElse("SGEN_FPT_FORWARD_TWIDDLE_REGION_ISLANDS", "32").toInt): Emission =
++    require(Set(8, 32)(regionIslands), "twiddle region islands must be 8 or 32")
+     require(Set(0, 4)(maxConsumers), "twiddle island consumers must be 0 or 4")
+     if maxConsumers == 0 then return Emission("", "", Map.empty)
+     val tables = analyze(components)
+@@ -96,7 +98,7 @@ object TwiddleIslandVerilog:
+       case None => name(address)
+       case Some(input) =>
+         var copies = regions.getOrElse(address, Vector.empty)
+-        if copies.isEmpty || copies.last._2 == 32 then
++        if copies.isEmpty || copies.last._2 == regionIslands then
+           val id = s"twiddle_region_$regionOrdinal"
+           regionOrdinal += 1
+           copies :+= ((id, 0))
+diff --git a/src/main/scala/backends/Verilog.scala b/src/main/scala/backends/Verilog.scala
+index 4d67bec..28f11a7 100644
+--- a/src/main/scala/backends/Verilog.scala
++++ b/src/main/scala/backends/Verilog.scala
+@@ -126,7 +126,7 @@ object Verilog {
+         islandBits: Int = sys.env.getOrElse("SGEN_MUX_ISLAND_BITS", "0").toInt,
+         twiddleConsumers: Int = 0): String =
+       require(maxBits >= 0, "SGEN_MUX_CONTROL_MAX_BITS must be nonnegative")
+-      require(Set(0, 120).contains(islandBits), "SGEN_MUX_ISLAND_BITS must be 0 or 120")
++      require(Set(0, 30, 120).contains(islandBits), "SGEN_MUX_ISLAND_BITS must be 0, 30 or 120")
+       val requestedSwitchNetworks = mod.components.collect {
+         case cur: SwitchTransposeNetworkComponent => (cur.logSize, cur.dataWidth)
+       }
+@@ -193,8 +193,14 @@ object Verilog {
+       val captureWires = scala.collection.mutable.Map.empty[Register, String]
+       if islandBits > 0 then
+         val eligible = mod.components.collect { case m: Mux if m.address.size == 1 => m }
+-          .flatMap(m => for s <- selectorRegister(m.address); rs <- captures(m)
+-            if rs.nonEmpty && rs.map(_.size).sum <= islandBits yield (s, m, rs))
++          .flatMap { m =>
++            (for s <- selectorRegister(m.address); rs <- captures(m)
++              if rs.nonEmpty && (if islandBits == 30 then rs.forall(_.size <= islandBits)
++                else rs.map(_.size).sum <= islandBits)
++              yield (s, rs)).toSeq.flatMap { (s, rs) =>
++                if islandBits == 30 then rs.map(r => (s, m, Seq(r))) else Seq((s, m, rs))
++              }
++          }
+         eligible.groupBy(_._1).toSeq.sortBy { case ((r, b), _) => (indexes(r), b.getOrElse(-1)) }
+           .foreach { case ((selector, bit), entries) =>
+             var group = Vector.empty[(Mux, Register)]
+diff --git a/src/test/scala/backends/MuxControlReplicationTest.scala b/src/test/scala/backends/MuxControlReplicationTest.scala
+index d22c3ee..83450ea 100644
+--- a/src/test/scala/backends/MuxControlReplicationTest.scala
++++ b/src/test/scala/backends/MuxControlReplicationTest.scala
+@@ -5,8 +5,8 @@ import ir.rtl.*
+ import org.scalatest.funsuite.AnyFunSuite
+ 
+ class MuxControlReplicationTest extends AnyFunSuite:
+-  for depth <- Seq(1, 2, 7); alias <- Seq(false, true) do
+-    test(s"registered islands retain capture depth $depth alias=$alias"):
++  for depth <- Seq(1, 2, 7); alias <- Seq(false, true); budget <- Seq(30, 120) do
++    test(s"registered islands retain capture depth $depth alias=$alias budget=$budget"):
+       val mod = new Module:
+         lazy val inputs = Seq(Input(1, "select"), Input(30, "a"), Input(30, "b"))
+         lazy val outputs =
+@@ -20,20 +20,31 @@ class MuxControlReplicationTest extends AnyFunSuite:
+             else mux
+             Output(Register(input, depth), s"y$i")
+           }
+-      val rtl = mod.toVerilogWithMuxControlBudget(240, 120)
++      val rtl = mod.toVerilogWithMuxControlBudget(240, budget)
+       val islands = "// mux_island name=(\\w+) source=(\\w+) cycles=(\\d+) bit=(-?\\d+) bits=(\\d+) muxes=(\\S+) captures=(\\S+)".r
+         .findAllMatchIn(rtl).toSeq
+-      assert(islands.map(_.group(5).toInt) == Seq(120, 120, 30))
++      assert(islands.map(_.group(5).toInt) == (if budget == 30 then Seq.fill(9)(30) else Seq(120, 120, 30)))
+       assert(islands.flatMap(_.group(7).split(",")).size == 9)
+       assert(rtl.contains("captured <= select_local ? b : a;"))
+       assert(rtl.contains("// mux_predecessor name=mux_predecessor_0"))
+       assert(rtl.contains(".d(select)"))
+       assert(rtl.contains(".select_next(mux_predecessor_0_q)"))
+       assert(!rtl.contains("reason=unregistered_selector"))
+-      assert(rtl == mod.toVerilogWithMuxControlBudget(240, 120))
++      assert(rtl == mod.toVerilogWithMuxControlBudget(240, budget))
+       assert(!mod.toVerilogWithMuxControlBudget(240, 0).contains("mux_island"))
+       if depth > 2 then assert(rtl.contains("_island_tail[5]"))
+ 
++  test("scalar islands split distinct registered consumers of one mux"):
++    val mod = new Module:
++      lazy val inputs = Seq(Input(1, "select"), Input(30, "a"), Input(30, "b"))
++      lazy val outputs =
++        val mux = Mux(Register(inputs.head, 2), inputs.tail)
++        Seq(Output(Register(mux), "first"), Output(Register(mux, 3), "third"))
++    val rtl = mod.toVerilogWithMuxControlBudget(240, 30)
++    assert(rtl.linesIterator.count(_.startsWith("// mux_island ")) == 2)
++    assert(rtl.contains("_island_tail[1]"))
++    assert(rtl == mod.toVerilogWithMuxControlBudget(240, 30))
++
+   test("unregistered output consumers remain outside islands"):
+     assert(!fixture(1, Seq.fill(9)(30)).toVerilogWithMuxControlBudget(240, 120).contains("// mux_island"))
+     assertThrows[IllegalArgumentException](fixture(1, Seq(30)).toVerilogWithMuxControlBudget(240, 60))
+diff --git a/src/test/scala/backends/TwiddleIslandTest.scala b/src/test/scala/backends/TwiddleIslandTest.scala
+index e513f54..67615dd 100644
+--- a/src/test/scala/backends/TwiddleIslandTest.scala
++++ b/src/test/scala/backends/TwiddleIslandTest.scala
+@@ -32,6 +32,9 @@ class TwiddleIslandTest extends AnyFunSuite:
+     assert(rtl.linesIterator.count(_.startsWith("// twiddle_region ")) == 3)
+     assert(rtl.contains(".d(phase)"))
+     assert(rtl.contains(".phase(twiddle_region_2_value)"))
++    val small = TwiddleIslandVerilog.emit(mod.components, _.toString, 4, 8)
++    assert(small.instances.linesIterator.count(_.startsWith("// twiddle_region ")) == 9)
++    assertThrows[IllegalArgumentException](TwiddleIslandVerilog.emit(mod.components, _.toString, 4, 7))
+ 
+   test("registered tables fold exactly at every width and preserve schedule"):
+     val phase = Input(2, "phase")

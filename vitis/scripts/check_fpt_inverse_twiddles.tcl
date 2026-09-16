@@ -77,13 +77,15 @@ proc fpt_check_inverse_twiddles {report {placed 0} {kernel 1}} {
       }
       puts $out "TWIDDLE\t$name\t[llength $coefficients]\t[llength $phases]\t$maxq"
     }
+    set regionLimit 32
+    if {[info exists ::env(FPT_SGEN_FORWARD_TWIDDLE_REGION_ISLANDS)]} {set regionLimit $::env(FPT_SGEN_FORWARD_TWIDDLE_REGION_ISLANDS)}
     foreach region $regions {
       set name [get_property NAME $region]
       set regs [get_cells -hier -filter "NAME =~ ${name}/value_reg* && REF_NAME =~ FD*"]
       if {![llength $regs]} {error "missing address region registers $name"}
       foreach cell $regs {
         fpt_it_limit $cell D 256
-        fpt_it_limit $cell Q 32
+        fpt_it_limit $cell Q $regionLimit
         fpt_it_always_clocked $cell
         if {$placed} {fpt_require_placed_slr $cell SLR2}
       }

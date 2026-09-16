@@ -212,6 +212,11 @@ final class BatchedBlindRotateEngine(
       coefficient.torusWidth - 1,
       0
     )
+  cmux.io.loadDescriptor.foreach { descriptor =>
+    descriptor.positive := loaderTestVector
+    descriptor.negative := negativeTestVector
+    descriptor.exponent := loaderExponent
+  }
   val exponentLow = loaderExponent(log2Ceil(coefficient.polynomialSize) - 1, 0)
   val exponentHigh = loaderExponent(config.exponentWidth - 1)
   for (component <- 0 until coefficient.components) {
@@ -219,7 +224,7 @@ final class BatchedBlindRotateEngine(
       val index = accumulatorBeat * coefficient.inverseLanes.U + lane.U
       val negate = exponentHigh ^ (index < exponentLow)
       cmux.io.load(component)(lane) :=
-        (if (component == 0) 0.U
+        (if (cmuxConfig.bankLocalAccumulatorInit || component == 0) 0.U
          else Mux(negate, negativeTestVector, loaderTestVector))
     }
   }

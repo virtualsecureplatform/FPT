@@ -89,7 +89,8 @@ final class PipelinedWindowedNegacyclicRotatorSpan(
     val polynomialSize: Int,
     val coefficientWidth: Int,
     val blockLanes: Int,
-    val outputLanes: Int
+    val outputLanes: Int,
+    val msbFirst: Boolean = false
 ) extends Module {
   require(polynomialSize >= 2 && isPow2(polynomialSize))
   require(blockLanes >= 2 && isPow2(blockLanes))
@@ -129,11 +130,14 @@ final class PipelinedWindowedNegacyclicRotatorSpan(
   var signs: Seq[Bool] = sourceSigns
   var stagedOffset: UInt = io.offset
   var completedAlignmentStages = 0
-  for (bit <- 0 until offsetWidth) {
+  private val alignmentBits =
+    if (msbFirst) (0 until offsetWidth).reverse else (0 until offsetWidth)
+  for ((bit, layer) <- alignmentBits.zipWithIndex) {
     val shift = 1 << bit
-    // After consuming bits [bit:0], only the maximum shift represented by
-    // the remaining upper bits has to stay live beyond the output window.
-    val nextSize = outputLanes + blockLanes - (1 << (bit + 1))
+    // Only the maximum shift represented by unconsumed bits must remain
+    // live beyond the output window, regardless of layer ordering.
+    val remainingShift = alignmentBits.drop(layer + 1).map(b => 1 << b).sum
+    val nextSize = outputLanes + remainingShift
     val previousValues = values
     val previousSigns = signs
     values = (0 until nextSize).map { index =>
@@ -150,10 +154,10 @@ final class PipelinedWindowedNegacyclicRotatorSpan(
         previousSigns(index)
       )
     }
-    if ((bit + 1) % 2 == 0 || bit + 1 == offsetWidth) {
+    if ((layer + 1) % 2 == 0 || layer + 1 == offsetWidth) {
       values = values.map(value => RegEnable(value, io.enable))
       signs = signs.map(sign => RegEnable(sign, io.enable))
-      if (bit + 1 < offsetWidth) {
+      if (layer + 1 < offsetWidth) {
         stagedOffset = RegEnable(stagedOffset, io.enable)
       }
       completedAlignmentStages += 1

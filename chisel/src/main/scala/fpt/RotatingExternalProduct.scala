@@ -14,12 +14,15 @@ final class RotatingThreeBankExternalProductAccumulator(
     val config: ExternalProductConfig,
     val tagWidth: Int,
     val finalBankTileLanes: Int = 0,
-    val rowControlTileLanes: Int = 0
+    val rowControlTileLanes: Int = 0,
+    val distributedSubtileLanes: Int = 0
 ) extends Module {
   import TransformUtil._
 
   require(tagWidth >= 1)
   require(Set(0, 6).contains(finalBankTileLanes))
+  require(Set(0, 3).contains(distributedSubtileLanes))
+  require(distributedSubtileLanes == 0 || finalBankTileLanes == 6)
   require(Set(0, 6).contains(rowControlTileLanes))
   require(rowControlTileLanes == 0 || finalBankTileLanes == rowControlTileLanes)
   require(finalBankTileLanes == 0 || (config.outputLanes >= 2 && config.outputLanes % 2 == 0))
@@ -340,7 +343,8 @@ final class RotatingThreeBankExternalProductAccumulator(
         val lanes = math.min(finalBankTileLanes, config.outputLanes - firstLane)
         val width = lanes * 2 * config.accumulator.width
         val offset = firstLane * 2 * config.accumulator.width
-        val bank = Module(new FinalAccumulatorLocalBank(width, ultra = group == 0))
+        val bank = Module(new FinalAccumulatorLocalBank(width, ultra = group == 0,
+          distributedSubtileWidth = distributedSubtileLanes * 2 * config.accumulator.width))
         bank.suggestName(s"finalBankTiles_${group}_${component}_${firstLane / finalBankTileLanes}")
         bank.io.clock := clock
         bank.io.reset := reset.asBool

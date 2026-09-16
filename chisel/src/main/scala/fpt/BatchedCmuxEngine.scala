@@ -35,8 +35,22 @@ final case class BatchedCmuxEngineConfig(
     coefficientSlr0NarrowLink: Boolean = false,
     fixedRateInverseInputLink: Boolean = false,
     externalProductFinalBankTileLanes: Int = 0,
-    externalProductRowControlTileLanes: Int = 0
+    externalProductRowControlTileLanes: Int = 0,
+    externalProductDistributedSubtileLanes: Int = 0,
+    bankLocalAccumulatorInit: Boolean = false,
+    coefficientLaneTileLanes: Int = 0,
+    windowMsbFirst: Boolean = false,
+    minimalMetadataReset: Boolean = false
 ) {
+  require(!minimalMetadataReset || (coefficientLaneTileLanes == 4 && bankLocalAccumulatorInit))
+  require(Set(0, 4).contains(coefficientLaneTileLanes))
+  require(coefficientLaneTileLanes == 0 || (coefficientLocality &&
+    Set[BatchedCoefficientStorage](BatchedCoefficientStorage.PrecomputedWindowedReplicatedBanks,
+      BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks).contains(coefficientStorage)))
+  require(Set(0, 3).contains(externalProductDistributedSubtileLanes))
+  require(externalProductDistributedSubtileLanes == 0 || externalProductFinalBankTileLanes == 6)
+  require(!bankLocalAccumulatorInit || (coefficientLocality &&
+    coefficientStorage == BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks))
   require(!fixedRateInverseInputLink ||
     (coefficientSlr0NarrowLink && serializeInverseComponents &&
       useSynchronousExternalProductMemory && useRotatingThreeBankExternalProductMemory))
@@ -671,6 +685,8 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
     val loadContext = Input(UInt(contextWidth.W))
     val loadValid = Input(Bool())
     val loadReady = Output(Bool())
+    val loadDescriptor = if (config.bankLocalAccumulatorInit)
+      Some(Input(new AccumulatorInitDescriptor(coefficientConfig))) else None
     val load = Input(
       Vec(
         coefficientConfig.components,
@@ -783,7 +799,11 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
               config.coefficientPreprocessGuardBits,
             fieldSelectedScratchReads = config.fieldSelectedScratchReads,
             groupedScratchControls = config.groupedScratchControls,
-            coefficientLocality = config.coefficientLocality
+            coefficientLocality = config.coefficientLocality,
+            bankLocalAccumulatorInit = config.bankLocalAccumulatorInit,
+            coefficientLaneTileLanes = config.coefficientLaneTileLanes,
+            windowMsbFirst = config.windowMsbFirst,
+            minimalMetadataReset = config.minimalMetadataReset
           )
         )
       case BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks =>
@@ -796,7 +816,11 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
               config.coefficientPreprocessGuardBits,
             fieldSelectedScratchReads = config.fieldSelectedScratchReads,
             groupedScratchControls = config.groupedScratchControls,
-            coefficientLocality = config.coefficientLocality
+            coefficientLocality = config.coefficientLocality,
+            bankLocalAccumulatorInit = config.bankLocalAccumulatorInit,
+            coefficientLaneTileLanes = config.coefficientLaneTileLanes,
+            windowMsbFirst = config.windowMsbFirst,
+            minimalMetadataReset = config.minimalMetadataReset
           )
         )
       case BatchedCoefficientStorage.BitwiseReplicatedBanks =>
@@ -827,7 +851,8 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
       useRotatingThreeBankMemory =
         config.useRotatingThreeBankExternalProductMemory,
       finalBankTileLanes = config.externalProductFinalBankTileLanes,
-      rowControlTileLanes = config.externalProductRowControlTileLanes
+      rowControlTileLanes = config.externalProductRowControlTileLanes,
+      distributedSubtileLanes = config.externalProductDistributedSubtileLanes
     )
   )
 
@@ -835,6 +860,7 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
   coefficients.io.loadContext := io.loadContext
   coefficients.io.loadValid := io.loadValid
   coefficients.io.load := io.load
+  coefficients.io.loadDescriptor.foreach(_ := io.loadDescriptor.get)
   io.loadReady := coefficients.io.loadReady
   io.loadDone := coefficients.io.loadDone
   io.loadDoneContext := coefficients.io.loadDoneContext

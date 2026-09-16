@@ -37,6 +37,11 @@ case "$forward_permutation_arch" in
     *) echo "FPT_SGEN_FORWARD_PERMUTATION_ARCH must be legacy or banked_tiles or banked_local_control or commutator_tiles" >&2; exit 1 ;;
 esac
 forward_precompute_rom=${FPT_SGEN_FORWARD_PRECOMPUTE_ROM_ADD_SUB:-0}
+forward_twiddle_regions=${FPT_SGEN_FORWARD_TWIDDLE_REGION_ISLANDS:-32}
+case "$forward_twiddle_regions" in
+    8|32) ;;
+    *) echo "FPT_SGEN_FORWARD_TWIDDLE_REGION_ISLANDS must be 8 or 32" >&2; exit 1 ;;
+esac
 forward_twiddle_consumers=${FPT_SGEN_FORWARD_TWIDDLE_ISLAND_CONSUMERS:-0}
 case "$forward_twiddle_consumers" in
     0|4) ;;
@@ -49,8 +54,8 @@ forward_mux_control_max_bits=${FPT_SGEN_FORWARD_MUX_CONTROL_MAX_BITS:-0}
 inverse_mux_control_max_bits=${FPT_SGEN_INVERSE_MUX_CONTROL_MAX_BITS:-0}
 inverse_mux_island_bits=${FPT_SGEN_INVERSE_MUX_ISLAND_BITS:-0}
 case "$inverse_mux_island_bits" in
-    0|120) ;;
-    *) echo "FPT_SGEN_INVERSE_MUX_ISLAND_BITS must be 0 or 120" >&2; exit 1 ;;
+    0|30|120) ;;
+    *) echo "FPT_SGEN_INVERSE_MUX_ISLAND_BITS must be 0, 30 or 120" >&2; exit 1 ;;
 esac
 if [[ ! $inverse_mux_control_max_bits =~ ^[0-9]+$ ]] || (( inverse_mux_control_max_bits > 2147483647 )); then
     echo "FPT_SGEN_INVERSE_MUX_CONTROL_MAX_BITS must be a nonnegative 32-bit integer" >&2
@@ -202,6 +207,7 @@ if [[ $frame_control == token ]] && [[ $forward_permutation_arch != commutator_t
     exit 1
 fi
 SGEN_RAM_STYLE="$sgen_ram_style" \
+    SGEN_FPT_FORWARD_TWIDDLE_REGION_ISLANDS="$forward_twiddle_regions" \
     SGEN_FPT_FORWARD_TWIDDLE_ISLAND_CONSUMERS="$forward_twiddle_consumers" \
     SGEN_FPT_FRAME_CONTROL="$frame_control" \
     SGEN_PRECOMPUTE_ROM_ADD_SUB="$forward_precompute_rom" \
@@ -254,6 +260,7 @@ sed -n 's@^[[:space:]]*// COMMUTATOR_@@p' "$output_dir/forward.v" > "$output_dir
 {
     printf 'frame_control\t%s\n' "$frame_control"
     printf 'forward_precompute_rom_add_sub\t%s\n' "$forward_precompute_rom"
+    printf 'forward_twiddle_region_islands\t%s\n' "$forward_twiddle_regions"
     printf 'forward_twiddle_island_consumers\t%s\n' "$forward_twiddle_consumers"
     printf 'forward_mux_control_max_bits\t%s\n' "$forward_mux_control_max_bits"
     printf 'inverse_mux_control_max_bits\t%s\n' "$inverse_mux_control_max_bits"

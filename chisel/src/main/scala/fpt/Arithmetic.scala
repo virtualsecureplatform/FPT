@@ -74,9 +74,11 @@ private[fpt] final class PhysicalRowControlRegister(val width: Int = 2)
 }
 
 /** Narrow local controls must survive equivalent-register merging. */
-private[fpt] final class PhysicalControlRegister(val width: Int)
-    extends BlackBox(Map("WIDTH" -> IntParam(width))) with HasBlackBoxInline {
+private[fpt] final class PhysicalControlRegister(val width: Int, resetMask: Option[BigInt] = None)
+    extends BlackBox(Map("WIDTH" -> IntParam(width),
+      "RESET_MASK" -> IntParam(resetMask.getOrElse((BigInt(1) << width) - 1)))) with HasBlackBoxInline {
   require(width >= 1)
+  require(resetMask.forall(m => m >= 0 && m < (BigInt(1) << width)))
   override def desiredName: String = "FptPhysicalControlRegister"
   val io = IO(new Bundle {
     val clock = Input(Clock())
@@ -86,13 +88,13 @@ private[fpt] final class PhysicalControlRegister(val width: Int)
   })
   setInline("FptPhysicalControlRegister.sv",
     """(* KEEP_HIERARCHY = "yes" *) module FptPhysicalControlRegister #(
-      |  parameter integer WIDTH = 1
+      |  parameter integer WIDTH = 1,
+      |  parameter [WIDTH-1:0] RESET_MASK = {WIDTH{1'b1}}
       |)(input wire clock, input wire reset,
       |  input wire [WIDTH-1:0] inputData, output wire [WIDTH-1:0] outputData);
       |  (* DONT_TOUCH = "yes", KEEP = "yes", SHREG_EXTRACT = "no" *) reg [WIDTH-1:0] value;
       |  always @(posedge clock) begin
-      |    if (reset) value <= 0;
-      |    else value <= inputData;
+      |    value <= reset ? (inputData & ~RESET_MASK) : inputData;
       |  end
       |  assign outputData = value;
       |endmodule
@@ -227,11 +229,13 @@ private[fpt] final class FinalAccumulatorDistributedBank(width: Int)
 /** Final-image slice with controls captured at existing commit/drain edges.
   * No payload stage is added. Only these narrow control FFs are preserved.
   */
-private[fpt] final class FinalAccumulatorLocalBank(width: Int, ultra: Boolean)
+private[fpt] final class FinalAccumulatorLocalBank(width: Int, ultra: Boolean, distributedSubtileWidth: Int = 0)
     extends BlackBox(Map("WIDTH" -> IntParam(width))) with HasBlackBoxInline {
   require(width >= 1)
   override def desiredName: String =
-    if (ultra) "FptFinalAccumulatorLocalUltraBank" else "FptFinalAccumulatorLocalDistributedBank"
+    if (ultra) "FptFinalAccumulatorLocalUltraBank"
+    else if (distributedSubtileWidth > 0) "FptFinalAccumulatorLocalDistributedSubtiledBank"
+    else "FptFinalAccumulatorLocalDistributedBank"
   val io = IO(new Bundle {
     val clock = Input(Clock())
     val reset = Input(Bool())
@@ -246,8 +250,10 @@ private[fpt] final class FinalAccumulatorLocalBank(width: Int, ultra: Boolean)
   private val readState = if (ultra) "" else s"$keep reg [1:0] readAddressCut;"
   private val readOperation = if (ultra) "outputData <= memory[readAddress];" else "readAddressCut <= readAddress;"
   private val readAssignment = if (ultra) "" else "assign outputData = memory[readAddressCut];"
-  setInline(s"$desiredName.sv", s"""(* KEEP_HIERARCHY = "yes" *)
-    |module $desiredName #(parameter integer WIDTH = 1)(
+  private val split = !ultra && distributedSubtileWidth > 0
+  private val leafName = if (split) "FptFinalAccumulatorLocalDistributedChild" else desiredName
+  private val leafRtl = s"""(* KEEP_HIERARCHY = "yes" *)
+    |module $leafName #(parameter integer WIDTH = 1)(
     |  input wire clock, reset, pendingWrite,
     |  input wire [1:0] pendingWriteAddress,
     |  input wire [WIDTH-1:0] inputData,
@@ -276,7 +282,22 @@ private[fpt] final class FinalAccumulatorLocalBank(width: Int, ultra: Boolean)
     |  end
     |  $readAssignment
     |endmodule
-    |""".stripMargin)
+    |""".stripMargin
+  private val wrapper = if (!split) "" else s"""(* KEEP_HIERARCHY="yes" *) module $desiredName #(parameter integer WIDTH=1)(
+    |input wire clock, reset, pendingWrite, nextReadEnable,
+    |input wire [1:0] pendingWriteAddress, nextReadAddress,
+    |input wire [WIDTH-1:0] inputData, output wire [WIDTH-1:0] outputData);
+    |genvar offset;
+    |generate for (offset=0; offset<WIDTH; offset=offset+$distributedSubtileWidth) begin: subtiles
+    |  localparam integer W = (WIDTH-offset < $distributedSubtileWidth) ? WIDTH-offset : $distributedSubtileWidth;
+    |  $leafName #(.WIDTH(W)) bank(
+    |    .clock(clock), .reset(reset), .pendingWrite(pendingWrite), .pendingWriteAddress(pendingWriteAddress),
+    |    .nextReadEnable(nextReadEnable), .nextReadAddress(nextReadAddress),
+    |    .inputData(inputData[offset +: W]), .outputData(outputData[offset +: W]));
+    |end endgenerate
+    |endmodule
+    |""".stripMargin
+  setInline(s"$desiredName.sv", leafRtl + wrapper)
 }
 
 final class GaussTwiddle(val twiddleWidth: Int) extends Bundle {

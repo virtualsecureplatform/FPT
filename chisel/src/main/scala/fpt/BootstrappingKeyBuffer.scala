@@ -8,12 +8,20 @@ final case class BootstrappingKeyBufferConfig(
     batchContexts: Int,
     domainDimension: Int,
     loadLanes: Int,
-    bankCount: Int = 2
+    bankCount: Int = 2,
+    writeTileLanes: Int = 0,
+    minimalMetadataReset: Boolean = false
 ) {
   require(batchContexts >= 2)
   require(domainDimension >= 1)
   require(loadLanes >= 1)
   require(bankCount >= 2)
+  require(!minimalMetadataReset || writeTileLanes == 4)
+  require(Set(0, 4).contains(writeTileLanes))
+  val effectiveWriteTileLanes: Int = if (writeTileLanes == 0) loadLanes
+    else math.min(writeTileLanes, loadLanes)
+  require(loadLanes % effectiveWriteTileLanes == 0)
+  val writeTiles: Int = loadLanes / effectiveWriteTileLanes
 
   val complexValuesPerRead: Int =
     externalProduct.outputComponents * externalProduct.inputLanes
@@ -102,10 +110,10 @@ final class BootstrappingKeyPingPongBuffer(
     )
   })
 
-  val memory = SyncReadMem(
+  val memory = if (config.writeTileLanes == 0) Some(SyncReadMem(
     memoryDepth,
     Vec(config.loadGroupsPerRead, UInt(loadWordWidth.W))
-  )
+  )) else None
 
   val bankValid = RegInit(VecInit(Seq.fill(config.bankCount)(false.B)))
   val bankIndex = Reg(Vec(config.bankCount, UInt(config.dimensionWidth.W)))
@@ -131,6 +139,13 @@ final class BootstrappingKeyPingPongBuffer(
     loadGroup === (config.loadGroupsPerRead - 1).U &&
     loadWord === (config.wordsPerCoefficient - 1).U
 
+  // Acceptance advances the stream; only physical commit publishes a bank.
+  val commitValid = if (config.writeTileLanes > 0) RegNext(loadFire, false.B) else loadFire
+  val commitFinal = if (config.writeTileLanes > 0) RegNext(completingLoad, false.B) else completingLoad
+  val commitBank = if (config.writeTileLanes > 0) RegEnable(loadBank, loadFire) else loadBank
+  val commitIndex = if (config.writeTileLanes > 0) RegEnable(loadIndex, loadFire) else loadIndex
+  val commitWord = if (config.writeTileLanes > 0) RegEnable(loadWord, loadFire) else loadWord
+
   val responseValid = RegInit(false.B)
   val responseBank = RegInit(0.U(bankWidth.W))
   val responseIndex = RegInit(0.U(config.dimensionWidth.W))
@@ -146,13 +161,15 @@ final class BootstrappingKeyPingPongBuffer(
   for (bank <- 0 until config.bankCount) {
     bankFree(bank) := !bankValid(bank) &&
       !(loading && loadBank === bank.U) &&
+      (if (config.writeTileLanes > 0) !(commitValid && commitBank === bank.U) else true.B) &&
       !(responseValid && responseBank === bank.U && !responseFire)
   }
   val residentDuplicate = bankValid.zip(bankIndex).map {
     case (valid, index) => valid && index === io.loadIndex
   }.reduce(_ || _)
   val duplicateLoad = residentDuplicate ||
-    (loading && loadIndex === io.loadIndex)
+    (loading && loadIndex === io.loadIndex) ||
+    (if (config.writeTileLanes > 0) commitValid && commitIndex === io.loadIndex else false.B)
   val selectedLoadBank = PriorityEncoder(bankFree)
   io.loadStartReady := (!loading || completingLoad) &&
     bankFree.asUInt.orR &&
@@ -192,16 +209,12 @@ final class BootstrappingKeyPingPongBuffer(
     loadBank * config.wordsPerCoefficient.U + loadWord
   )(memoryAddressWidth - 1, 0)
   when(loadFire) {
-    memory.write(loadAddress, loadWriteData, loadWriteMask)
+    memory.foreach(_.write(loadAddress, loadWriteData, loadWriteMask))
     when(loadGroup === (config.loadGroupsPerRead - 1).U) {
       loadGroup := 0.U
       when(loadWord === (config.wordsPerCoefficient - 1).U) {
         loading := loadStartFire
         loadWord := 0.U
-        bankValid(loadBank) := true.B
-        bankReadCount(loadBank) := 0.U
-        loadDone := true.B
-        loadDoneIndex := loadIndex
       }.otherwise {
         loadWord := loadWord + 1.U
       }
@@ -210,14 +223,21 @@ final class BootstrappingKeyPingPongBuffer(
     }
   }
 
+  when(commitFinal) {
+    bankValid(commitBank) := true.B
+    bankReadCount(commitBank) := 0.U
+    loadDone := true.B
+    loadDoneIndex := commitIndex
+  }
+
   val inputReadWord = (
     io.readRow * external.inputFrameBeats.U + io.readBeat
   )(wordWidth - 1, 0)
   val inputMatchingBank = Wire(Vec(config.bankCount, Bool()))
   for (bank <- 0 until config.bankCount) {
     val resident = bankValid(bank) && bankIndex(bank) === io.readIndex
-    val completing = completingLoad && loadBank === bank.U &&
-      loadIndex === io.readIndex && loadWord =/= inputReadWord
+    val completing = commitFinal && commitBank === bank.U &&
+      commitIndex === io.readIndex && commitWord =/= inputReadWord
     inputMatchingBank(bank) := resident || completing
   }
 
@@ -235,7 +255,23 @@ final class BootstrappingKeyPingPongBuffer(
   val inputReadAddress = (
     selectedInputBank * config.wordsPerCoefficient.U + inputReadWord
   )(memoryAddressWidth - 1, 0)
-  val readData = memory.read(inputReadAddress, inputRequestFire)
+  val readData = if (config.writeTileLanes == 0) {
+    memory.get.read(inputReadAddress, inputRequestFire)
+  } else {
+    val tileWidth = config.effectiveWriteTileLanes * complexWidth
+    val tiles = (0 until config.writeTiles).map { group =>
+      val tile = Module(new KeyWriteTile(memoryDepth, config.loadGroupsPerRead, tileWidth, config.minimalMetadataReset))
+      tile.suggestName(s"keyWriteTile_$group")
+      tile.io.writeData := packedLoad((group + 1) * tileWidth - 1, group * tileWidth)
+      tile.io.writeAddress := loadAddress
+      tile.io.writeMask := VecInit(loadWriteMask.map(_ && loadFire)).asUInt
+      tile.io.readAddress := inputReadAddress
+      tile.io.readEnable := inputRequestFire
+      tile.io.readData
+    }
+    VecInit((0 until config.loadGroupsPerRead).map(group =>
+      Cat(tiles.reverse.map(_(group)))))
+  }
 
   when(io.readRequestValid) {
     assert(

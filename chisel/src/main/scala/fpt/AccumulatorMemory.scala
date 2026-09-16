@@ -50,8 +50,12 @@ final case class ReplicatedAccumulatorBanksConfig(
 final class ReplicatedAccumulatorBanks(
     val config: ReplicatedAccumulatorBanksConfig,
     val replicateReads: Boolean = true,
-    val localWriteControls: Boolean = false
+    val localWriteControls: Boolean = false,
+    val bankLocalInitialization: Boolean = false,
+    val minimalMetadataReset: Boolean = false
 ) extends Module {
+  require(!minimalMetadataReset || localWriteControls)
+  require(!bankLocalInitialization || (!replicateReads && localWriteControls))
   private val coefficient = config.coefficient
   private val contextWidth = config.contextWidth
   private val halfBeatWidth = config.halfBeatWidth
@@ -65,6 +69,8 @@ final class ReplicatedAccumulatorBanks(
     val loadContext = Input(UInt(contextWidth.W))
     val loadValid = Input(Bool())
     val loadReady = Output(Bool())
+    val loadDescriptor = if (bankLocalInitialization)
+      Some(Input(new AccumulatorInitDescriptor(coefficient))) else None
     val load = Input(
       Vec(
         coefficient.components,
@@ -179,9 +185,13 @@ final class ReplicatedAccumulatorBanks(
   val loadCommitContext = RegEnable(loadContextReg, loadFire)
   val loadCommitHighHalf = RegEnable(loadHighHalf, loadFire)
   val loadCommitFinal = RegEnable(loadFinal, loadFire)
-  val loadCommitData = Reg(chiselTypeOf(io.load))
-  when(loadFire) {
-    loadCommitData := io.load
+  val loadCommitData = if (bankLocalInitialization) None else {
+    val data = Reg(chiselTypeOf(io.load))
+    when(loadFire) { data := io.load }
+    Some(data)
+  }
+  if (bankLocalInitialization) {
+    assert(io.loadValid === loadActive, "bank-local initialization requires an uninterrupted burst")
   }
 
   when(io.loadStart) {
@@ -474,8 +484,8 @@ final class ReplicatedAccumulatorBanks(
   val loadWords = Seq.tabulate(coefficient.inverseLanes) { lane =>
     val word = Wire(wordType)
     for (component <- 0 until coefficient.components) {
-      word(2 * component) := loadCommitData(component)(lane)
-      word(2 * component + 1) := loadCommitData(component)(lane)
+      word(2 * component) := loadCommitData.map(_(component)(lane)).getOrElse(0.U(coefficient.torusWidth.W))
+      word(2 * component + 1) := loadCommitData.map(_(component)(lane)).getOrElse(0.U(coefficient.torusWidth.W))
     }
     word
   }
@@ -513,12 +523,30 @@ final class ReplicatedAccumulatorBanks(
     0.U(contextWidth.W),
     updateWriteValid
   )
-  val updateCommitWords = Reg(Vec(coefficient.inverseLanes, wordType))
+  val updateCommitWords = if (bankLocalInitialization) Wire(Vec(coefficient.inverseLanes, wordType))
+    else Reg(Vec(coefficient.inverseLanes, wordType))
   // updateCommitValid qualifies the following memory write. Keeping this
   // wide data boundary unconditional prevents updateWriteValid from becoming
   // a clock-enable broadcast over every inverse lane (about 4K loads on U280).
-  for (lane <- 0 until coefficient.inverseLanes) {
-    updateCommitWords(lane) := updatedWords(lane)
+  if (bankLocalInitialization) {
+    for (first <- 0 until coefficient.inverseLanes by 4) {
+      val lanes = math.min(4, coefficient.inverseLanes - first)
+      val group = Module(new BankLocalAccumulatorInitGroup(config, first, lanes))
+      group.suggestName(s"bankLocalInit_${first / 4}")
+      group.io.clock := clock
+      group.io.reset := reset.asBool
+      group.io.loadStart := io.loadStart
+      group.io.descriptor := io.loadDescriptor.get
+      group.io.updateData := Cat((first until first + lanes).reverse.map(updatedWords(_).asUInt))
+      val words = group.io.writeData.asTypeOf(Vec(lanes, wordType))
+      for (lane <- 0 until lanes) updateCommitWords(first + lane) := words(lane)
+      assert(group.io.active === loadActive, "bank-local load activity mismatch")
+      when(loadActive) { assert(group.io.beat === loadBeat, "bank-local load beat mismatch") }
+    }
+  } else {
+    for (lane <- 0 until coefficient.inverseLanes) {
+      updateCommitWords(lane) := updatedWords(lane)
+    }
   }
   when(io.loadStart) {
     assert(
@@ -554,11 +582,12 @@ final class ReplicatedAccumulatorBanks(
       input.mask(field) := Mux(loadFire, halfSelected, updateWriteValid)
     }
     Seq.tabulate((coefficient.inverseLanes + 3) / 4) { group =>
-      val cut = Module(new PhysicalControlRegister(input.getWidth))
+      val cut = Module(new PhysicalControlRegister(input.getWidth,
+        if (minimalMetadataReset) Some((BigInt(1) << config.wordFields) - 1) else None))
       cut.suggestName(s"localWriteControl_$group")
       cut.io.clock := clock
       cut.io.reset := reset.asBool
-      cut.io.inputData := input.asUInt
+      cut.io.inputData := Cat(input.address, input.isLoad, input.mask.asUInt)
       val output = cut.io.outputData.asTypeOf(new LocalWriteControl)
       assert(output.mask.asUInt.orR === memoryWriteEnable,
         "local write enable changed commit timing")
@@ -578,7 +607,7 @@ final class ReplicatedAccumulatorBanks(
   for (lane <- 0 until coefficient.inverseLanes) {
     val writeIsLoad = if (localWriteControls) localControls(lane / 4).isLoad else loadCommitValid
     val writeAddress = if (localWriteControls) localControls(lane / 4).address else memoryWriteAddress
-    val memoryWriteWord = Mux(
+    val memoryWriteWord = if (bankLocalInitialization) updateCommitWords(lane) else Mux(
       writeIsLoad,
       loadWords(lane),
       updateCommitWords(lane)

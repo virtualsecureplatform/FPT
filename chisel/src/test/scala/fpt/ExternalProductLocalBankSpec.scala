@@ -5,7 +5,7 @@ import chiseltest._
 import chiseltest.simulator.VerilatorBackendAnnotation
 import org.scalatest.flatspec.AnyFlatSpec
 
-private class ExternalProductLocalBankMiter(lanes: Int, localRows: Boolean) extends Module {
+private class ExternalProductLocalBankMiter(lanes: Int, localRows: Boolean, subtiles: Int) extends Module {
   private val config = ExternalProductConfig(
     points = lanes * 8, inputLanes = lanes * 2, outputLanes = lanes,
     rows = 4, outputComponents = 2, spectrum = FixedFormat(18, 12),
@@ -21,7 +21,7 @@ private class ExternalProductLocalBankMiter(lanes: Int, localRows: Boolean) exte
   })
   val reference = Module(new RotatingThreeBankExternalProductAccumulator(config, 6))
   val candidate = Module(new RotatingThreeBankExternalProductAccumulator(config, 6, 6,
-    if (localRows) 6 else 0))
+    if (localRows) 6 else 0, subtiles))
   for (dut <- Seq(reference, candidate)) {
     dut.io.inputValid := io.valid
     dut.io.inputFirst := io.first
@@ -48,9 +48,9 @@ private class ExternalProductLocalBankMiter(lanes: Int, localRows: Boolean) exte
 
 final class ExternalProductLocalBankSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "bank-local External Product controls"
-  for (lanes <- Seq(8, 16); localRows <- Seq(false, true)) {
-    it should s"match every cycle with $lanes lanes, localRows=$localRows, overlapping images, gaps and reset" in {
-      test(new ExternalProductLocalBankMiter(lanes, localRows)).withAnnotations(Seq(VerilatorBackendAnnotation, PaperVerilator.flags)) { dut =>
+  for (lanes <- Seq(8, 16); localRows <- Seq(false, true); subtiles <- Seq(0, 3)) {
+    it should s"match every cycle with $lanes lanes, localRows=$localRows, subtiles=$subtiles, overlapping images, gaps and reset" in {
+      test(new ExternalProductLocalBankMiter(lanes, localRows, subtiles)).withAnnotations(Seq(VerilatorBackendAnnotation, PaperVerilator.flags)) { dut =>
         val random = new scala.util.Random(0x541L + lanes)
         def signed(width: Int): BigInt = {
           val bits = BigInt(width, random)

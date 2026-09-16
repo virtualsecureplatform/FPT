@@ -70,7 +70,17 @@ proc fpt_digit_registers {role} {
   }
   return $payload
 }
-proc fpt_check_registered_links {report {kernel 1} {placed 0} {architecture paired_inverse}} {
+proc fpt_check_scratch_selector_count {selectors laneTileLanes} {
+  switch -- $laneTileLanes {
+    0 {set expected 96}
+    4 {set expected 192}
+    default {error "unsupported coefficient lane tile width: $laneTileLanes"}
+  }
+  if {[llength $selectors] != $expected} {
+    error "scratch selector FF count [llength $selectors] != $expected (lane tile width $laneTileLanes)"
+  }
+}
+proc fpt_check_registered_links {report {kernel 1} {placed 0} {architecture paired_inverse} {laneTileLanes 0}} {
   if {$architecture ni {paired_inverse coefficient_slr0_narrow}} {error "unknown link architecture: $architecture"}
   set out [open $report w]
   puts $out "kind\tsource_slr\tdestination_slr\tpayload_bits\tlaguna_tx_rx_pairs"
@@ -129,7 +139,7 @@ proc fpt_check_registered_links {report {kernel 1} {placed 0} {architecture pair
     # 16 groups x (7 address + 1 load + 4 mask) bits at the U280 shape.
     if {[llength $controls] != 192} {error "local write-control FF count [llength $controls] != 192"}
     set selectors [fpt_locality_registers selector]
-    if {[llength $selectors] != 96} {error "scratch selector FF count [llength $selectors] != 96"}
+    fpt_check_scratch_selector_count $selectors $laneTileLanes
     set fields [fpt_locality_registers field]
     if {[llength $fields] != 9216} {error "scratch field FF count [llength $fields] != 9216"}
     foreach group [list $controls $selectors] {

@@ -12,10 +12,11 @@ final class PrecomputedWindowedCoefficientStoreSpec
     extends AnyFlatSpec
     with ChiselScalatestTester
     with Matchers {
+  private val testLanes = sys.env.getOrElse("FPT_TEST_COEFFICIENT_LANES", "2").toInt
   private val config = CmuxCoefficientConfig(
-    polynomialSize = 32,
-    forwardLanes = 4,
-    inverseLanes = 2,
+    polynomialSize = testLanes * 16,
+    forwardLanes = testLanes * 2,
+    inverseLanes = testLanes,
     components = 2,
     levels = 2,
     baseBits = 3,
@@ -69,7 +70,9 @@ final class PrecomputedWindowedCoefficientStoreSpec
   for (exponentBase <- 0 until 2 * config.polynomialSize by contexts) {
   it should s"preserve data and cycles for exponents $exponentBase through ${exponentBase + contexts - 1}" in {
     test(
-      if (sys.env.get("FPT_U280_COEFFICIENT_LOCALITY").contains("1")) {
+      if (sys.env.get("FPT_U280_COEFFICIENT_LANE_TILE_LANES").contains("4")) {
+        new CoefficientLaneTileMiter(config, contexts, preprocessGuardBits)
+      } else if (sys.env.get("FPT_U280_COEFFICIENT_LOCALITY").contains("1")) {
         new PrecomputedWindowedBatchedCmuxCoefficientStore(
           config, contexts,
           bufferedSingleAccumulator = sys.env.get("FPT_TEST_SINGLE_ACCUMULATOR").contains("1"),
@@ -114,6 +117,13 @@ final class PrecomputedWindowedCoefficientStoreSpec
       dut.clock.step(2)
       dut.reset.poke(false.B)
 
+      if (sys.env.get("FPT_U280_MINIMAL_METADATA_RESET").contains("1") && exponentBase == 0) {
+        dut.io.loadContext.poke(0.U); dut.io.loadStart.poke(true.B); dut.clock.step()
+        dut.io.loadStart.poke(false.B); dut.io.loadValid.poke(true.B); dut.clock.step(2)
+        dut.reset.poke(true.B); dut.clock.step(2)
+        dut.io.loadValid.poke(false.B); dut.reset.poke(false.B)
+      }
+      def loadAll(): Unit = {
       for (context <- 0 until contexts) {
         dut.io.loadContext.poke(context.U)
         dut.io.loadStart.poke(true.B)
@@ -136,6 +146,15 @@ final class PrecomputedWindowedCoefficientStoreSpec
         dut.clock.step()
       }
 
+      }
+      loadAll()
+      if (sys.env.get("FPT_U280_MINIMAL_METADATA_RESET").contains("1") && exponentBase == 0) {
+        dut.io.commandContext.poke(0.U); dut.io.exponent.poke((config.polynomialSize - 1).U)
+        dut.io.commandValid.poke(true.B); dut.clock.step()
+        dut.io.commandValid.poke(false.B); dut.clock.step(7)
+        dut.reset.poke(true.B); dut.clock.step(2); dut.reset.poke(false.B)
+        loadAll()
+      }
       val exponents = Seq.tabulate(contexts)(exponentBase + _)
       var cycle = 0
       var pairCount = 0

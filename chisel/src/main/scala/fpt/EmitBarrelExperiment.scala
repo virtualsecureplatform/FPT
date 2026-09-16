@@ -107,11 +107,18 @@ private[fpt] object PaperU280BufferedBarrelConfig {
         coefficientSlr0NarrowLink = enabled("FPT_U280_COEFFICIENT_SLR0_NARROW_LINK"),
         fixedRateInverseInputLink = enabled("FPT_U280_FIXED_RATE_INVERSE_INPUT_LINK"),
         externalProductFinalBankTileLanes = sys.env.getOrElse("FPT_U280_EP_FINAL_BANK_TILE_LANES", "0").toInt,
-        externalProductRowControlTileLanes = sys.env.getOrElse("FPT_U280_EP_ROW_CONTROL_TILE_LANES", "0").toInt
+        externalProductRowControlTileLanes = sys.env.getOrElse("FPT_U280_EP_ROW_CONTROL_TILE_LANES", "0").toInt,
+        externalProductDistributedSubtileLanes = sys.env.getOrElse("FPT_U280_EP_DISTRIBUTED_SUBTILE_LANES", "0").toInt,
+        bankLocalAccumulatorInit = enabled("FPT_U280_BANK_LOCAL_ACCUMULATOR_INIT"),
+        coefficientLaneTileLanes = sys.env.getOrElse("FPT_U280_COEFFICIENT_LANE_TILE_LANES", "0").toInt,
+        windowMsbFirst = enabled("FPT_U280_WINDOW_MSB_FIRST"),
+        minimalMetadataReset = enabled("FPT_U280_MINIMAL_METADATA_RESET")
       ),
       domainDimension
     )
-    BufferedBlindRotateConfig(blindRotate, PaperSetII.keyLoadLanes)
+    BufferedBlindRotateConfig(blindRotate, PaperSetII.keyLoadLanes,
+      keyWriteTileLanes = sys.env.getOrElse("FPT_U280_KEY_WRITE_TILE_LANES", "0").toInt,
+      minimalMetadataReset = enabled("FPT_U280_MINIMAL_METADATA_RESET"))
   }
 }
 

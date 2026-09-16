@@ -454,12 +454,20 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     val coefficientPreprocessGuardBits: Option[Int] = None,
     val fieldSelectedScratchReads: Boolean = false,
     val groupedScratchControls: Boolean = false,
-    val coefficientLocality: Boolean = false
-) extends BatchedCmuxCoefficientStoreBase(config, batchContexts) {
+    val coefficientLocality: Boolean = false,
+    override val bankLocalAccumulatorInit: Boolean = false,
+    val coefficientLaneTileLanes: Int = 0,
+    val windowMsbFirst: Boolean = false,
+    val minimalMetadataReset: Boolean = false
+) extends BatchedCmuxCoefficientStoreBase(config, batchContexts, bankLocalAccumulatorInit) {
   import TransformUtil._
 
   require(batchContexts >= 2)
   require(!coefficientLocality || !fieldSelectedScratchReads)
+  require(!minimalMetadataReset || (coefficientLaneTileLanes == 4 && coefficientLocality))
+  require(Set(0, 4).contains(coefficientLaneTileLanes))
+  require(coefficientLaneTileLanes == 0 || coefficientLocality)
+  private val selectorGroupLanes = if (coefficientLaneTileLanes > 0) coefficientLaneTileLanes else 8
   require(config.windowedRotator)
   coefficientPreprocessGuardBits.foreach { guardBits =>
     require(guardBits >= 0 && guardBits < config.remainingBits)
@@ -542,13 +550,16 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     new ReplicatedAccumulatorBanks(
       memoryConfig,
       replicateReads = !bufferedSingleAccumulator,
-      localWriteControls = coefficientLocality
+      localWriteControls = coefficientLocality,
+      bankLocalInitialization = bankLocalAccumulatorInit,
+      minimalMetadataReset = minimalMetadataReset
     )
   )
   memory.io.loadStart := io.loadStart
   memory.io.loadContext := io.loadContext
   memory.io.loadValid := io.loadValid
   memory.io.load := io.load
+  memory.io.loadDescriptor.foreach(_ := io.loadDescriptor.get)
   io.loadReady := memory.io.loadReady
   io.loadDone := memory.io.loadDone
   io.loadDoneContext := memory.io.loadDoneContext
@@ -1125,8 +1136,8 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
       (0 until newSpanBlocks).map(p => s"span$p" -> preSpanHalves(p + 1)) ++
       (0 until outputBlocks).map(p => s"current$p" -> preHalf)
     sources.map { case (name, half) =>
-      Seq.tabulate((blockLanes + 7) / 8) { group =>
-        val cut = Module(new PhysicalControlRegister(componentWidth + 1))
+      Seq.tabulate((blockLanes + selectorGroupLanes - 1) / selectorGroupLanes) { group =>
+        val cut = Module(new PhysicalControlRegister(componentWidth + 1, if (minimalMetadataReset) Some(BigInt(0)) else None))
         cut.suggestName(s"scratchSelector_${name}_$group")
         cut.io.clock := clock
         cut.io.reset := reset.asBool
@@ -1137,7 +1148,7 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   } else Seq.empty
   private def candidateScratchField(port: Int, lane: Int): UInt = {
     if (coefficientLocality) {
-      val select = localSelectors(2 + port)(lane / 8)
+      val select = localSelectors(2 + port)(lane / selectorGroupLanes)
       scratchField(port, lane, select(componentWidth, 1), select(0))
     } else {
       val half = if (port < newSpanBlocks) candidateSpanHalves(port + 1)
@@ -1150,15 +1161,10 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   // without restoring the eliminated fifth scratch read. At a component
   // boundary, the low stream continues from the prior high tail and vice
   // versa; the first component starts both halves from the packed prime word.
-  val rollingSpanHeads = Reg(
-    Vec(
-      halfCount,
-      Vec(
-        config.components,
-        Vec(blockLanes, UInt(coefficientPreprocessWidth.W))
-      )
-    )
-  )
+  val rollingHeadType = Vec(halfCount,
+    Vec(config.components, Vec(blockLanes, UInt(coefficientPreprocessWidth.W))))
+  val rollingSpanHeads = if (coefficientLaneTileLanes > 0) Wire(rollingHeadType)
+    else Reg(rollingHeadType)
   val candidateFirstBeat = candidateBeat === 0.U
   val candidateFirstComponentBeat = candidateComponent === 0.U &&
     candidateFirstBeat
@@ -1181,41 +1187,92 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
       }
     }
   )
-  val deferredFirstLowTail = Reg(
-    Vec(blockLanes, UInt(coefficientPreprocessWidth.W))
-  )
-  val deferredFirstLowTailValid = RegInit(false.B)
-  val deferFirstLowTail = candidateFirstBeat &&
-    candidateComponent =/= 0.U && !candidateHalf
-  when(candidateValid) {
-    when(deferFirstLowTail) {
-      for (lane <- 0 until blockLanes) {
-        deferredFirstLowTail(lane) :=
-          candidateScratchField(newSpanBlocks - 1, lane)
-      }
-      deferredFirstLowTailValid := true.B
-    }.otherwise {
-      for (component <- 0 until config.components) {
-        for (lane <- 0 until blockLanes) {
-          rollingSpanHeads(candidateHalf.asUInt)(component)(lane) :=
-            scratchField(newSpanBlocks - 1, lane, component.U,
-              if (coefficientLocality) localSelectors(2 + newSpanBlocks - 1)(lane / 8)(0)
-              else candidateSpanHalves(spanBlocks - 1))
-        }
+  if (coefficientLaneTileLanes > 0) {
+    val preValid = ShiftRegister(selectionValid, scratchReadCycles - 1, false.B, true.B)
+    val preHalf = ShiftRegister(selectionHalf, scratchReadCycles - 1)
+    val preComponent = ShiftRegister(selectionComponent, scratchReadCycles - 1)
+    val preBeat = ShiftRegister(selectionBeat, scratchReadCycles - 1)
+    val preDefer = preBeat === 0.U && preComponent =/= 0.U && !preHalf
+    val preTailWriteHalf = ShiftRegister(spanBlockIndices(newSpanBlocks)(blockIndexWidth - 1),
+      scratchReadCycles - 1)
+    val normal = preValid && !preDefer
+    val commands = VecInit(Seq(normal && !preHalf, normal && preHalf,
+      preValid && preDefer) ++ (1 until config.components).map(c =>
+      preValid && preBeat === 0.U && preHalf && preComponent =/= 0.U &&
+        preComponent === c.U))
+    for (first <- 0 until blockLanes by coefficientLaneTileLanes) {
+      val lanes = math.min(coefficientLaneTileLanes, blockLanes - first)
+      val tile = Module(new CoefficientRollingHeadTile(lanes,
+        coefficientPreprocessWidth, config.components))
+      tile.suggestName(s"rollingHeadTile_${first / coefficientLaneTileLanes}")
+      tile.io.clock := clock
+      tile.io.reset := reset.asBool
+      tile.io.commandInput := commands.asUInt
+      // Tail readout and rolling-cache writes are distinct consumers. Sharing
+      // their half selector would still drive 288 mux inputs per four lanes.
+      val writeHalf = Module(new PhysicalControlRegister(1, if (minimalMetadataReset) Some(BigInt(0)) else None))
+      writeHalf.suggestName(s"scratchTailWriteHalf_${first / coefficientLaneTileLanes}")
+      writeHalf.io.clock := clock
+      writeHalf.io.reset := reset.asBool
+      writeHalf.io.inputData := preTailWriteHalf
+      tile.io.normalTail := VecInit((0 until config.components).map(c =>
+        VecInit((first until first + lanes).map(lane =>
+          scratchField(newSpanBlocks - 1, lane, c.U, writeHalf.io.outputData(0)))))).asUInt
+      tile.io.deferredInput := VecInit((first until first + lanes).map(lane =>
+        candidateScratchField(newSpanBlocks - 1, lane))).asUInt
+      val heads = tile.io.heads.asTypeOf(Vec(halfCount,
+        Vec(config.components, Vec(lanes, UInt(coefficientPreprocessWidth.W)))))
+      for (half <- 0 until halfCount; c <- 0 until config.components;
+           lane <- 0 until lanes) {
+        rollingSpanHeads(half)(c)(first + lane) := heads(half)(c)(lane)
       }
     }
-    when(
-      candidateFirstBeat && candidateComponent =/= 0.U && candidateHalf
-    ) {
-      assert(
-        deferredFirstLowTailValid,
-        "component boundary lost its deferred low-half tail"
-      )
-      for (lane <- 0 until blockLanes) {
-        rollingSpanHeads(0)(candidateComponent)(lane) :=
-          deferredFirstLowTail(lane)
+    val deferredValid = RegInit(false.B)
+    when(candidateValid && candidateFirstBeat && candidateComponent =/= 0.U) {
+      when(!candidateHalf) {
+        deferredValid := true.B
+      }.otherwise {
+        assert(deferredValid, "component boundary lost its deferred low-half tail")
+        deferredValid := false.B
       }
-      deferredFirstLowTailValid := false.B
+    }
+  } else {
+    val deferredFirstLowTail = Reg(
+      Vec(blockLanes, UInt(coefficientPreprocessWidth.W))
+    )
+    val deferredFirstLowTailValid = RegInit(false.B)
+    val deferFirstLowTail = candidateFirstBeat &&
+      candidateComponent =/= 0.U && !candidateHalf
+    when(candidateValid) {
+      when(deferFirstLowTail) {
+        for (lane <- 0 until blockLanes) {
+          deferredFirstLowTail(lane) :=
+            candidateScratchField(newSpanBlocks - 1, lane)
+        }
+        deferredFirstLowTailValid := true.B
+      }.otherwise {
+        for (component <- 0 until config.components) {
+          for (lane <- 0 until blockLanes) {
+            rollingSpanHeads(candidateHalf.asUInt)(component)(lane) :=
+              scratchField(newSpanBlocks - 1, lane, component.U,
+                if (coefficientLocality) localSelectors(2 + newSpanBlocks - 1)(lane / selectorGroupLanes)(0)
+                else candidateSpanHalves(spanBlocks - 1))
+          }
+        }
+      }
+      when(
+        candidateFirstBeat && candidateComponent =/= 0.U && candidateHalf
+      ) {
+        assert(
+          deferredFirstLowTailValid,
+          "component boundary lost its deferred low-half tail"
+        )
+        for (lane <- 0 until blockLanes) {
+          rollingSpanHeads(0)(candidateComponent)(lane) :=
+            deferredFirstLowTail(lane)
+        }
+        deferredFirstLowTailValid := false.B
+      }
     }
   }
   val candidateCurrent = VecInit((0 until outputBlocks).flatMap { block =>
@@ -1233,24 +1290,39 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   // No scratch/prime storage is needed beyond this first capture, so source
   // ownership and the deferred-tail schedule retain their original timing.
   private def fieldCapture(name: String, data: Vec[UInt]): Vec[UInt] = {
-    val cut = Module(new PhysicalCutRegister(data.getWidth))
-    cut.suggestName(s"scratchFieldStage_$name")
-    cut.io.clock := clock
-    cut.io.enable := true.B
-    cut.io.inputData := data.asUInt
-    cut.io.outputData.asTypeOf(chiselTypeOf(data))
+    if (coefficientLaneTileLanes > 0) {
+      val pieces = (0 until data.length by coefficientLaneTileLanes).flatMap { first =>
+        val lanes = math.min(coefficientLaneTileLanes, data.length - first)
+        val word = VecInit((first until first + lanes).map(data(_)))
+        val cut = Module(new PhysicalCutRegister(word.getWidth))
+        cut.suggestName(s"scratchFieldStage_${name}_${first / coefficientLaneTileLanes}")
+        cut.io.clock := clock
+        cut.io.enable := true.B
+        cut.io.inputData := word.asUInt
+        val result = cut.io.outputData.asTypeOf(chiselTypeOf(word))
+        (0 until lanes).map(result(_))
+      }
+      VecInit(pieces)
+    } else {
+      val cut = Module(new PhysicalCutRegister(data.getWidth))
+      cut.suggestName(s"scratchFieldStage_$name")
+      cut.io.clock := clock
+      cut.io.enable := true.B
+      cut.io.inputData := data.asUInt
+      cut.io.outputData.asTypeOf(chiselTypeOf(data))
+    }
   }
   val selectionStageSpan = if (coefficientLocality) {
     val prime = fieldCapture("prime", VecInit((0 until blockLanes).map { lane =>
-      val select = localSelectors(0)(lane / 8)
+      val select = localSelectors(0)(lane / selectorGroupLanes)
       primeScratchWord(lane)(select(componentWidth, 1))(select(0))
     }))
     val rolling = fieldCapture("rolling", VecInit((0 until blockLanes).map { lane =>
-      val select = localSelectors(1)(lane / 8)
+      val select = localSelectors(1)(lane / selectorGroupLanes)
       rollingSpanHeads(select(0))(select(componentWidth, 1))(lane)
     }))
-    val usePrime = Seq.tabulate((blockLanes + 7) / 8) { group =>
-      val cut = Module(new PhysicalControlRegister(1))
+    val usePrime = Seq.tabulate((blockLanes + selectorGroupLanes - 1) / selectorGroupLanes) { group =>
+      val cut = Module(new PhysicalControlRegister(1, if (minimalMetadataReset) Some(BigInt(0)) else None))
       cut.suggestName(s"scratchHeadChoice_$group")
       cut.io.clock := clock
       cut.io.reset := reset.asBool
@@ -1259,7 +1331,7 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     }
     val tail = fieldCapture("span", VecInit(candidateSpan.drop(blockLanes)))
     VecInit((0 until blockLanes).map(lane =>
-      Mux(usePrime(lane / 8), prime(lane), rolling(lane))) ++ tail)
+      Mux(usePrime(lane / selectorGroupLanes), prime(lane), rolling(lane))) ++ tail)
   } else candidateSpan
   val selectionStageCurrent = if (coefficientLocality)
     fieldCapture("current", candidateCurrent) else candidateCurrent
@@ -1295,7 +1367,8 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
       config.polynomialSize,
       coefficientPreprocessWidth,
       blockLanes,
-      outputLanes
+      outputLanes,
+      msbFirst = windowMsbFirst
     )
   )
   for (block <- 0 until spanBlocks) {
