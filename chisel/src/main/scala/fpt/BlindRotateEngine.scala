@@ -6,9 +6,11 @@ import chisel3.util._
 final case class BatchedBlindRotateEngineConfig(
     cmux: BatchedCmuxEngineConfig,
     domainDimension: Int,
-    inputTorusWidth: Int = 32
+    inputTorusWidth: Int = 32,
+    sampleExtractLanes: Int = 1
 ) {
   require(domainDimension >= 1)
+  require(Set(1, 4).contains(sampleExtractLanes))
   require(inputTorusWidth >= 2)
   require(cmux.engine.coefficient.components == 2)
   require(

@@ -37,7 +37,8 @@ object EmitFptBlindRotateKernelController extends App {
   SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "forwardMemories_")
   if (
     config.blindRotate.cmux.coefficientStorage ==
-      BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks
+      BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks &&
+      !config.blindRotate.cmux.localCoefficientQueues
   ) {
     SynthesisEmitter.addDistributedRamStyleByPrefix(systemVerilog, "ram_8x")
   }

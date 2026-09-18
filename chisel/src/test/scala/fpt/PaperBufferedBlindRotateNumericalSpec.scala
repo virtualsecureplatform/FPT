@@ -123,13 +123,16 @@ final class PaperBufferedBlindRotateNumericalSpec
     expectedRows.size should be(contexts * outputsPerContext)
     expectedRows.foreach(_.length should be(1))
 
-    test(new BufferedBlindRotateAccelerator(config))
+    test(new NumericalBufferedBlindRotateHarness(config))
       .withAnnotations(
         Seq(
           VerilatorBackendAnnotation,
           PaperVerilator.flags
         )
       ) { dut =>
+        // Always-ready runs intentionally hold inputs constant through the
+        // entire output drain; retain the same finite bound as the loop.
+        dut.clock.setTimeout(30000)
         dut.io.inputStart.poke(false.B)
         dut.io.inputContext.poke(0.U)
         dut.io.testVector.poke(0.U)
@@ -236,7 +239,8 @@ final class PaperBufferedBlindRotateNumericalSpec
         var cycle = 0
         var finalDone = false
         while (!finalDone) {
-          val ready = cycle % 11 != 3 && cycle % 11 != 7
+          val ready = sys.env.get("FPT_TEST_OUTPUT_ALWAYS_READY").contains("1") ||
+            (cycle % 11 != 3 && cycle % 11 != 7)
           dut.io.resultReady.poke(ready.B)
           if (dut.io.computeDone.peek().litToBoolean) {
             computeDoneCycle = Some(cycle)
@@ -245,8 +249,12 @@ final class PaperBufferedBlindRotateNumericalSpec
           if (dut.io.resultValid.peek().litToBoolean && !ready) blockedOutputCycles += 1
           if (fire) {
             if (firstResultCycle.isEmpty) firstResultCycle = Some(cycle)
+            val beatCount = dut.io.resultCount.peek().litValue.toInt
+            beatCount should be >= 1
+            beatCount should be <= blind.sampleExtractLanes
+            for (lane <- 0 until beatCount) {
             outputIndex should be < expected.size
-            val actual = dut.io.result.peek().litValue
+            val actual = dut.io.result(lane).peek().litValue
             observedResults += actual.toString
             for (byte <- 0 until (coefficient.torusWidth + 7) / 8) {
               resultDigest.update(((actual >> (8 * byte)) & 255).toByte)
@@ -265,10 +273,11 @@ final class PaperBufferedBlindRotateNumericalSpec
             dut.io.resultContext.expect(context.U)
             observedContexts += dut.io.resultContext.peek().litValue.toInt
             val expectedLast = outputIndex + 1 == expected.size
-            dut.io.resultLast.expect(expectedLast.B)
-            dut.io.done.expect(expectedLast.B)
             outputIndex += 1
             finalDone = expectedLast
+            }
+            dut.io.resultLast.expect(finalDone.B)
+            dut.io.done.expect(finalDone.B)
           }
           if (!finalDone) dut.io.active.expect(true.B)
           dut.clock.step()

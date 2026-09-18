@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `default_nettype none
+`include "FptOutputConfig.vh"
 
 `define FPT_AXI_MASTER_PORT(P) \
   output wire P``_awvalid, input wire P``_awready, \
@@ -76,7 +77,8 @@ module FptBlindRotateKernel #(
   wire [511:0] input_stream_data, key_low_stream_data, key_high_stream_data;
   wire [511:0] key_low1_stream_data, key_high1_stream_data;
   wire output_stream_valid, output_stream_ready, output_stream_last;
-  wire [31:0] output_stream_data;
+  wire [32*`FPT_OUTPUT_LANES-1:0] output_stream_data;
+  wire [4*`FPT_OUTPUT_LANES-1:0] output_stream_keep;
   wire input_status_valid, key_low_status_valid, key_high_status_valid;
   wire key_low1_status_valid, key_high1_status_valid;
   wire output_status_valid;
@@ -145,7 +147,7 @@ module FptBlindRotateKernel #(
     .io_keyHigh1Data_valid(key_high1_stream_valid), .io_keyHigh1Data_bits(key_high1_stream_data),
     .io_outputData_ready(output_stream_ready),
     .io_outputData_valid(output_stream_valid), .io_outputData_bits(output_stream_data),
-    .io_outputLast(output_stream_last),
+    .io_outputLast(output_stream_last), .io_outputKeep(output_stream_keep),
     .io_inputStatus_valid(input_status_valid), .io_inputStatus_bits(input_status_data),
     .io_keyLowStatus_valid(key_low_status_valid), .io_keyLowStatus_bits(key_low_status_data),
     .io_keyHighStatus_valid(key_high_status_valid), .io_keyHighStatus_bits(key_high_status_data),
@@ -221,7 +223,7 @@ module FptBlindRotateKernel #(
     .m_axi_s2mm_wlast(m_axi_output_wlast), .m_axi_s2mm_wvalid(m_axi_output_wvalid),
     .m_axi_s2mm_wready(m_axi_output_wready), .m_axi_s2mm_bresp(2'b0),
     .m_axi_s2mm_bvalid(m_axi_output_bvalid), .m_axi_s2mm_bready(m_axi_output_bready),
-    .s_axis_s2mm_tdata(output_stream_data), .s_axis_s2mm_tkeep(4'hf),
+    .s_axis_s2mm_tdata(output_stream_data), .s_axis_s2mm_tkeep(output_stream_keep),
     .s_axis_s2mm_tlast(output_stream_last), .s_axis_s2mm_tvalid(output_stream_valid),
     .s_axis_s2mm_tready(output_stream_ready)
   );

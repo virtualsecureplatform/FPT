@@ -112,9 +112,11 @@ private[fpt] object PaperU280BufferedBarrelConfig {
         bankLocalAccumulatorInit = enabled("FPT_U280_BANK_LOCAL_ACCUMULATOR_INIT"),
         coefficientLaneTileLanes = sys.env.getOrElse("FPT_U280_COEFFICIENT_LANE_TILE_LANES", "0").toInt,
         windowMsbFirst = enabled("FPT_U280_WINDOW_MSB_FIRST"),
-        minimalMetadataReset = enabled("FPT_U280_MINIMAL_METADATA_RESET")
+        minimalMetadataReset = enabled("FPT_U280_MINIMAL_METADATA_RESET"),
+        localCoefficientQueues = enabled("FPT_U280_LOCAL_COEFFICIENT_QUEUES")
       ),
-      domainDimension
+      domainDimension,
+      sampleExtractLanes = sys.env.getOrElse("FPT_U280_OUTPUT_LANES", "1").toInt
     )
     BufferedBlindRotateConfig(blindRotate, PaperSetII.keyLoadLanes,
       keyWriteTileLanes = sys.env.getOrElse("FPT_U280_KEY_WRITE_TILE_LANES", "0").toInt,
@@ -171,7 +173,8 @@ object EmitPaperBufferedBarrelBlindRotateAccelerator extends App {
   SynthesisEmitter.addUltraRamStyleByPrefix(systemVerilog, "forwardMemories_")
   if (
     config.blindRotate.cmux.coefficientStorage ==
-      BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks
+      BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks &&
+      !config.blindRotate.cmux.localCoefficientQueues
   ) {
     SynthesisEmitter.addDistributedRamStyleByPrefix(systemVerilog, "ram_8x")
   }

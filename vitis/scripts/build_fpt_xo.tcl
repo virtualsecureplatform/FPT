@@ -4,10 +4,19 @@ set script_dir [file dirname [file normalize [info script]]]
 set vitis_dir [file dirname $script_dir]
 set repo_dir [file dirname $vitis_dir]
 set build_dir [file join $vitis_dir build]
+if {[info exists ::env(FPT_VITIS_BUILD_DIR)]} {
+  set build_dir [file normalize $::env(FPT_VITIS_BUILD_DIR)]
+}
 set generated_dir [file join $build_dir generated]
 set project_dir [file join $build_dir FptBlindRotateKernel_project]
 set ip_repo_dir [file join $project_dir ip_repo]
 set xo_dir [file join $build_dir xo]
+set output_lanes 1
+if {[info exists ::env(FPT_U280_OUTPUT_LANES)]} {
+  set output_lanes $::env(FPT_U280_OUTPUT_LANES)
+}
+if {$output_lanes ni {1 4}} { error "FPT_U280_OUTPUT_LANES must be 1 or 4" }
+set output_bits [expr {32 * $output_lanes}]
 set floorplan A
 if {[info exists ::env(FPT_FLOORPLAN)]} {
   set floorplan [string toupper $::env(FPT_FLOORPLAN)]
@@ -22,11 +31,16 @@ file mkdir $xo_dir
 create_project FptBlindRotateKernel_project $project_dir \
   -part xcu280-fsvh2892-2L-e -force
 set_property target_language Verilog [current_project]
+set output_config [file join $generated_dir FptOutputConfig.vh]
+set config_file [open $output_config w]
+puts $config_file "`define FPT_OUTPUT_LANES $output_lanes"
+close $config_file
 
 import_files -norecurse [list \
   [file join $vitis_dir rtl FptBlindRotateKernel.sv] \
   [file join $vitis_dir rtl FptBlindRotateKernel_control_s_axi.sv] \
   [file join $generated_dir FptBlindRotateKernelController.sv] \
+  $output_config \
   [file join $generated_dir forward.v] \
   [file join $generated_dir inverse.v] \
   $floorplan_xdc]
@@ -59,7 +73,7 @@ set_property -dict [list \
   CONFIG.c_addr_width {64} \
   CONFIG.c_m_axi_s2mm_addr_width {64} \
   CONFIG.c_m_axi_s2mm_data_width {512} \
-  CONFIG.c_s_axis_s2mm_tdata_width {32} \
+  CONFIG.c_s_axis_s2mm_tdata_width $output_bits \
   CONFIG.c_s2mm_btt_used {23} \
   CONFIG.c_include_s2mm_stsfifo {false} \
   CONFIG.c_s2mm_stscmd_is_async {false} \
@@ -69,6 +83,13 @@ set_property -dict [list \
   CONFIG.c_include_s2mm_dre {true}] [get_ips axi_datamover_s2mm]
 generate_target all [get_ips axi_datamover_mm2s]
 generate_target all [get_ips axi_datamover_s2mm]
+if {[get_property CONFIG.c_s_axis_s2mm_tdata_width [get_ips axi_datamover_s2mm]] != $output_bits} {
+  error "output DataMover width does not match FPT_U280_OUTPUT_LANES"
+}
+if {[get_property CONFIG.c_s2mm_btt_used [get_ips axi_datamover_s2mm]] != 23} {
+  error "output DataMover BTT width changed"
+}
+puts "FPT_OUTPUT_STREAM_WIDTH_PASS lanes=$output_lanes bits=$output_bits"
 update_compile_order -fileset sources_1
 
 ipx::package_project -root_dir $ip_repo_dir \

@@ -52,7 +52,8 @@ final class ReplicatedAccumulatorBanks(
     val replicateReads: Boolean = true,
     val localWriteControls: Boolean = false,
     val bankLocalInitialization: Boolean = false,
-    val minimalMetadataReset: Boolean = false
+    val minimalMetadataReset: Boolean = false,
+    val localCoefficientQueues: Boolean = false
 ) extends Module {
   require(!minimalMetadataReset || localWriteControls)
   require(!bankLocalInitialization || (!replicateReads && localWriteControls))
@@ -245,9 +246,7 @@ final class ReplicatedAccumulatorBanks(
     val data = chiselTypeOf(io.drain)
     val last = Bool()
   }
-  val drainResponses = Module(
-    new Queue(new DrainResponse, entries = 2, pipe = true, flow = true)
-  )
+  val drainResponses = CoefficientQueue(new DrainResponse, 2, localCoefficientQueues, "drainResponses")
   val drainDoneReg = RegInit(false.B)
   val drainDoneContextReg = Reg(UInt(contextWidth.W))
   val drainBusy = Wire(Bool())
@@ -282,28 +281,28 @@ final class ReplicatedAccumulatorBanks(
     drainIssueBeat === (config.loadBeats - 1).U,
     drainIssueEnable
   )
-  drainResponses.io.enq.valid := drainResponseValid
-  drainResponses.io.enq.bits.last := drainResponseLast
+  drainResponses.enq.valid := drainResponseValid
+  drainResponses.enq.bits.last := drainResponseLast
   for (component <- 0 until coefficient.components) {
     for (lane <- 0 until coefficient.inverseLanes) {
-      drainResponses.io.enq.bits.data(component)(lane) := Mux(
+      drainResponses.enq.bits.data(component)(lane) := Mux(
         drainResponseHigh,
         prefetchWords(lane)(2 * component + 1),
         prefetchWords(lane)(2 * component)
       )
     }
   }
-  drainResponses.io.deq.ready := io.drainReady
-  val drainOutputFire = drainResponses.io.deq.valid && io.drainReady
+  drainResponses.deq.ready := io.drainReady
+  val drainOutputFire = drainResponses.deq.valid && io.drainReady
   val drainOccupancyAfterResponse =
-    drainResponses.io.count + drainResponseValid.asUInt -
+    drainResponses.count + drainResponseValid.asUInt -
       drainOutputFire.asUInt
   drainIssueEnable := drainActive && drainOccupancyAfterResponse < 2.U
   drainBusy := drainActive || drainResponseValid ||
-    drainResponses.io.deq.valid
+    drainResponses.deq.valid
   when(drainResponseValid) {
     assert(
-      drainResponses.io.enq.ready,
+      drainResponses.enq.ready,
       "accumulator drain response queue overflow"
     )
   }
@@ -337,10 +336,10 @@ final class ReplicatedAccumulatorBanks(
       io.prefetchHigh(component)(lane) :=
         prefetchOutputWords(lane)(2 * component + 1)
       io.drain(component)(lane) :=
-        drainResponses.io.deq.bits.data(component)(lane)
+        drainResponses.deq.bits.data(component)(lane)
     }
   }
-  io.drainValid := drainResponses.io.deq.valid
+  io.drainValid := drainResponses.deq.valid
   io.drainDone := drainDoneReg
   io.drainDoneContext := drainDoneContextReg
   drainDoneReg := false.B
@@ -365,7 +364,7 @@ final class ReplicatedAccumulatorBanks(
       drainIssueBeat := drainIssueBeat + 1.U
     }
   }
-  when(drainOutputFire && drainResponses.io.deq.bits.last) {
+  when(drainOutputFire && drainResponses.deq.bits.last) {
     drainDoneReg := true.B
     drainDoneContextReg := drainContextReg
   }

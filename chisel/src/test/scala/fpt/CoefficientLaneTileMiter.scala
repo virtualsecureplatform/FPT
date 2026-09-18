@@ -10,7 +10,8 @@ final class CoefficientLaneTileMiter(c: CmuxCoefficientConfig, contexts: Int,
     coefficientPreprocessGuardBits = guardBits, coefficientLocality = true,
     groupedScratchControls = true, coefficientLaneTileLanes = lanes,
     windowMsbFirst = candidate && sys.env.get("FPT_U280_WINDOW_MSB_FIRST").contains("1"),
-    minimalMetadataReset = candidate && sys.env.get("FPT_U280_MINIMAL_METADATA_RESET").contains("1"))
+    minimalMetadataReset = candidate && sys.env.get("FPT_U280_MINIMAL_METADATA_RESET").contains("1"),
+    localCoefficientQueues = candidate && sys.env.get("FPT_U280_LOCAL_COEFFICIENT_QUEUES").contains("1"))
   val candidate = Module(frontend(4, true))
   val reference = Module(frontend(4, false))
   candidate.io <> io

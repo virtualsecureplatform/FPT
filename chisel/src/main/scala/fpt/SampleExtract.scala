@@ -6,11 +6,14 @@ import chisel3.util._
 final case class SampleExtractConfig(
     polynomialSize: Int,
     lanes: Int,
-    torusWidth: Int
+    torusWidth: Int,
+    outputLanes: Int = 1
 ) {
   require(polynomialSize >= 2)
   require((polynomialSize & (polynomialSize - 1)) == 0)
   require(lanes >= 1)
+  require(Set(1, 4).contains(outputLanes))
+  require(lanes % outputLanes == 0)
   require(polynomialSize % lanes == 0)
   require(torusWidth >= 2)
 
@@ -52,12 +55,31 @@ final class SampleExtractIndexZero(val config: SampleExtractConfig)
 
     val outputValid = Output(Bool())
     val outputReady = Input(Bool())
-    val output = Output(UInt(config.torusWidth.W))
+    val output = Output(UInt((config.torusWidth * config.outputLanes).W))
+    val outputCount = Output(UInt(log2Ceil(config.outputLanes + 1).W))
     val outputLast = Output(Bool())
     val done = Output(Bool())
     val busy = Output(Bool())
   })
 
+  if (config.outputLanes == 4) {
+    val wide = Module(new WideSampleExtractIndexZero(config))
+    wide.io.inputStart := io.inputStart
+    wide.io.inputValid := io.inputValid
+    wide.io.inputA := io.inputA
+    wide.io.inputB := io.inputB
+    wide.io.outputReady := io.outputReady
+    io.inputStartReady := wide.io.inputStartReady
+    io.inputReady := wide.io.inputReady
+    io.inputDone := wide.io.inputDone
+    io.outputValid := wide.io.outputValid
+    io.output := wide.io.output
+    io.outputCount := wide.io.outputCount
+    io.outputLast := wide.io.outputLast
+    io.done := wide.io.done
+    io.busy := wide.io.busy
+  } else {
+  io.outputCount := 1.U
   val states = Enum(3)
   val idle = states(0)
   val collect = states(1)
@@ -99,7 +121,7 @@ final class SampleExtractIndexZero(val config: SampleExtractConfig)
     }
   }
 
-  private val resultQueue = Module(
+  val resultQueue = Module(
     new Queue(new SampleExtractWord(config.torusWidth), entries = 2, pipe = true)
   )
   io.outputValid := resultQueue.io.deq.valid
@@ -119,7 +141,7 @@ final class SampleExtractIndexZero(val config: SampleExtractConfig)
   // This queue is also the physical register cut after the distributed-memory
   // lane selector. Count the in-flight synchronous-memory response against
   // its two slots before issuing another read.
-  private val selectedResponses = Module(
+  val selectedResponses = Module(
     new Queue(new SampleExtractSelected(config.torusWidth), entries = 2, pipe = true)
   )
   val selectedFire = selectedResponses.io.deq.valid &&
@@ -190,5 +212,6 @@ final class SampleExtractIndexZero(val config: SampleExtractConfig)
   when(io.done) {
     state := idle
     bodyQueued := false.B
+  }
   }
 }

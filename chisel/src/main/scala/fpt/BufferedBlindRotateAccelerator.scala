@@ -1,6 +1,7 @@
 package fpt
 
 import chisel3._
+import chisel3.util.log2Ceil
 
 /** Host-facing buffered Blind Rotate boundary.
   *
@@ -57,7 +58,8 @@ final class BufferedBlindRotateAccelerator(
 
     val resultValid = Output(Bool())
     val resultReady = Input(Bool())
-    val result = Output(UInt(coefficient.torusWidth.W))
+    val result = Output(UInt((coefficient.torusWidth * blindConfig.sampleExtractLanes).W))
+    val resultCount = Output(UInt(log2Ceil(blindConfig.sampleExtractLanes + 1).W))
     val resultContext = Output(UInt(contextWidth.W))
     val resultLast = Output(Bool())
     val done = Output(Bool())
@@ -99,6 +101,7 @@ final class BufferedBlindRotateAccelerator(
   io.resultValid := engine.io.resultValid
   engine.io.resultReady := io.resultReady
   io.result := engine.io.result
+  io.resultCount := engine.io.resultCount
   io.resultContext := engine.io.resultContext
   io.resultLast := engine.io.resultLast
   io.done := engine.io.done

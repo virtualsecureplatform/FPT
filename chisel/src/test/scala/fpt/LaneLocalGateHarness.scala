@@ -15,12 +15,15 @@ object EmitLaneLocalCoefficientGate extends App {
     coefficientPreprocessGuardBits = profile.coefficientPreprocessGuardBits,
     groupedScratchControls = true, coefficientLocality = true,
     bankLocalAccumulatorInit = true, coefficientLaneTileLanes = profile.coefficientLaneTileLanes,
-    windowMsbFirst = profile.windowMsbFirst, minimalMetadataReset = profile.minimalMetadataReset),
+    windowMsbFirst = profile.windowMsbFirst, minimalMetadataReset = profile.minimalMetadataReset,
+    localCoefficientQueues = profile.localCoefficientQueues),
     args = Array("--target-dir", dir.toString), firtoolOpts = SynthesisEmitter.firtoolOptions)
   val source = dir.resolve("PrecomputedWindowedBatchedCmuxCoefficientStore.sv")
   SynthesisEmitter.removeInlineFileList(source)
   SynthesisEmitter.addBlockRamStyleByPrefix(source, "digitMemory_")
-  SynthesisEmitter.addDistributedRamStyleByPrefix(source, "ram_8x")
+  if (!profile.localCoefficientQueues) {
+    SynthesisEmitter.addDistributedRamStyleByPrefix(source, "ram_8x")
+  }
   SynthesisEmitter.useReadClockForMemoryWritesByPrefix(source, "forwardMemories_")
   SynthesisEmitter.addUltraRamStyleByPrefix(source, "forwardMemories_")
 }

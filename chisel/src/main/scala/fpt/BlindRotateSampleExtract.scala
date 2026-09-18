@@ -90,7 +90,8 @@ final class BatchedBlindRotateSampleExtractEngine(
 
     val resultValid = Output(Bool())
     val resultReady = Input(Bool())
-    val result = Output(UInt(coefficient.torusWidth.W))
+    val result = Output(UInt((coefficient.torusWidth * config.sampleExtractLanes).W))
+    val resultCount = Output(UInt(log2Ceil(config.sampleExtractLanes + 1).W))
     val resultContext = Output(UInt(contextWidth.W))
     val resultLast = Output(Bool())
     val done = Output(Bool())
@@ -102,7 +103,8 @@ final class BatchedBlindRotateSampleExtractEngine(
       SampleExtractConfig(
         coefficient.polynomialSize,
         coefficient.inverseLanes,
-        coefficient.torusWidth
+        coefficient.torusWidth,
+        config.sampleExtractLanes
       )
     )
   )
@@ -194,6 +196,7 @@ final class BatchedBlindRotateSampleExtractEngine(
   io.resultValid := sampleExtract.io.outputValid
   sampleExtract.io.outputReady := io.resultReady
   io.result := sampleExtract.io.output
+  io.resultCount := sampleExtract.io.outputCount
   io.resultContext := extractionContext
   io.resultLast := sampleExtract.io.outputLast && finalContext
   io.done := sampleExtract.io.done && finalContext

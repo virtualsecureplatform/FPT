@@ -20,7 +20,9 @@ fi
 
 vitis_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "$vitis_dir/.." && pwd)
-build_dir=$vitis_dir/build
+build_dir=${FPT_VITIS_BUILD_DIR:-$vitis_dir/build}
+build_dir=$(realpath -m "$build_dir")
+export FPT_VITIS_BUILD_DIR=$build_dir
 generated_dir=$build_dir/generated
 platform=${FPT_PLATFORM:-xilinx_u280_gen3x16_xdma_1_202211_1}
 floorplan=${FPT_FLOORPLAN:-A}

@@ -40,7 +40,8 @@ final case class BatchedCmuxEngineConfig(
     bankLocalAccumulatorInit: Boolean = false,
     coefficientLaneTileLanes: Int = 0,
     windowMsbFirst: Boolean = false,
-    minimalMetadataReset: Boolean = false
+    minimalMetadataReset: Boolean = false,
+    localCoefficientQueues: Boolean = false
 ) {
   require(!minimalMetadataReset || (coefficientLaneTileLanes == 4 && bankLocalAccumulatorInit))
   require(Set(0, 4).contains(coefficientLaneTileLanes))
@@ -803,7 +804,8 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
             bankLocalAccumulatorInit = config.bankLocalAccumulatorInit,
             coefficientLaneTileLanes = config.coefficientLaneTileLanes,
             windowMsbFirst = config.windowMsbFirst,
-            minimalMetadataReset = config.minimalMetadataReset
+            minimalMetadataReset = config.minimalMetadataReset,
+            localCoefficientQueues = config.localCoefficientQueues
           )
         )
       case BatchedCoefficientStorage.PrecomputedWindowedBufferedSingleBanks =>
@@ -820,7 +822,8 @@ final class BatchedCmuxEngine(val config: BatchedCmuxEngineConfig)
             bankLocalAccumulatorInit = config.bankLocalAccumulatorInit,
             coefficientLaneTileLanes = config.coefficientLaneTileLanes,
             windowMsbFirst = config.windowMsbFirst,
-            minimalMetadataReset = config.minimalMetadataReset
+            minimalMetadataReset = config.minimalMetadataReset,
+            localCoefficientQueues = config.localCoefficientQueues
           )
         )
       case BatchedCoefficientStorage.BitwiseReplicatedBanks =>

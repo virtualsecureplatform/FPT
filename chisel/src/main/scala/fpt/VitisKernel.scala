@@ -17,7 +17,7 @@ final class FptBlindRotateKernelSequencer(
   private val keyWidth = external.bootstrappingKey.width
 
   require(contexts == 16, "the Vitis kernel has a fixed 16-context batch")
-  require(dimension == 630, "the Vitis kernel implements Paper Set-II")
+  require(dimension == 630, "the Vitis kernel preserves the released n=630 workload")
   require(coefficient.torusWidth == 32)
   require(blind.inputTorusWidth == 32)
   require(config.keyBuffer.loadLanes == 32)
@@ -61,7 +61,8 @@ final class FptBlindRotateKernelSequencer(
     val keyHighData = Flipped(Decoupled(UInt(512.W)))
     val keyLow1Data = Flipped(Decoupled(UInt(512.W)))
     val keyHigh1Data = Flipped(Decoupled(UInt(512.W)))
-    val outputData = Decoupled(UInt(32.W))
+    val outputData = Decoupled(UInt((32 * blind.sampleExtractLanes).W))
+    val outputKeep = Output(UInt((4 * blind.sampleExtractLanes).W))
     val outputLast = Output(Bool())
 
     val inputStatus = Flipped(Valid(UInt(8.W)))
@@ -101,7 +102,8 @@ final class FptBlindRotateKernelSequencer(
     val coreDone = Input(Bool())
     val coreResultValid = Input(Bool())
     val coreResultReady = Output(Bool())
-    val coreResult = Input(UInt(32.W))
+    val coreResult = Input(UInt((32 * blind.sampleExtractLanes).W))
+    val coreResultCount = Input(UInt(log2Ceil(blind.sampleExtractLanes + 1).W))
     val coreResultLast = Input(Bool())
   })
 
@@ -341,10 +343,27 @@ final class FptBlindRotateKernelSequencer(
   when(launch) { runStarted := false.B }
   when(io.coreRunStart) { runStarted := true.B }
 
-  io.outputData.valid := busy && io.coreResultValid
-  io.outputData.bits := io.coreResult
-  io.outputLast := io.coreResultLast
-  io.coreResultReady := busy && io.outputData.ready
+  if (blind.sampleExtractLanes == 1) {
+    io.outputData.valid := busy && io.coreResultValid
+    io.outputData.bits := io.coreResult
+    io.outputKeep := 15.U
+    io.outputLast := io.coreResultLast
+    io.coreResultReady := busy && io.outputData.ready
+  } else {
+    val packer = Module(new ResultBeatCompactor(blind.sampleExtractLanes))
+    packer.io.input.valid := busy && io.coreResultValid
+    packer.io.input.bits.data := io.coreResult
+    packer.io.input.bits.count := io.coreResultCount
+    packer.io.input.bits.last := io.coreResultLast
+    io.coreResultReady := busy && packer.io.input.ready
+    io.outputData.valid := busy && packer.io.output.valid
+    io.outputData.bits := packer.io.output.bits.data
+    io.outputKeep := packer.io.output.bits.keep
+    io.outputLast := packer.io.output.bits.last
+    packer.io.output.ready := busy && io.outputData.ready
+  }
+  val outputComplete = if (blind.sampleExtractLanes == 1) io.coreDone
+    else io.outputData.fire && io.outputLast
 
   val inputStatusDone = RegInit(false.B)
   val keyStatusDone = RegInit(VecInit(Seq.fill(4)(false.B)))
@@ -367,7 +386,7 @@ final class FptBlindRotateKernelSequencer(
   when(io.keyLow1Status.valid) { keyStatusDone(2) := true.B }
   when(io.keyHigh1Status.valid) { keyStatusDone(3) := true.B }
   when(io.outputStatus.valid) { outputStatusDone := true.B }
-  when(io.coreDone) { coreDoneSeen := true.B }
+  when(outputComplete) { coreDoneSeen := true.B }
 
   val channelErrors = VecInit(Seq(
     io.inputError || (io.inputStatus.valid && !io.inputStatus.bits(7)),
@@ -393,7 +412,7 @@ final class FptBlindRotateKernelSequencer(
   }
 
   val allStatusesDone = inputStatusDone && keyStatusDone.asUInt.andR && outputStatusDone
-  val coreComplete = coreDoneSeen || io.coreDone
+  val coreComplete = coreDoneSeen || outputComplete
   // Some DataMover configurations do not emit status-stream beats when the
   // optional status FIFOs are disabled.  Core completion means the final
   // output word and TLAST have already handshaken into S2MM.  Prefer explicit
@@ -455,7 +474,8 @@ final class FptBlindRotateKernelController(
     val keyHighData = Flipped(Decoupled(UInt(512.W)))
     val keyLow1Data = Flipped(Decoupled(UInt(512.W)))
     val keyHigh1Data = Flipped(Decoupled(UInt(512.W)))
-    val outputData = Decoupled(UInt(32.W))
+    val outputData = Decoupled(UInt((32 * config.blindRotate.sampleExtractLanes).W))
+    val outputKeep = Output(UInt((4 * config.blindRotate.sampleExtractLanes).W))
     val outputLast = Output(Bool())
     val inputStatus = Flipped(Valid(UInt(8.W)))
     val keyLowStatus = Flipped(Valid(UInt(8.W)))
@@ -528,6 +548,7 @@ final class FptBlindRotateKernelController(
   io.outputData.bits := sequencer.io.outputData.bits
   sequencer.io.outputData.ready := io.outputData.ready
   io.outputLast := sequencer.io.outputLast
+  io.outputKeep := sequencer.io.outputKeep
 
   sequencer.io.inputStatus.valid := io.inputStatus.valid
   sequencer.io.inputStatus.bits := io.inputStatus.bits
@@ -571,6 +592,7 @@ final class FptBlindRotateKernelController(
   core.io.runStart := sequencer.io.coreRunStart
   sequencer.io.coreResultValid := core.io.resultValid
   sequencer.io.coreResult := core.io.result
+  sequencer.io.coreResultCount := core.io.resultCount
   sequencer.io.coreResultLast := core.io.resultLast
   core.io.resultReady := sequencer.io.coreResultReady
 }

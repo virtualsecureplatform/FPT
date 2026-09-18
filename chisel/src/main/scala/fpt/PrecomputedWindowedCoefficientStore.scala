@@ -458,7 +458,8 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     override val bankLocalAccumulatorInit: Boolean = false,
     val coefficientLaneTileLanes: Int = 0,
     val windowMsbFirst: Boolean = false,
-    val minimalMetadataReset: Boolean = false
+    val minimalMetadataReset: Boolean = false,
+    val localCoefficientQueues: Boolean = false
 ) extends BatchedCmuxCoefficientStoreBase(config, batchContexts, bankLocalAccumulatorInit) {
   import TransformUtil._
 
@@ -552,7 +553,8 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
       replicateReads = !bufferedSingleAccumulator,
       localWriteControls = coefficientLocality,
       bankLocalInitialization = bankLocalAccumulatorInit,
-      minimalMetadataReset = minimalMetadataReset
+      minimalMetadataReset = minimalMetadataReset,
+      localCoefficientQueues = localCoefficientQueues
     )
   )
   memory.io.loadStart := io.loadStart
@@ -567,42 +569,36 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
 
   val bufferedUpdatesIdle = WireDefault(true.B)
   if (bufferedSingleAccumulator) {
-    val updateQueue = Module(
-      new Queue(
-        new BufferedAccumulatorUpdateBeat(config, batchContexts),
-        memoryConfig.halfBeats,
-        pipe = true,
-        flow = true
-      )
-    )
-    updateQueue.io.enq.valid := io.updateValid
-    updateQueue.io.enq.bits.first := io.updateFirst
-    updateQueue.io.enq.bits.context := io.updateContext
-    updateQueue.io.enq.bits.low := io.updateLow
-    updateQueue.io.enq.bits.high := io.updateHigh
-    io.updateReady := updateQueue.io.enq.ready
+    val updateQueue = CoefficientQueue(new BufferedAccumulatorUpdateBeat(config, batchContexts),
+      memoryConfig.halfBeats, localCoefficientQueues, "updateQueue")
+    updateQueue.enq.valid := io.updateValid
+    updateQueue.enq.bits.first := io.updateFirst
+    updateQueue.enq.bits.context := io.updateContext
+    updateQueue.enq.bits.low := io.updateLow
+    updateQueue.enq.bits.high := io.updateHigh
+    io.updateReady := updateQueue.enq.ready
 
-    memory.io.updateValid := updateQueue.io.deq.valid
-    memory.io.updateFirst := updateQueue.io.deq.bits.first
-    memory.io.updateContext := updateQueue.io.deq.bits.context
-    memory.io.updateLow := updateQueue.io.deq.bits.low
-    memory.io.updateHigh := updateQueue.io.deq.bits.high
-    updateQueue.io.deq.ready := memory.io.updateReady
-    val finalQueuedBeatRetires = updateQueue.io.count === 1.U &&
-      updateQueue.io.deq.valid && !updateQueue.io.deq.bits.first &&
+    memory.io.updateValid := updateQueue.deq.valid
+    memory.io.updateFirst := updateQueue.deq.bits.first
+    memory.io.updateContext := updateQueue.deq.bits.context
+    memory.io.updateLow := updateQueue.deq.bits.low
+    memory.io.updateHigh := updateQueue.deq.bits.high
+    updateQueue.deq.ready := memory.io.updateReady
+    val finalQueuedBeatRetires = updateQueue.count === 1.U &&
+      updateQueue.deq.valid && !updateQueue.deq.bits.first &&
       !io.updateValid
     // The memory's prefetchReady arbitration already admits only the final
     // beat of an active single-image update.  With a flow-through queue, an
     // incoming final beat can retire while count is zero; treating io.updateValid
     // itself as backlog inserted a needless cycle between update and prefetch.
     bufferedUpdatesIdle :=
-      updateQueue.io.count === 0.U || finalQueuedBeatRetires
+      updateQueue.count === 0.U || finalQueuedBeatRetires
 
     when(io.updateValid) {
-      assert(updateQueue.io.enq.ready, "buffered accumulator update overflow")
+      assert(updateQueue.enq.ready, "buffered accumulator update overflow")
     }
     when(memory.io.updateReady && memory.io.updateValid) {
-      assert(updateQueue.io.deq.valid, "buffered accumulator update underflow")
+      assert(updateQueue.deq.valid, "buffered accumulator update underflow")
     }
   } else {
     memory.io.updateValid := io.updateValid
