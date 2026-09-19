@@ -50,6 +50,13 @@ module FptBlindRotateKernel #(
   wire ap_idle;
   wire ap_done;
   wire ap_ready;
+  wire ap_continue;
+  wire [31:0] chain_accepted, chain_prefetched, chain_completed;
+`ifndef FPT_CHAIN_INTERFACE
+  assign chain_accepted = 0;
+  assign chain_prefetched = 0;
+  assign chain_completed = 0;
+`endif
   wire [31:0] kernel_status;
   wire [31:0] debug_key_beats, debug_key_starved_cycles;
   wire [31:0] debug_key_bank_blocked_cycles, debug_run_cycles;
@@ -89,6 +96,9 @@ module FptBlindRotateKernel #(
   wire key_low1_error, key_high1_error;
 
   FptBlindRotateKernel_control_s_axi #(
+`ifdef FPT_CHAIN_INTERFACE
+    .C_CHAIN(1),
+`endif
     .C_S_AXI_ADDR_WIDTH(C_S_AXI_CONTROL_ADDR_WIDTH),
     .C_S_AXI_DATA_WIDTH(C_S_AXI_CONTROL_DATA_WIDTH)
   ) control (
@@ -102,17 +112,24 @@ module FptBlindRotateKernel #(
     .RDATA(s_axi_control_rdata), .RRESP(s_axi_control_rresp),
     .BVALID(s_axi_control_bvalid), .BREADY(s_axi_control_bready),
     .BRESP(s_axi_control_bresp), .interrupt(interrupt),
-    .ap_start(ap_start), .ap_done(ap_done), .ap_ready(ap_ready),
+    .ap_start(ap_start), .ap_continue(ap_continue), .ap_done(ap_done), .ap_ready(ap_ready),
     .ap_idle(ap_idle), .input_ptr(input_ptr), .key_low_ptr(key_low_ptr),
     .key_high_ptr(key_high_ptr), .output_ptr(output_ptr),
     .key_low1_ptr(key_low1_ptr), .key_high1_ptr(key_high1_ptr),
     .kernel_status(kernel_status), .debug_key_beats(debug_key_beats),
     .debug_key_starved_cycles(debug_key_starved_cycles),
     .debug_key_bank_blocked_cycles(debug_key_bank_blocked_cycles),
-    .debug_run_cycles(debug_run_cycles)
+    .debug_run_cycles(debug_run_cycles),
+    .chain_accepted(chain_accepted), .chain_prefetched(chain_prefetched),
+    .chain_completed(chain_completed)
   );
 
   FptBlindRotateKernelController controller (
+`ifdef FPT_CHAIN_INTERFACE
+    .io_continue(ap_continue),
+    .io_chainAccepted(chain_accepted), .io_chainPrefetched(chain_prefetched),
+    .io_chainCompleted(chain_completed),
+`endif
     .clock(ap_clk), .reset(reset),
     .io_start(ap_start), .io_idle(ap_idle), .io_done(ap_done),
     .io_ready(ap_ready), .io_status(kernel_status),

@@ -9,21 +9,24 @@ final class VitisKernelSequencerSpec
     extends AnyFlatSpec
     with ChiselScalatestTester
     with Matchers {
-  private val config = PaperU280BufferedBarrelConfig(
+  private val base = PaperU280BufferedBarrelConfig(
     "forward.v",
     "inverse.v",
     PaperSetII.blindRotateDomainDimension
   )
+  private val config = base.copy(blindRotate = base.blindRotate.copy(sampleExtractLanes = 1))
 
   private def initialize(dut: FptBlindRotateKernelSequencer): Unit = {
     dut.io.start.poke(false.B)
     dut.io.inputPointer.poke(0.U)
     dut.io.keyLowPointer.poke(0.U)
     dut.io.keyHighPointer.poke(0.U)
+    dut.io.keyLow1Pointer.poke(0.U); dut.io.keyHigh1Pointer.poke(0.U)
     dut.io.outputPointer.poke(0.U)
     dut.io.inputCommand.ready.poke(true.B)
     dut.io.keyLowCommand.ready.poke(true.B)
     dut.io.keyHighCommand.ready.poke(true.B)
+    dut.io.keyLow1Command.ready.poke(true.B); dut.io.keyHigh1Command.ready.poke(true.B)
     dut.io.outputCommand.ready.poke(true.B)
     dut.io.inputData.valid.poke(false.B)
     dut.io.inputData.bits.poke(0.U)
@@ -31,6 +34,8 @@ final class VitisKernelSequencerSpec
     dut.io.keyLowData.bits.poke(0.U)
     dut.io.keyHighData.valid.poke(false.B)
     dut.io.keyHighData.bits.poke(0.U)
+    dut.io.keyLow1Data.valid.poke(false.B); dut.io.keyLow1Data.bits.poke(0.U)
+    dut.io.keyHigh1Data.valid.poke(false.B); dut.io.keyHigh1Data.bits.poke(0.U)
     dut.io.outputData.ready.poke(true.B)
     dut.io.inputStatus.valid.poke(false.B)
     dut.io.inputStatus.bits.poke("h80".U)
@@ -38,11 +43,14 @@ final class VitisKernelSequencerSpec
     dut.io.keyLowStatus.bits.poke("h80".U)
     dut.io.keyHighStatus.valid.poke(false.B)
     dut.io.keyHighStatus.bits.poke("h80".U)
+    dut.io.keyLow1Status.valid.poke(false.B); dut.io.keyLow1Status.bits.poke(128.U)
+    dut.io.keyHigh1Status.valid.poke(false.B); dut.io.keyHigh1Status.bits.poke(128.U)
     dut.io.outputStatus.valid.poke(false.B)
     dut.io.outputStatus.bits.poke("h80".U)
     dut.io.inputError.poke(false.B)
     dut.io.keyLowError.poke(false.B)
     dut.io.keyHighError.poke(false.B)
+    dut.io.keyLow1Error.poke(false.B); dut.io.keyHigh1Error.poke(false.B)
     dut.io.outputError.poke(false.B)
     dut.io.coreInputStartReady.poke(true.B)
     dut.io.coreInputReady.poke(true.B)
@@ -56,6 +64,7 @@ final class VitisKernelSequencerSpec
     dut.io.coreDone.poke(false.B)
     dut.io.coreResultValid.poke(false.B)
     dut.io.coreResult.poke(0.U)
+    dut.io.coreResultCount.poke(1.U)
     dut.io.coreResultLast.poke(false.B)
   }
 
@@ -77,17 +86,38 @@ final class VitisKernelSequencerSpec
 
   behavior of "the fixed-batch Vitis kernel sequencer"
 
-  it should "use the coupled 64-by-32 routable transform profile" in {
-    config.blindRotate.cmux.engine.coefficient.forwardLanes should be(64)
-    config.blindRotate.cmux.engine.coefficient.inverseLanes should be(32)
-    config.blindRotate.cmux.engine.forwardTransform.lanes should be(64)
-    config.blindRotate.cmux.engine.inverseTransform.lanes should be(32)
-    config.blindRotate.cmux.engine.externalProduct.inputLanes should be(64)
-    config.blindRotate.cmux.engine.externalProduct.outputLanes should be(32)
+  it should "require actual output DMA status rather than a timeout in chained mode" in {
+    val scalar = config.copy(blindRotate = config.blindRotate.copy(sampleExtractLanes = 1))
+    test(new FptBlindRotateKernelSequencer(scalar, strictCompletion = true)) { dut =>
+      initialize(dut)
+      dut.io.keyLow1Status.valid.poke(false.B); dut.io.keyLow1Status.bits.poke(128.U)
+      dut.io.keyHigh1Status.valid.poke(false.B); dut.io.keyHigh1Status.bits.poke(128.U)
+      dut.io.keyLow1Error.poke(false.B); dut.io.keyHigh1Error.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(2); dut.reset.poke(false.B)
+      launch(dut)
+      dut.io.coreDone.poke(true.B); dut.clock.step(); dut.io.coreDone.poke(false.B)
+      Seq(dut.io.inputStatus, dut.io.keyLowStatus, dut.io.keyHighStatus,
+        dut.io.keyLow1Status, dut.io.keyHigh1Status).foreach(_.valid.poke(true.B))
+      dut.clock.step()
+      Seq(dut.io.inputStatus, dut.io.keyLowStatus, dut.io.keyHighStatus,
+        dut.io.keyLow1Status, dut.io.keyHigh1Status).foreach(_.valid.poke(false.B))
+      dut.clock.step(400); dut.io.done.expect(false.B); dut.io.idle.expect(false.B)
+      dut.io.outputStatus.valid.poke(true.B); dut.clock.step(); dut.io.outputStatus.valid.poke(false.B)
+      dut.clock.step(); dut.io.done.expect(true.B)
+    }
+  }
+
+  it should "use the current 128-by-64 transform and four-stream key profile" in {
+    config.blindRotate.cmux.engine.coefficient.forwardLanes should be(128)
+    config.blindRotate.cmux.engine.coefficient.inverseLanes should be(64)
+    config.blindRotate.cmux.engine.forwardTransform.lanes should be(128)
+    config.blindRotate.cmux.engine.inverseTransform.lanes should be(64)
+    config.blindRotate.cmux.engine.externalProduct.inputLanes should be(128)
+    config.blindRotate.cmux.engine.externalProduct.outputLanes should be(64)
     config.blindRotate.batchContexts should be(16)
   }
 
-  it should "issue exact DataMover addresses and BTT command splits" in {
+  it should "issue exact DataMover addresses and one BTT command per key stream" in {
     test(new FptBlindRotateKernelSequencer(config)) { dut =>
       initialize(dut)
       dut.reset.poke(true.B)
@@ -96,6 +126,8 @@ final class VitisKernelSequencerSpec
       dut.io.inputPointer.poke("h100000000".U)
       dut.io.keyLowPointer.poke("h200000000".U)
       dut.io.keyHighPointer.poke("h300000000".U)
+      dut.io.keyLow1Pointer.poke("h500000000".U)
+      dut.io.keyHigh1Pointer.poke("h600000000".U)
       dut.io.outputPointer.poke("h400000000".U)
       launch(dut)
 
@@ -110,20 +142,19 @@ final class VitisKernelSequencerSpec
       btt(dut.io.outputCommand.bits.peek().litValue) should be(65600)
       dut.io.keyLowCommand.valid.expect(true.B)
       address(dut.io.keyLowCommand.bits.peek().litValue) should be(BigInt("200000000", 16))
-      btt(dut.io.keyLowCommand.bits.peek().litValue) should be(8372224)
+      btt(dut.io.keyLowCommand.bits.peek().litValue) should be(5160960)
       dut.io.keyHighCommand.valid.expect(true.B)
       address(dut.io.keyHighCommand.bits.peek().litValue) should be(BigInt("300000000", 16))
-      btt(dut.io.keyHighCommand.bits.peek().litValue) should be(8372224)
+      btt(dut.io.keyHighCommand.bits.peek().litValue) should be(5160960)
+      dut.io.keyLow1Command.valid.expect(true.B); dut.io.keyHigh1Command.valid.expect(true.B)
+      address(dut.io.keyLow1Command.bits.peek().litValue) should be(BigInt("500000000", 16))
+      address(dut.io.keyHigh1Command.bits.peek().litValue) should be(BigInt("600000000", 16))
+      btt(dut.io.keyLow1Command.bits.peek().litValue) should be(5160960)
+      btt(dut.io.keyHigh1Command.bits.peek().litValue) should be(5160960)
 
       dut.clock.step()
-      address(dut.io.keyLowCommand.bits.peek().litValue) should be(
-        BigInt("200000000", 16) + 8372224
-      )
-      btt(dut.io.keyLowCommand.bits.peek().litValue) should be(1949696)
-      address(dut.io.keyHighCommand.bits.peek().litValue) should be(
-        BigInt("300000000", 16) + 8372224
-      )
-      btt(dut.io.keyHighCommand.bits.peek().litValue) should be(1949696)
+      Seq(dut.io.keyLowCommand, dut.io.keyHighCommand, dut.io.keyLow1Command,
+        dut.io.keyHigh1Command).foreach(_.valid.expect(false.B))
     }
   }
 
@@ -180,6 +211,7 @@ final class VitisKernelSequencerSpec
       dut.io.keyLowData.valid.poke(true.B)
       dut.io.keyLowData.bits.poke(packedLow(3).U)
       dut.io.keyHighData.valid.poke(false.B)
+      dut.io.keyLow1Data.valid.poke(true.B); dut.io.keyHigh1Data.valid.poke(true.B)
       dut.clock.step()
       dut.io.coreKeyLoadValid.expect(false.B)
 
@@ -227,17 +259,16 @@ final class VitisKernelSequencerSpec
       dut.io.keyLowStatus.valid.poke(true.B)
       dut.io.keyHighStatus.valid.poke(true.B)
       dut.io.coreDone.poke(true.B)
+      dut.io.keyLow1Status.valid.poke(true.B); dut.io.keyHigh1Status.valid.poke(true.B)
       dut.clock.step()
       dut.io.done.expect(false.B)
 
       dut.io.inputStatus.valid.poke(false.B)
       dut.io.outputStatus.valid.poke(false.B)
       dut.io.coreDone.poke(false.B)
-      dut.clock.step() // second status for each split key transfer
-      dut.io.done.expect(false.B)
-
       dut.io.keyLowStatus.valid.poke(false.B)
       dut.io.keyHighStatus.valid.poke(false.B)
+      dut.io.keyLow1Status.valid.poke(false.B); dut.io.keyHigh1Status.valid.poke(false.B)
       dut.clock.step()
       dut.io.done.expect(true.B)
       dut.io.ready.expect(true.B)

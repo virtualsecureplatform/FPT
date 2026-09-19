@@ -18,7 +18,8 @@ object EmitFptBlindRotateKernelController extends App {
   )
 
   ChiselStage.emitSystemVerilogFile(
-    new FptBlindRotateKernelController(config),
+    new FptBlindRotateKernelController(config,
+      chainedInterface = sys.env.get("FPT_U280_CHAINED_INTERFACE").contains("1")),
     args = Array("--target-dir", outputDirectory.toString),
     firtoolOpts = SynthesisEmitter.firtoolOptions
   )

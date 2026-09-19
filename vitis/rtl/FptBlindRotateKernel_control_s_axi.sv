@@ -2,7 +2,8 @@
 
 module FptBlindRotateKernel_control_s_axi #(
   parameter integer C_S_AXI_ADDR_WIDTH = 7,
-  parameter integer C_S_AXI_DATA_WIDTH = 32
+  parameter integer C_S_AXI_DATA_WIDTH = 32,
+  parameter integer C_CHAIN = 0
 ) (
   input  wire                            ACLK,
   input  wire                            ARESET,
@@ -26,6 +27,7 @@ module FptBlindRotateKernel_control_s_axi #(
   output wire [1:0]                      BRESP,
   output wire                            interrupt,
   output wire                            ap_start,
+  output wire                            ap_continue,
   input  wire                            ap_done,
   input  wire                            ap_ready,
   input  wire                            ap_idle,
@@ -39,7 +41,10 @@ module FptBlindRotateKernel_control_s_axi #(
   input  wire [31:0]                     debug_key_beats,
   input  wire [31:0]                     debug_key_starved_cycles,
   input  wire [31:0]                     debug_key_bank_blocked_cycles,
-  input  wire [31:0]                     debug_run_cycles
+  input  wire [31:0]                     debug_run_cycles,
+  input  wire [31:0]                     chain_accepted,
+  input  wire [31:0]                     chain_prefetched,
+  input  wire [31:0]                     chain_completed
 );
 
   localparam [6:0] ADDR_AP_CTRL       = 7'h00;
@@ -74,6 +79,7 @@ module FptBlindRotateKernel_control_s_axi #(
   reg int_ap_done;
   reg int_ap_ready;
   reg int_auto_restart;
+  reg chain_done_seen;
   reg int_gie;
   reg [1:0] int_ier;
   reg [1:0] int_isr;
@@ -101,6 +107,11 @@ module FptBlindRotateKernel_control_s_axi #(
   assign RRESP = 2'b00;
   assign interrupt = int_gie && (|int_isr);
   assign ap_start = int_ap_start;
+  // W1 pulse: completion stays asserted in the chained frontend until this
+  // acknowledgement. Reading AP_CTRL must not consume a chained completion.
+  assign ap_continue = C_CHAIN && ACLK_EN && w_hs &&
+                       waddr == ADDR_AP_CTRL && WSTRB[0] && WDATA[4];
+  wire completion_event = C_CHAIN ? (ap_done && !chain_done_seen) : ap_done;
   assign input_ptr = int_input_ptr;
   assign key_low_ptr = int_key_low_ptr;
   assign key_high_ptr = int_key_high_ptr;
@@ -134,7 +145,7 @@ module FptBlindRotateKernel_control_s_axi #(
             ADDR_AP_CTRL: begin
               rdata <= 0;
               rdata[0] <= int_ap_start;
-              rdata[1] <= int_ap_done;
+              rdata[1] <= C_CHAIN ? ap_done : int_ap_done;
               rdata[2] <= ap_idle;
               rdata[3] <= int_ap_ready;
               rdata[7] <= int_auto_restart;
@@ -159,6 +170,9 @@ module FptBlindRotateKernel_control_s_axi #(
             ADDR_KEY_LOW1_HI: rdata <= int_key_low1_ptr[63:32];
             ADDR_KEY_HIGH1_LO: rdata <= int_key_high1_ptr[31:0];
             ADDR_KEY_HIGH1_HI: rdata <= int_key_high1_ptr[63:32];
+            7'h58: rdata <= C_CHAIN ? chain_accepted : 32'b0;
+            7'h5c: rdata <= C_CHAIN ? chain_prefetched : 32'b0;
+            7'h60: rdata <= C_CHAIN ? chain_completed : 32'b0;
             default: rdata <= 0;
           endcase
         end
@@ -174,6 +188,7 @@ module FptBlindRotateKernel_control_s_axi #(
       int_ap_done <= 1'b0;
       int_ap_ready <= 1'b0;
       int_auto_restart <= 1'b0;
+      chain_done_seen <= 1'b0;
       int_gie <= 1'b0;
       int_ier <= 2'b0;
       int_isr <= 2'b0;
@@ -184,12 +199,15 @@ module FptBlindRotateKernel_control_s_axi #(
       int_key_high1_ptr <= 64'b0;
       int_output_ptr <= 64'b0;
     end else if (ACLK_EN) begin
+      if (ap_ready) int_ap_start <= int_auto_restart;
       if (w_hs && waddr == ADDR_AP_CTRL && WSTRB[0]) begin
         if (WDATA[0]) int_ap_start <= 1'b1;
-        int_auto_restart <= WDATA[7];
-      end else if (ap_ready) begin
-        int_ap_start <= int_auto_restart;
+        // Chained requests carry separate pointer snapshots; auto-restart is
+        // deliberately unsupported in this mode.
+        int_auto_restart <= C_CHAIN ? 1'b0 : WDATA[7];
       end
+
+      chain_done_seen <= ap_done && !ap_continue;
 
       if (ap_done) int_ap_done <= 1'b1;
       else if (ar_hs && ARADDR == ADDR_AP_CTRL) int_ap_done <= 1'b0;
@@ -198,7 +216,7 @@ module FptBlindRotateKernel_control_s_axi #(
 
       if (w_hs && waddr == ADDR_GIE && WSTRB[0]) int_gie <= WDATA[0];
       if (w_hs && waddr == ADDR_IER && WSTRB[0]) int_ier <= WDATA[1:0];
-      if (int_ier[0] && ap_done) int_isr[0] <= 1'b1;
+      if (int_ier[0] && completion_event) int_isr[0] <= 1'b1;
       if (int_ier[1] && ap_ready) int_isr[1] <= 1'b1;
       if (w_hs && waddr == ADDR_ISR && WSTRB[0])
         int_isr <= int_isr & ~WDATA[1:0];

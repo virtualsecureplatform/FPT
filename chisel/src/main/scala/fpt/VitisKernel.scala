@@ -5,7 +5,8 @@ import chisel3.util._
 
 /** Fixed-size DataMover and accelerator sequencer for one Set-II batch. */
 final class FptBlindRotateKernelSequencer(
-    val config: BufferedBlindRotateConfig
+    val config: BufferedBlindRotateConfig,
+    val strictCompletion: Boolean = false
 ) extends Module {
   private val blind = config.blindRotate
   private val coefficient = blind.cmux.engine.coefficient
@@ -423,7 +424,8 @@ final class FptBlindRotateKernelSequencer(
   ) {
     outputDrainCount := outputDrainCount + 1.U
   }
-  val outputDrained = allStatusesDone || outputDrainCount.andR
+  val outputDrained = if (strictCompletion) allStatusesDone
+    else allStatusesDone || outputDrainCount.andR
   progressStatus := Cat(
     keyIndex,
     inputsLoaded,
@@ -445,10 +447,15 @@ final class FptBlindRotateKernelSequencer(
 
 /** Chisel kernel body instantiated below the hand-written AXI/DataMover shell. */
 final class FptBlindRotateKernelController(
-    val config: BufferedBlindRotateConfig
+    val config: BufferedBlindRotateConfig,
+    val chainedInterface: Boolean = false
 ) extends Module {
   val io = IO(new Bundle {
     val start = Input(Bool())
+    val continue = if (chainedInterface) Some(Input(Bool())) else None
+    val chainAccepted = if (chainedInterface) Some(Output(UInt(32.W))) else None
+    val chainPrefetched = if (chainedInterface) Some(Output(UInt(32.W))) else None
+    val chainCompleted = if (chainedInterface) Some(Output(UInt(32.W))) else None
     val idle = Output(Bool())
     val done = Output(Bool())
     val ready = Output(Bool())
@@ -491,7 +498,7 @@ final class FptBlindRotateKernelController(
     val outputError = Input(Bool())
   })
 
-  val sequencer = Module(new FptBlindRotateKernelSequencer(config))
+  val sequencer = Module(new FptBlindRotateKernelSequencer(config, strictCompletion = chainedInterface))
   val core = Module(new BufferedBlindRotateAccelerator(config))
 
   sequencer.io.start := io.start
@@ -595,4 +602,55 @@ final class FptBlindRotateKernelController(
   sequencer.io.coreResultCount := core.io.resultCount
   sequencer.io.coreResultLast := core.io.resultLast
   core.io.resultReady := sequencer.io.coreResultReady
+
+  if (chainedInterface) {
+    val chain = Module(new KernelChainFrontend(
+      config.blindRotate.batchContexts * (config.blindRotate.domainDimension + 2) / 16))
+    chain.io.start := io.start
+    chain.io.continue := io.continue.get
+    chain.io.arguments.input := io.inputPointer
+    chain.io.arguments.keyLow := io.keyLowPointer
+    chain.io.arguments.keyHigh := io.keyHighPointer
+    chain.io.arguments.keyLow1 := io.keyLow1Pointer
+    chain.io.arguments.keyHigh1 := io.keyHigh1Pointer
+    chain.io.arguments.output := io.outputPointer
+    sequencer.io.start := chain.io.launch.valid
+    chain.io.launch.ready := sequencer.io.ready && !sequencer.io.done
+    sequencer.io.inputPointer := chain.io.launch.bits.input
+    sequencer.io.keyLowPointer := chain.io.launch.bits.keyLow
+    sequencer.io.keyHighPointer := chain.io.launch.bits.keyHigh
+    sequencer.io.keyLow1Pointer := chain.io.launch.bits.keyLow1
+    sequencer.io.keyHigh1Pointer := chain.io.launch.bits.keyHigh1
+    sequencer.io.outputPointer := chain.io.launch.bits.output
+    chain.io.executionDone := sequencer.io.done
+    chain.io.executionResult.status := sequencer.io.status
+    chain.io.executionResult.keyBeats := sequencer.io.debugKeyBeats
+    chain.io.executionResult.keyStarved := sequencer.io.debugKeyStarvedCycles
+    chain.io.executionResult.keyBlocked := sequencer.io.debugKeyBankBlockedCycles
+    chain.io.executionResult.runCycles := sequencer.io.debugRunCycles
+    io.idle := chain.io.idle
+    io.ready := chain.io.ready
+    io.done := chain.io.done
+    io.chainAccepted.get := chain.io.acceptedCount
+    io.chainPrefetched.get := chain.io.prefetchedCount
+    io.chainCompleted.get := chain.io.completedCount
+    when(chain.io.done) {
+      io.status := chain.io.completion.status
+      io.debugKeyBeats := chain.io.completion.keyBeats
+      io.debugKeyStarvedCycles := chain.io.completion.keyStarved
+      io.debugKeyBankBlockedCycles := chain.io.completion.keyBlocked
+      io.debugRunCycles := chain.io.completion.runCycles
+    }
+    when(chain.io.faulted) { io.status := chain.io.faultStatus }
+    io.inputCommand <> chain.io.inputCommand
+    chain.io.inputData <> io.inputData
+    chain.io.inputStatus := io.inputStatus
+    chain.io.inputError := io.inputError
+    chain.io.coreInputCommand <> sequencer.io.inputCommand
+    sequencer.io.inputData <> chain.io.coreInputData
+    sequencer.io.inputStatus := chain.io.coreInputStatus
+    // Prefetch failures are attributed by the frontend; do not abort a prior
+    // invocation because a later input transaction failed.
+    sequencer.io.inputError := false.B
+  }
 }
