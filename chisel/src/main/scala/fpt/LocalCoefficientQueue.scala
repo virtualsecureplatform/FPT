@@ -3,12 +3,12 @@ package fpt
 import chisel3._
 import chisel3.util._
 
-/** Same-cycle flow/pipe queue, with independently preserved storage controls. */
-private[fpt] final class CoefficientQueueTile(width: Int, entries: Int)
+/** Pipe queue with optional empty bypass and independently preserved controls. */
+private[fpt] final class CoefficientQueueTile(width: Int, entries: Int, flow: Boolean = true)
     extends BlackBox with HasBlackBoxInline {
   require(width > 0 && entries >= 2 && isPow2(entries))
   private val p = log2Ceil(entries)
-  override def desiredName = s"FptCoefficientQueueTile_${width}_${entries}"
+  override def desiredName = s"FptCoefficientQueueTile_${width}_${entries}" + (if (flow) "" else "_NoFlow")
   val io = IO(new Bundle {
     val clock = Input(Clock())
     val reset = Input(Bool())
@@ -35,9 +35,9 @@ private[fpt] final class CoefficientQueueTile(width: Int, entries: Int)
     |(* DONT_TOUCH = "yes", KEEP = "yes" *) wire empty = matching && !maybeFull;
     |(* DONT_TOUCH = "yes", KEEP = "yes" *) wire full = matching && maybeFull;
     |assign enqReady = !full || deqReady;
-    |assign deqValid = !empty || enqValid;
-    |assign deqData = empty ? enqData : storage[deqPointer];
-    |(* DONT_TOUCH = "yes", KEEP = "yes" *) wire writeEnable = enqValid && enqReady && !(empty && deqReady);
+    |assign deqValid = ${if (flow) "!empty || enqValid" else "!empty"};
+    |assign deqData = ${if (flow) "empty ? enqData : storage[deqPointer]" else "storage[deqPointer]"};
+    |(* DONT_TOUCH = "yes", KEEP = "yes" *) wire writeEnable = enqValid && enqReady${if (flow) " && !(empty && deqReady)" else ""};
     |wire readEnable = deqReady && !empty;
     |wire [${p - 1}:0] distance = enqPointer - deqPointer;
     |assign count = matching ? (maybeFull ? ${p + 1}'d$entries : ${p + 1}'d0) : {1'b0, distance};
@@ -54,7 +54,7 @@ private[fpt] final class CoefficientQueueTile(width: Int, entries: Int)
     |""".stripMargin)
 }
 
-final class LocalCoefficientQueue[T <: Data](gen: T, entries: Int, tileBits: Int = 512)
+final class LocalCoefficientQueue[T <: Data](gen: T, entries: Int, tileBits: Int = 512, flow: Boolean = true)
     extends Module {
   require(entries >= 2 && isPow2(entries) && tileBits > 0)
   val io = IO(new QueueIO(gen, entries))
@@ -62,7 +62,7 @@ final class LocalCoefficientQueue[T <: Data](gen: T, entries: Int, tileBits: Int
   private val input = io.enq.bits.asUInt
   private val tiles = (0 until width by tileBits).map { first =>
     val bits = math.min(tileBits, width - first)
-    val tile = Module(new CoefficientQueueTile(bits, entries))
+    val tile = Module(new CoefficientQueueTile(bits, entries, flow))
     tile.suggestName(s"storageTile_${first / tileBits}")
     tile.io.clock := clock
     tile.io.reset := reset.asBool
@@ -83,13 +83,13 @@ final class LocalCoefficientQueue[T <: Data](gen: T, entries: Int, tileBits: Int
 }
 
 private[fpt] object CoefficientQueue {
-  def apply[T <: Data](gen: T, entries: Int, local: Boolean, name: String): QueueIO[T] = {
+  def apply[T <: Data](gen: T, entries: Int, local: Boolean, name: String, flow: Boolean = true): QueueIO[T] = {
     if (local) {
-      val queue = Module(new LocalCoefficientQueue(gen, entries))
+      val queue = Module(new LocalCoefficientQueue(gen, entries, flow = flow))
       queue.suggestName(name)
       queue.io
     } else {
-      val queue = Module(new Queue(gen, entries, pipe = true, flow = true))
+      val queue = Module(new Queue(gen, entries, pipe = true, flow = flow))
       queue.suggestName(name)
       queue.io
     }

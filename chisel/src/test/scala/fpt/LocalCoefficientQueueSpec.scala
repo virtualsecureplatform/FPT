@@ -6,14 +6,14 @@ import chiseltest._
 import chiseltest.simulator.VerilatorBackendAnnotation
 import org.scalatest.flatspec.AnyFlatSpec
 
-class LocalQueueMiter(width: Int, entries: Int) extends Module {
+class LocalQueueMiter(width: Int, entries: Int, flow: Boolean = true) extends Module {
   val io = IO(new Bundle {
     val valid = Input(Bool()); val ready = Input(Bool())
     // Narrow ports avoid the test backend's wide UInt port limitation.
     val data = Input(Vec((width + 31) / 32, UInt(32.W)))
   })
-  val ref = Module(new Queue(UInt(width.W), entries, pipe = true, flow = true))
-  val dut = Module(new LocalCoefficientQueue(UInt(width.W), entries))
+  val ref = Module(new Queue(UInt(width.W), entries, pipe = true, flow = flow))
+  val dut = Module(new LocalCoefficientQueue(UInt(width.W), entries, flow = flow))
   Seq(ref.io, dut.io).foreach { q =>
     q.enq.valid := io.valid; q.enq.bits := io.data.asUInt(width - 1, 0)
     q.deq.ready := io.ready
@@ -25,9 +25,9 @@ class LocalQueueMiter(width: Int, entries: Int) extends Module {
 }
 
 class LocalCoefficientQueueSpec extends AnyFlatSpec with ChiselScalatestTester {
-  for ((width, entries) <- Seq((1,2), (512,8), (513,2), (7685,8), (4097,2))) {
-    it should s"match flow and pipe queue width=$width depth=$entries cycle for cycle" in {
-      test(new LocalQueueMiter(width,entries)).withAnnotations(Seq(VerilatorBackendAnnotation, PaperVerilator.flags)) { d =>
+  for (flow <- Seq(true, false); (width, entries) <- Seq((1,2), (512,8), (513,2), (7685,8), (4097,2))) {
+    it should s"match flow and pipe queue width=$width depth=$entries flow=$flow cycle for cycle" in {
+      test(new LocalQueueMiter(width,entries,flow)).withAnnotations(Seq(VerilatorBackendAnnotation, PaperVerilator.flags)) { d =>
         val random = new scala.util.Random(41 + width)
         def cycle(valid: Boolean, ready: Boolean): Unit = {
           d.io.valid.poke(valid.B); d.io.ready.poke(ready.B)

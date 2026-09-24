@@ -11,11 +11,19 @@ object EmitFptBlindRotateKernelController extends App {
   val outputDirectory = Path.of(args(0)).toAbsolutePath.normalize
   val forwardPath = Path.of(args(1)).toAbsolutePath.normalize
   val inversePath = Path.of(args(2)).toAbsolutePath.normalize
-  val config = PaperU280BufferedBarrelConfig(
+  val baseConfig = PaperU280BufferedBarrelConfig(
     forwardPath.toString,
     inversePath.toString,
     PaperSetII.blindRotateDomainDimension
   )
+  val preparedInput = sys.env.get("FPT_U280_PREPROCESSED_INPUT").contains("1")
+  require(!preparedInput || sys.env.get("FPT_U280_CHAINED_INTERFACE").contains("1"),
+    "FPT_U280_PREPROCESSED_INPUT=1 requires FPT_U280_CHAINED_INTERFACE=1")
+  val bufferedOutput = sys.env.get("FPT_U280_BUFFERED_OUTPUT").contains("1")
+  require(!bufferedOutput || (preparedInput && baseConfig.blindRotate.sampleExtractLanes == 4),
+    "FPT_U280_BUFFERED_OUTPUT=1 requires prepared input and four output lanes")
+  val config = baseConfig.copy(blindRotate = baseConfig.blindRotate.copy(
+    preprocessedInput = preparedInput, bufferedOutput = bufferedOutput))
 
   ChiselStage.emitSystemVerilogFile(
     new FptBlindRotateKernelController(config,
@@ -25,6 +33,9 @@ object EmitFptBlindRotateKernelController extends App {
   )
   val systemVerilog = outputDirectory.resolve("FptBlindRotateKernelController.sv")
   SynthesisEmitter.removeInlineFileList(systemVerilog)
+  if (bufferedOutput) {
+    SynthesisEmitter.addBlockRamStyleByPrefix(systemVerilog, "snapshotMaskMemory_")
+  }
   SynthesisEmitter.addBlockRamStyle(systemVerilog, config.keyMemoryModuleName)
   SynthesisEmitter.addBlockRamStyleByPrefix(systemVerilog, "digitMemory_")
   SynthesisEmitter.addDistributedRamStyleByPrefix(

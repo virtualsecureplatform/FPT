@@ -21,6 +21,10 @@ set chained 0
 if {[info exists ::env(FPT_U280_CHAINED_INTERFACE)]} {set chained $::env(FPT_U280_CHAINED_INTERFACE)}
 if {$chained ni {0 1}} {error "FPT_U280_CHAINED_INTERFACE must be 0 or 1"}
 set status_fifo [expr {$chained ? "true" : "false"}]
+set prepared_input 0
+if {[info exists ::env(FPT_U280_PREPROCESSED_INPUT)]} {set prepared_input $::env(FPT_U280_PREPROCESSED_INPUT)}
+if {$prepared_input ni {0 1}} {error "FPT_U280_PREPROCESSED_INPUT must be 0 or 1"}
+if {$prepared_input && !$chained} {error "preprocessed input requires chained interface"}
 set floorplan A
 if {[info exists ::env(FPT_FLOORPLAN)]} {
   set floorplan [string toupper $::env(FPT_FLOORPLAN)]
@@ -39,11 +43,15 @@ set output_config [file join $generated_dir FptOutputConfig.vh]
 set config_file [open $output_config w]
 puts $config_file "`define FPT_OUTPUT_LANES $output_lanes"
 if {$chained} {puts $config_file "`define FPT_CHAIN_INTERFACE"}
+if {$prepared_input} {puts $config_file "`define FPT_PREPROCESSED_INPUT"}
 close $config_file
 set controller_file [open [file join $generated_dir FptBlindRotateKernelController.sv]]
 set controller_rtl [read $controller_file]; close $controller_file
 if {[regexp {\mio_continue\M} $controller_rtl] != $chained} {
   error "controller RTL and FPT_U280_CHAINED_INTERFACE disagree"
+}
+if {[regexp {\mio_stageCycles_0\M} $controller_rtl] != $prepared_input} {
+  error "controller RTL and FPT_U280_PREPROCESSED_INPUT disagree"
 }
 
 import_files -norecurse [list \

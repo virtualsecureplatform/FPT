@@ -35,6 +35,18 @@ final class FptBlindRotateKernelSequencer(
   private val keyBytes = keyWords * 64
 
   val io = IO(new Bundle {
+    val launchId = if (blind.bufferedOutput) Some(Input(Bool())) else None
+    val completionId = if (blind.bufferedOutput) Some(Output(Bool())) else None
+    val executionReleased = if (blind.bufferedOutput) Some(Output(Bool())) else None
+    val coreCaptured = if (blind.bufferedOutput) Some(Input(Bool())) else None
+    val coreRetire = if (blind.bufferedOutput) Some(Output(Bool())) else None
+    val chainFailure = if (blind.bufferedOutput) Some(Flipped(Valid(UInt(32.W)))) else None
+    val preparedBank = if (blind.preprocessedInput) Some(Input(Bool())) else None
+    val preparationCycles = if (blind.preprocessedInput) Some(Input(UInt(32.W))) else None
+    val preparedActivate = if (blind.preprocessedInput) Some(Decoupled(Bool())) else None
+    val preparedInitialized = if (blind.preprocessedInput) Some(Input(Bool())) else None
+    val coreComputeDone = if (blind.preprocessedInput) Some(Input(Bool())) else None
+    val stageCycles = if (blind.preprocessedInput) Some(Output(Vec(5, UInt(32.W)))) else None
     val start = Input(Bool())
     val idle = Output(Bool())
     val done = Output(Bool())
@@ -111,13 +123,16 @@ final class FptBlindRotateKernelSequencer(
   private def dataMoverCommand(address: UInt, bytes: Int): UInt =
     Cat(0.U(8.W), address, false.B, true.B, 0.U(6.W), true.B, bytes.U(23.W))
 
+  private val outputRetirement = if (blind.bufferedOutput)
+    Some(Module(new BufferedOutputRetirement(outputBytes))) else None
   val busy = RegInit(false.B)
   val donePulse = RegInit(false.B)
   val errorSticky = RegInit(false.B)
   val errorChannel = RegInit(0.U(3.W))
   val errorCode = RegInit(0.U(8.W))
   private val frameRecoveryReady = SGenFrameRecovery.ready(SGenFrameRecovery.configuredCycles)
-  val launch = io.start && !busy && frameRecoveryReady
+  val launch = io.start && !busy && frameRecoveryReady &&
+    outputRetirement.map(_.io.ready).getOrElse(true.B)
   donePulse := false.B
   io.idle := !busy
   io.done := donePulse
@@ -163,7 +178,7 @@ final class FptBlindRotateKernelSequencer(
   val outputCommandPending = RegInit(false.B)
   val keyCommandsSent = RegInit(VecInit(Seq.fill(4)(false.B)))
   when(launch) {
-    inputCommandPending := true.B
+    inputCommandPending := (!blind.preprocessedInput).B
     outputCommandPending := true.B
     keyCommandsSent.foreach(_ := false.B)
   }
@@ -239,6 +254,18 @@ final class FptBlindRotateKernelSequencer(
   }
   when(io.coreInputDone && io.coreInputDoneContext === (contexts - 1).U) {
     inputsLoaded := true.B
+  }
+  if (blind.preprocessedInput) {
+    val activatePending = RegInit(false.B)
+    val bank = Reg(Bool())
+    when(launch) { bank := io.preparedBank.get; activatePending := true.B }
+    io.preparedActivate.get.valid := activatePending && busy && !errorSticky
+    io.preparedActivate.get.bits := bank
+    when(io.preparedActivate.get.fire) { activatePending := false.B }
+    when(io.preparedInitialized.get) { inputsLoaded := true.B }
+    io.inputData.ready := false.B
+    io.coreInputStart := false.B
+    io.coreInputValid := false.B
   }
 
   // Pair independent key streams through one-word skid registers.
@@ -344,7 +371,19 @@ final class FptBlindRotateKernelSequencer(
   when(launch) { runStarted := false.B }
   when(io.coreRunStart) { runStarted := true.B }
 
-  if (blind.sampleExtractLanes == 1) {
+  if (blind.bufferedOutput) {
+    val output = outputRetirement.get.io
+    output.input.valid := io.coreResultValid
+    output.input.bits.data := io.coreResult
+    output.input.bits.count := io.coreResultCount
+    output.input.bits.last := io.coreResultLast
+    io.coreResultReady := output.input.ready
+    io.outputData.valid := output.output.valid
+    io.outputData.bits := output.output.bits.data
+    io.outputKeep := output.output.bits.keep
+    io.outputLast := output.output.bits.last
+    output.output.ready := io.outputData.ready
+  } else if (blind.sampleExtractLanes == 1) {
     io.outputData.valid := busy && io.coreResultValid
     io.outputData.bits := io.coreResult
     io.outputKeep := 15.U
@@ -363,7 +402,8 @@ final class FptBlindRotateKernelSequencer(
     io.outputLast := packer.io.output.bits.last
     packer.io.output.ready := busy && io.outputData.ready
   }
-  val outputComplete = if (blind.sampleExtractLanes == 1) io.coreDone
+  val outputComplete = if (blind.bufferedOutput) false.B
+    else if (blind.sampleExtractLanes == 1) io.coreDone
     else io.outputData.fire && io.outputLast
 
   val inputStatusDone = RegInit(false.B)
@@ -375,7 +415,7 @@ final class FptBlindRotateKernelSequencer(
     debugRunCycles := debugRunCycles + 1.U
   }
   when(launch) {
-    inputStatusDone := false.B
+    inputStatusDone := blind.preprocessedInput.B
     keyStatusDone.foreach(_ := false.B)
     outputStatusDone := false.B
     coreDoneSeen := false.B
@@ -386,8 +426,25 @@ final class FptBlindRotateKernelSequencer(
   when(io.keyHighStatus.valid) { keyStatusDone(1) := true.B }
   when(io.keyLow1Status.valid) { keyStatusDone(2) := true.B }
   when(io.keyHigh1Status.valid) { keyStatusDone(3) := true.B }
-  when(io.outputStatus.valid) { outputStatusDone := true.B }
+  if (!blind.bufferedOutput) {
+    when(io.outputStatus.valid) { outputStatusDone := true.B }
+  }
   when(outputComplete) { coreDoneSeen := true.B }
+  if (blind.preprocessedInput) {
+    val stages = RegInit(VecInit(Seq.fill(5)(0.U(32.W))))
+    val computeDoneSeen = RegInit(false.B)
+    io.stageCycles.get := stages
+    when(busy && !runStarted) { stages(1) := stages(1) + 1.U }
+    when(busy && runStarted && !computeDoneSeen) { stages(2) := stages(2) + 1.U }
+    when(busy && computeDoneSeen && !coreDoneSeen) { stages(3) := stages(3) + 1.U }
+    when(busy && coreDoneSeen) { stages(4) := stages(4) + 1.U }
+    when(io.coreComputeDone.get) { computeDoneSeen := true.B }
+    when(launch) {
+      stages.foreach(_ := 0.U)
+      stages(0) := io.preparationCycles.get
+      computeDoneSeen := false.B
+    }
+  }
 
   val channelErrors = VecInit(Seq(
     io.inputError || (io.inputStatus.valid && !io.inputStatus.bits(7)),
@@ -395,7 +452,8 @@ final class FptBlindRotateKernelSequencer(
     io.keyHighError || (io.keyHighStatus.valid && !io.keyHighStatus.bits(7)),
     io.keyLow1Error || (io.keyLow1Status.valid && !io.keyLow1Status.bits(7)),
     io.keyHigh1Error || (io.keyHigh1Status.valid && !io.keyHigh1Status.bits(7)),
-    io.outputError || (io.outputStatus.valid && !io.outputStatus.bits(7))
+    (if (blind.bufferedOutput) false.B else
+      io.outputError || (io.outputStatus.valid && !io.outputStatus.bits(7)))
   ))
   val channelStatus = VecInit(Seq(
     Mux(io.inputStatus.valid, io.inputStatus.bits, "hff".U),
@@ -437,11 +495,51 @@ final class FptBlindRotateKernelSequencer(
     outputStatusDone,
     keyLoadActive
   )
-  when(
-    busy && (errorSticky || (coreComplete && outputDrained))
-  ) {
-    busy := false.B
-    donePulse := true.B
+  if (blind.bufferedOutput) {
+    val output = outputRetirement.get.io
+    val capturedSeen = RegInit(false.B)
+    when(launch) { capturedSeen := false.B }
+    when(io.coreCaptured.get) { capturedSeen := true.B }
+    val keysConsumed = keyIndex === dimension.U && !keyLoadActive &&
+      !keyLowValid && !keyHighValid && !keyLow1Valid && !keyHigh1Valid
+    val released = busy && capturedSeen && keysConsumed && keyStatusDone.asUInt.andR &&
+      !errorSticky && !channelErrors.asUInt.orR && !output.faulted
+    io.executionReleased.get := released
+    when(released || errorSticky || output.faulted) { busy := false.B }
+    output.launch.valid := launch
+    output.launch.bits.id := io.launchId.get
+    output.launch.bits.pointer := io.outputPointer
+    output.launch.bits.preparationCycles := io.preparationCycles.get
+    output.runStart := io.coreRunStart
+    output.computeDone := io.coreComputeDone.get
+    output.captured := io.coreCaptured.get
+    output.executionReleased := released
+    output.executionStats.status := 0.U
+    output.executionStats.keyBeats := debugKeyBeats
+    output.executionStats.keyStarved := debugKeyStarvedCycles
+    output.executionStats.keyBlocked := debugKeyBankBlockedCycles
+    output.executionStats.runCycles := 0.U
+    output.failure.valid := errorSticky || io.chainFailure.get.valid
+    output.failure.bits := Mux(errorSticky,
+      Cat(0.U(20.W), errorCode, errorChannel, true.B), io.chainFailure.get.bits)
+    output.status := io.outputStatus
+    output.error := io.outputError
+    io.outputCommand <> output.command
+    io.coreRetire.get := output.retire
+    io.done := output.completion.valid
+    io.ready := launch
+    io.completionId.get := output.completion.bits.id
+    io.status := output.completion.bits.result.status
+    io.debugKeyBeats := output.completion.bits.result.keyBeats
+    io.debugKeyStarvedCycles := output.completion.bits.result.keyStarved
+    io.debugKeyBankBlockedCycles := output.completion.bits.result.keyBlocked
+    io.debugRunCycles := output.completion.bits.result.runCycles
+    io.stageCycles.get := output.completion.bits.stages
+  } else {
+    when(busy && (errorSticky || (coreComplete && outputDrained))) {
+      busy := false.B
+      donePulse := true.B
+    }
   }
 }
 
@@ -450,7 +548,10 @@ final class FptBlindRotateKernelController(
     val config: BufferedBlindRotateConfig,
     val chainedInterface: Boolean = false
 ) extends Module {
+  require(!config.blindRotate.preprocessedInput || chainedInterface,
+    "preprocessed input requires chained invocation ownership")
   val io = IO(new Bundle {
+    val stageCycles = if (config.blindRotate.preprocessedInput) Some(Output(Vec(5, UInt(32.W)))) else None
     val start = Input(Bool())
     val continue = if (chainedInterface) Some(Input(Bool())) else None
     val chainAccepted = if (chainedInterface) Some(Output(UInt(32.W))) else None
@@ -603,7 +704,7 @@ final class FptBlindRotateKernelController(
   sequencer.io.coreResultLast := core.io.resultLast
   core.io.resultReady := sequencer.io.coreResultReady
 
-  if (chainedInterface) {
+  if (chainedInterface && !config.blindRotate.preprocessedInput) {
     val chain = Module(new KernelChainFrontend(
       config.blindRotate.batchContexts * (config.blindRotate.domainDimension + 2) / 16))
     chain.io.start := io.start
@@ -651,6 +752,106 @@ final class FptBlindRotateKernelController(
     sequencer.io.inputStatus := chain.io.coreInputStatus
     // Prefetch failures are attributed by the frontend; do not abort a prior
     // invocation because a later input transaction failed.
+    sequencer.io.inputError := false.B
+  }
+  if (config.blindRotate.preprocessedInput) {
+    val chain = Module(new PreparedKernelChainFrontend(
+      config.blindRotate.batchContexts * (config.blindRotate.domainDimension + 2) / 16,
+      bufferedOutput = config.blindRotate.bufferedOutput))
+    val prepared = core.io.preparedInput.get
+    chain.io.start := io.start
+    chain.io.continue := io.continue.get
+    chain.io.arguments.input := io.inputPointer
+    chain.io.arguments.keyLow := io.keyLowPointer
+    chain.io.arguments.keyHigh := io.keyHighPointer
+    chain.io.arguments.keyLow1 := io.keyLow1Pointer
+    chain.io.arguments.keyHigh1 := io.keyHigh1Pointer
+    chain.io.arguments.output := io.outputPointer
+    sequencer.io.start := chain.io.launch.valid
+    chain.io.launch.ready := sequencer.io.ready && !sequencer.io.done
+    if (config.blindRotate.bufferedOutput) {
+      chain.io.launch.ready := sequencer.io.ready
+      sequencer.io.launchId.get := chain.io.launchId.get
+      chain.io.completionId.get := sequencer.io.completionId.get
+      chain.io.executionReleased.get := sequencer.io.executionReleased.get
+      sequencer.io.coreCaptured.get := core.io.bufferedOutput.get.captured
+      core.io.bufferedOutput.get.retire := sequencer.io.coreRetire.get
+      sequencer.io.chainFailure.get.valid := chain.io.faulted
+      sequencer.io.chainFailure.get.bits := chain.io.faultStatus
+    }
+    sequencer.io.inputPointer := chain.io.launch.bits.input
+    sequencer.io.keyLowPointer := chain.io.launch.bits.keyLow
+    sequencer.io.keyHighPointer := chain.io.launch.bits.keyHigh
+    sequencer.io.keyLow1Pointer := chain.io.launch.bits.keyLow1
+    sequencer.io.keyHigh1Pointer := chain.io.launch.bits.keyHigh1
+    sequencer.io.outputPointer := chain.io.launch.bits.output
+    sequencer.io.preparedBank.get := chain.io.launchBank
+    sequencer.io.preparationCycles.get := prepared.preparationCycles(chain.io.launchBank)
+    prepared.activate <> sequencer.io.preparedActivate.get
+    sequencer.io.preparedInitialized.get := prepared.initialized
+    sequencer.io.coreComputeDone.get := core.io.computeDone
+    prepared.start <> chain.io.prepareStart
+    val preparedWordLink = Module(new PreparedWordLink)
+    preparedWordLink.io.input <> chain.io.prepareWord
+    prepared.word <> preparedWordLink.io.output
+    chain.io.prepareDone := prepared.prepared
+    prepared.release := chain.io.releaseBank
+    chain.io.executionDone := sequencer.io.done
+    chain.io.executionResult.status := sequencer.io.status
+    chain.io.executionResult.keyBeats := sequencer.io.debugKeyBeats
+    chain.io.executionResult.keyStarved := sequencer.io.debugKeyStarvedCycles
+    chain.io.executionResult.keyBlocked := sequencer.io.debugKeyBankBlockedCycles
+    chain.io.executionResult.runCycles := sequencer.io.debugRunCycles
+    chain.io.executionStages := sequencer.io.stageCycles.get
+    if (config.blindRotate.bufferedOutput) {
+      val completionLink = Module(new BufferedCompletionLink)
+      completionLink.io.input.valid := sequencer.io.done
+      completionLink.io.input.bits.id := sequencer.io.completionId.get
+      completionLink.io.input.bits.result.status := sequencer.io.status
+      completionLink.io.input.bits.result.keyBeats := sequencer.io.debugKeyBeats
+      completionLink.io.input.bits.result.keyStarved := sequencer.io.debugKeyStarvedCycles
+      completionLink.io.input.bits.result.keyBlocked := sequencer.io.debugKeyBankBlockedCycles
+      completionLink.io.input.bits.result.runCycles := sequencer.io.debugRunCycles
+      completionLink.io.input.bits.stages := sequencer.io.stageCycles.get
+      chain.io.executionDone := completionLink.io.output.valid
+      chain.io.completionId.get := completionLink.io.output.bits.id
+      chain.io.executionResult := completionLink.io.output.bits.result
+      chain.io.executionStages := completionLink.io.output.bits.stages
+      // Includes execution, transport, and delivery. Frontend credits are
+      // returned only by the delayed completion, never by snapshot release.
+      val completionFlight = RegInit(0.U(2.W))
+      when(chain.io.launch.fire =/= completionLink.io.output.valid) {
+        completionFlight := Mux(chain.io.launch.fire, completionFlight + 1.U, completionFlight - 1.U)
+      }
+      when(completionLink.io.output.valid) { assert(completionFlight =/= 0.U) }
+      assert(completionFlight <= 2.U)
+      assert(completionLink.io.pending <= completionFlight)
+    }
+    io.idle := chain.io.idle
+    io.ready := chain.io.ready
+    io.done := chain.io.done
+    io.chainAccepted.get := chain.io.acceptedCount
+    io.chainPrefetched.get := chain.io.prefetchedCount
+    io.chainCompleted.get := chain.io.completedCount
+    io.stageCycles.get := sequencer.io.stageCycles.get
+    when(chain.io.done) {
+      io.status := chain.io.completion.status
+      io.debugKeyBeats := chain.io.completion.keyBeats
+      io.debugKeyStarvedCycles := chain.io.completion.keyStarved
+      io.debugKeyBankBlockedCycles := chain.io.completion.keyBlocked
+      io.debugRunCycles := chain.io.completion.runCycles
+      io.stageCycles.get := chain.io.completionStages
+    }
+    when(chain.io.faulted) { io.status := chain.io.faultStatus }
+    io.inputCommand <> chain.io.inputCommand
+    chain.io.inputData <> io.inputData
+    chain.io.inputStatus := io.inputStatus
+    chain.io.inputError := io.inputError
+    sequencer.io.inputCommand.ready := false.B
+    sequencer.io.inputData.valid := false.B
+    sequencer.io.inputData.bits := 0.U
+    sequencer.io.inputStatus.valid := false.B
+    sequencer.io.inputStatus.bits := 0.U
     sequencer.io.inputError := false.B
   }
 }

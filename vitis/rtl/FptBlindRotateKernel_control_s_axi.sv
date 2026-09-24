@@ -44,7 +44,12 @@ module FptBlindRotateKernel_control_s_axi #(
   input  wire [31:0]                     debug_run_cycles,
   input  wire [31:0]                     chain_accepted,
   input  wire [31:0]                     chain_prefetched,
-  input  wire [31:0]                     chain_completed
+  input  wire [31:0]                     chain_completed,
+  input  wire [31:0]                     preparation_cycles,
+  input  wire [31:0]                     setup_cycles,
+  input  wire [31:0]                     compute_cycles,
+  input  wire [31:0]                     output_tail_cycles,
+  input  wire [31:0]                     dma_wait_cycles
 );
 
   localparam [6:0] ADDR_AP_CTRL       = 7'h00;
@@ -173,6 +178,11 @@ module FptBlindRotateKernel_control_s_axi #(
             7'h58: rdata <= C_CHAIN ? chain_accepted : 32'b0;
             7'h5c: rdata <= C_CHAIN ? chain_prefetched : 32'b0;
             7'h60: rdata <= C_CHAIN ? chain_completed : 32'b0;
+            7'h64: rdata <= preparation_cycles;
+            7'h68: rdata <= setup_cycles;
+            7'h6c: rdata <= compute_cycles;
+            7'h70: rdata <= output_tail_cycles;
+            7'h74: rdata <= dma_wait_cycles;
             default: rdata <= 0;
           endcase
         end

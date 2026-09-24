@@ -52,6 +52,14 @@ module FptBlindRotateKernel #(
   wire ap_ready;
   wire ap_continue;
   wire [31:0] chain_accepted, chain_prefetched, chain_completed;
+  wire [31:0] preparation_cycles, setup_cycles, compute_cycles, output_tail_cycles, dma_wait_cycles;
+`ifndef FPT_PREPROCESSED_INPUT
+  assign preparation_cycles = 0;
+  assign setup_cycles = 0;
+  assign compute_cycles = 0;
+  assign output_tail_cycles = 0;
+  assign dma_wait_cycles = 0;
+`endif
 `ifndef FPT_CHAIN_INTERFACE
   assign chain_accepted = 0;
   assign chain_prefetched = 0;
@@ -121,10 +129,18 @@ module FptBlindRotateKernel #(
     .debug_key_bank_blocked_cycles(debug_key_bank_blocked_cycles),
     .debug_run_cycles(debug_run_cycles),
     .chain_accepted(chain_accepted), .chain_prefetched(chain_prefetched),
-    .chain_completed(chain_completed)
+    .chain_completed(chain_completed),
+    .preparation_cycles(preparation_cycles), .setup_cycles(setup_cycles),
+    .compute_cycles(compute_cycles), .output_tail_cycles(output_tail_cycles),
+    .dma_wait_cycles(dma_wait_cycles)
   );
 
   FptBlindRotateKernelController controller (
+`ifdef FPT_PREPROCESSED_INPUT
+    .io_stageCycles_0(preparation_cycles), .io_stageCycles_1(setup_cycles),
+    .io_stageCycles_2(compute_cycles), .io_stageCycles_3(output_tail_cycles),
+    .io_stageCycles_4(dma_wait_cycles),
+`endif
 `ifdef FPT_CHAIN_INTERFACE
     .io_continue(ap_continue),
     .io_chainAccepted(chain_accepted), .io_chainPrefetched(chain_prefetched),

@@ -86,6 +86,106 @@ final class VitisKernelSequencerSpec
 
   behavior of "the fixed-batch Vitis kernel sequencer"
 
+  it should "launch the next buffered execution before old output status without changing its DMA pointer" in {
+    val buffered = config.copy(blindRotate = config.blindRotate.copy(
+      sampleExtractLanes = 4, preprocessedInput = true, bufferedOutput = true))
+    test(new FptBlindRotateKernelSequencer(buffered, strictCompletion = true))
+        .withAnnotations(Seq(PhysicalRegisterModel.annotation)) { d =>
+      initialize(d); d.clock.setTimeout(0)
+      d.io.launchId.get.poke(false.B); d.io.coreCaptured.get.poke(false.B)
+      d.io.chainFailure.get.valid.poke(false.B); d.io.chainFailure.get.bits.poke(0.U)
+      d.io.preparedBank.get.poke(false.B); d.io.preparationCycles.get.poke(10165.U)
+      d.io.preparedActivate.get.ready.poke(true.B)
+      d.io.preparedInitialized.get.poke(false.B); d.io.coreComputeDone.get.poke(false.B)
+      d.io.outputPointer.poke(4096.U); d.io.outputCommand.ready.poke(false.B)
+      d.reset.poke(true.B); d.clock.step(2); d.reset.poke(false.B)
+      launch(d)
+      d.io.coreRunReady.poke(true.B)
+      d.io.preparedInitialized.get.poke(true.B); d.clock.step(); d.io.preparedInitialized.get.poke(false.B)
+      // Mock completed core key loads; no old key transaction may survive release.
+      for (i <- 0 until 630) {
+        d.clock.step()
+        d.io.coreKeyLoadDoneIndex.poke(i.U); d.io.coreKeyLoadDone.poke(true.B)
+        d.clock.step(); d.io.coreKeyLoadDone.poke(false.B)
+      }
+      d.io.coreComputeDone.get.poke(true.B); d.clock.step(); d.io.coreComputeDone.get.poke(false.B)
+      d.io.coreCaptured.get.poke(true.B); d.clock.step(); d.io.coreCaptured.get.poke(false.B)
+      d.io.executionReleased.get.expect(false.B)
+      val statuses = Seq(d.io.keyLowStatus, d.io.keyHighStatus, d.io.keyLow1Status, d.io.keyHigh1Status)
+      statuses.take(3).foreach(_.valid.poke(true.B)); d.clock.step()
+      statuses.foreach(_.valid.poke(false.B)); d.io.executionReleased.get.expect(false.B)
+      statuses.last.valid.poke(true.B); d.clock.step(); statuses.last.valid.poke(false.B)
+      d.io.executionReleased.get.expect(true.B); d.io.done.expect(false.B); d.clock.step()
+      d.io.launchId.get.poke(true.B); d.io.outputPointer.poke(8192.U)
+      d.io.preparedBank.get.poke(true.B); launch(d)
+      d.io.outputCommand.valid.expect(true.B)
+      ((d.io.outputCommand.bits.peek().litValue >> 32) & ((BigInt(1) << 64) - 1)) should be(BigInt(4096))
+      d.io.outputCommand.ready.poke(true.B); d.clock.step()
+      d.io.coreResultValid.poke(true.B); d.io.coreResultCount.poke(4.U)
+      d.io.coreResult.poke(123.U); d.io.coreResultLast.poke(true.B)
+      d.io.coreResultReady.expect(true.B); d.clock.step(); d.io.coreResultValid.poke(false.B)
+      d.clock.step(5); d.io.done.expect(false.B); d.io.coreRetire.get.expect(false.B)
+      d.io.outputStatus.valid.poke(true.B); d.clock.step(); d.io.outputStatus.valid.poke(false.B)
+      d.clock.step()
+      d.io.done.expect(true.B); d.io.completionId.get.expect(false.B)
+      d.io.coreRetire.get.expect(true.B); d.io.stageCycles.get(0).expect(10165.U)
+      d.clock.step(); d.io.idle.expect(false.B) // Execution 2 remains active.
+      d.io.chainFailure.get.valid.poke(true.B); d.io.chainFailure.get.bits.poke(4083.U)
+      d.clock.step(); d.io.chainFailure.get.valid.poke(false.B)
+      d.io.done.expect(true.B); d.io.completionId.get.expect(true.B)
+      d.io.status.expect(4083.U); d.io.coreRetire.get.expect(false.B)
+      d.clock.step(); d.io.start.poke(true.B); d.io.ready.expect(false.B)
+    }
+  }
+
+  it should "activate prepared input without raw replay and measure initialization separately" in {
+    val prepared = config.copy(blindRotate = config.blindRotate.copy(preprocessedInput = true))
+    test(new FptBlindRotateKernelSequencer(prepared, strictCompletion = true)) { dut =>
+      initialize(dut)
+      dut.io.preparedBank.get.poke(true.B)
+      dut.io.preparationCycles.get.poke(10120.U)
+      dut.io.preparedActivate.get.ready.poke(false.B)
+      dut.io.preparedInitialized.get.poke(false.B)
+      dut.io.coreComputeDone.get.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(2); dut.reset.poke(false.B)
+      launch(dut)
+      dut.io.preparedBank.get.poke(false.B)
+      dut.io.preparationCycles.get.poke(0.U)
+      dut.io.preparedActivate.get.valid.expect(true.B)
+      dut.io.preparedActivate.get.bits.expect(true.B)
+      dut.io.inputCommand.valid.expect(false.B)
+      dut.io.coreInputStart.expect(false.B); dut.io.coreInputValid.expect(false.B)
+      dut.io.coreRunReady.poke(true.B)
+      dut.io.coreKeyLoadDone.poke(true.B); dut.io.coreKeyLoadDoneIndex.poke(0.U)
+      dut.clock.step(); dut.io.coreKeyLoadDone.poke(false.B)
+      dut.clock.step(7); dut.io.coreRunStart.expect(false.B)
+      dut.io.preparedActivate.get.ready.poke(true.B); dut.clock.step()
+      dut.io.preparedActivate.get.ready.poke(false.B)
+      dut.io.preparedActivate.get.valid.expect(false.B)
+      dut.io.preparedInitialized.get.poke(true.B); dut.clock.step()
+      dut.io.preparedInitialized.get.poke(false.B)
+      dut.io.coreRunStart.expect(true.B); dut.clock.step()
+      dut.io.stageCycles.get(0).expect(10120.U)
+      dut.io.stageCycles.get(1).peek().litValue should be < BigInt(32)
+      dut.clock.step(10)
+      dut.io.coreComputeDone.get.poke(true.B); dut.clock.step()
+      dut.io.coreComputeDone.get.poke(false.B)
+      dut.clock.step(5)
+      dut.io.coreDone.poke(true.B); dut.clock.step(); dut.io.coreDone.poke(false.B)
+      Seq(dut.io.keyLowStatus, dut.io.keyHighStatus, dut.io.keyLow1Status,
+        dut.io.keyHigh1Status).foreach(_.valid.poke(true.B))
+      dut.clock.step()
+      Seq(dut.io.keyLowStatus, dut.io.keyHighStatus, dut.io.keyLow1Status,
+        dut.io.keyHigh1Status).foreach(_.valid.poke(false.B))
+      dut.clock.step(7); dut.io.done.expect(false.B)
+      dut.io.outputStatus.valid.poke(true.B); dut.clock.step()
+      dut.io.outputStatus.valid.poke(false.B); dut.clock.step(); dut.io.done.expect(true.B)
+      dut.io.stageCycles.get(2).peek().litValue should be > BigInt(0)
+      dut.io.stageCycles.get(3).peek().litValue should be > BigInt(0)
+      dut.io.stageCycles.get(4).peek().litValue should be > BigInt(0)
+    }
+  }
+
   it should "require actual output DMA status rather than a timeout in chained mode" in {
     val scalar = config.copy(blindRotate = config.blindRotate.copy(sampleExtractLanes = 1))
     test(new FptBlindRotateKernelSequencer(scalar, strictCompletion = true)) { dut =>

@@ -17,6 +17,12 @@ int main(int argc, char** argv) try {
   if (batches < 2 || batches > 1024) throw std::runtime_error("batches must be 2..1024");
   const char* emulationMode=std::getenv("XCL_EMULATION_MODE");
   const bool hwEmulation=emulationMode && std::string(emulationMode)=="hw_emu";
+  const auto enabled=[](const char* name) {
+    const char* value=std::getenv(name);
+    return value && std::string(value)=="1";
+  };
+  const bool rawInputs=enabled("FPT_CHAINED_RAW_INPUTS");
+  const bool requirePrepared=enabled("FPT_REQUIRE_PREPROCESSED_INPUT");
   const auto timeout=std::chrono::minutes(hwEmulation ? 60 : 5);
   std::cout<<"CHAINED_TEST_START mode="<<(hwEmulation ? "hw_emu" : "hw")
     <<" batches="<<batches<<" timeout_minutes="<<timeout.count()<<std::endl;
@@ -42,7 +48,19 @@ int main(int argc, char** argv) try {
       tv[c]=0x10000u+static_cast<std::uint32_t>(b*101+c*17);
       bodies[c]=static_cast<std::uint32_t>(((b+c)*71)%2048)<<21;
       masks[c].fill(static_cast<std::uint32_t>(((b+c)*37)%2048)<<21);
-      const auto exponent=(0u-(bodies[c]>>21))&2047u;
+      std::uint32_t correction=0;
+      if(rawInputs) {
+        for(std::size_t i=0;i<kDimension;++i) {
+          masks[c][i] += static_cast<std::uint32_t>((i*7919+b*313+c*17)%2097152);
+          const std::uint32_t rounded=masks[c][i]+(1u<<20);
+          correction += masks[c][i]-((rounded>>21)<<21);
+        }
+        bodies[c] += static_cast<std::uint32_t>((b*65537+c*97)%2097152);
+      }
+      const std::int64_t signedCorrection=(correction&0x80000000u)
+        ? static_cast<std::int64_t>(correction)-4294967296LL : correction;
+      const std::uint32_t adjusted=bodies[c]-static_cast<std::uint32_t>(signedCorrection/2)+(1u<<20);
+      const auto exponent=(0u-(adjusted>>21))&2047u;
       const bool negative=((exponent>>10)!=0)^((exponent&1023u)!=0);
       expected.back()[c*1025+1024]=negative ? 0u-tv[c] : tv[c];
     }
@@ -83,8 +101,13 @@ int main(int argc, char** argv) try {
   const auto accepted=kernel.read_register(0x58)-acceptedBefore;
   const auto prefetched=kernel.read_register(0x5c)-prefetchedBefore;
   const auto completed=kernel.read_register(0x60)-completedBefore;
+  std::array<std::uint32_t,5> stages{};
+  for(std::size_t i=0;i<stages.size();++i) stages[i]=kernel.read_register(0x64+4*i);
 #pragma GCC diagnostic pop
   if(status&1u) throw std::runtime_error("chained DMA failure");
+  if(requirePrepared && (stages[0]<kInputWords || stages[1]>=2048 || prefetched!=batches-1))
+    throw std::runtime_error("prepared input latency/overlap gate failed: preparation="+
+      std::to_string(stages[0])+" setup="+std::to_string(stages[1])+" overlap="+std::to_string(prefetched));
   if(accepted!=batches || completed!=batches || prefetched==0)
     throw std::runtime_error("chained overlap not demonstrated: accepted="+std::to_string(accepted)+" prefetched="+std::to_string(prefetched)+" completed="+std::to_string(completed));
   std::cout<<"CHAINED_TEST_PASS batches="<<batches<<" mode="<<(hwEmulation ? "hw_emu" : "hw")
@@ -93,6 +116,9 @@ int main(int argc, char** argv) try {
     <<" host_elapsed_ms="<<ms;
   if (!hwEmulation) std::cout<<" results_per_ms="<<(batches*kContexts/ms);
   std::cout<<std::endl;
+  std::cout<<"CHAINED_STAGE_CYCLES preparation="<<stages[0]<<" setup="<<stages[1]
+    <<" compute="<<stages[2]<<" output_tail="<<stages[3]<<" dma_wait="<<stages[4]
+    <<" raw_inputs="<<rawInputs<<std::endl;
 } catch (const std::exception& error) {
   std::cerr<<"Chained test failed: "<<error.what()<<'\n'; return 1;
 }

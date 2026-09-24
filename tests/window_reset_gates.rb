@@ -55,7 +55,15 @@ if $PROGRAM_NAME == __FILE__
     puts "acceptance=#{full ? 'full' : partial ? 'partial_improvement_not_timing_closed' : 'not_accepted'}"
     puts "overall_wns=#{overall} kernel_wns=#{w} kernel_tns=#{t} kernel_endpoints=#{e}"
     text=File.read(log)
-    puts "global_short_congestion=#{text.scan(/Estimated Global\/Short routing congestion is level (\d+)/).last&.first || 'unknown'}"
+    global_short = text.scan(/Estimated Global\/Short routing congestion is level (\d+)/).last&.first
+    if !global_short
+      report = File.join(current, 'routed-congestion.rpt')
+      if File.file?(report)
+        bound = File.read(report).match(/^\* No effective congestion windows are found above level (\d+)\s*$/)
+        global_short = "<=#{bound[1]}" if bound
+      end
+    end
+    puts "global_short_congestion=#{global_short || 'unknown'}"
     puts "timing_congestion=#{text.scan(/Estimated Timing congestion is level (\d+)/).last&.first || 'unknown'}"
   else
     abort "usage: window_reset_gates.rb latency LOG | baseline DIR | resources REPORT BASELINE_REPORT | review DIR BASELINE RUN_LOG"

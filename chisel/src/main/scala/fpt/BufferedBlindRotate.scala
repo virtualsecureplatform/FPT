@@ -62,6 +62,8 @@ final class BufferedBatchedBlindRotateSampleExtractEngine(
   private val rowWidth = TransformUtil.counterWidth(external.rows)
 
   val io = IO(new Bundle {
+    val bufferedOutput = if (config.blindRotate.bufferedOutput) Some(new BufferedOutputOwnership) else None
+    val preparedInput = if (blindConfig.preprocessedInput) Some(new PreparedInputPort) else None
     val inputStart = Input(Bool())
     val inputStartReady = Output(Bool())
     val inputContext = Input(UInt(contextWidth.W))
@@ -204,6 +206,7 @@ final class BufferedBatchedBlindRotateSampleExtractEngine(
   }
 
   blindRotate.io.inputStart := io.inputStart
+  io.preparedInput.foreach { port => blindRotate.io.preparedInput.get <> port }
   io.inputStartReady := blindRotate.io.inputStartReady
   blindRotate.io.inputContext := io.inputContext
   blindRotate.io.testVector := io.testVector
@@ -228,6 +231,7 @@ final class BufferedBatchedBlindRotateSampleExtractEngine(
   }
   io.active := blindRotate.io.active
   io.computeDone := blindRotate.io.computeDone
+  io.bufferedOutput.foreach { p => p <> blindRotate.io.bufferedOutput.get }
   io.contextDoneValid := blindRotate.io.contextDoneValid
   io.contextDone := blindRotate.io.contextDone
   io.contextComplete := blindRotate.io.contextComplete

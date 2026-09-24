@@ -1,4 +1,5 @@
 # Called only by the opt-in coefficient_slr0_narrow place pre-hook.
+source [file join [file dirname [info script]] fpt_prepared_word_link.tcl]
 proc fpt_required_cell {name} {
   set cell [get_cells -quiet $name]
   if {[llength $cell] != 1} {error "missing or ambiguous narrow-link hierarchy: $name"}
@@ -48,6 +49,28 @@ proc fpt_apply_coefficient_slr0 {cmux} {
   # collecting leaves, so no FFT or External Product cell is dragged to SLR0.
   set blind_rotate [file dirname $cmux]
   set extraction_wrapper [file dirname $blind_rotate]
+  if {[info exists ::env(FPT_U280_BUFFERED_OUTPUT)] && $::env(FPT_U280_BUFFERED_OUTPUT) eq "1"} {
+    # The sequencer's soft SLR preference did not prevent the packer feedback
+    # from bouncing across SLR0/1 three times in one cycle. Constrain only
+    # the output retirement island, not the complete sequencer/controller.
+    set controller [file dirname [file dirname [file dirname $extraction_wrapper]]]
+    set output_island [fpt_required_cell ${controller}/sequencer/outputRetirement]
+    lappend slr0 $output_island
+    set_property USER_SLR_ASSIGNMENT SLR0 $output_island
+    set completion_tx [fpt_required_cell ${controller}/completionLink/sourceTx]
+    set completion_rx [fpt_required_cell ${controller}/completionLink/destinationRx]
+    lappend slr0 $completion_tx
+    lappend slr1 $completion_rx
+    set_property USER_SLR_ASSIGNMENT SLR0 $completion_tx
+    set_property USER_SLR_ASSIGNMENT SLR1 $completion_rx
+    foreach boundary [list $completion_tx $completion_rx] {
+      set registers [get_cells -hier -quiet -filter "NAME =~ ${boundary}/*/value_reg* && REF_NAME =~ FD*"]
+      if {![llength $registers]} {error "missing completion crossing registers: $boundary"}
+      set_property USER_SLL_REG TRUE $registers
+      set_property DONT_TOUCH TRUE $registers
+    }
+    puts "BUFFERED_OUTPUT_FLOORPLAN_PASS retirement=SLR0"
+  }
   # Override the packaged XDC's old sample-extraction SLR1 assignment too.
   # The leaf collection below supplies its pblock membership.
   set_property USER_SLR_ASSIGNMENT SLR0 [fpt_required_cell ${extraction_wrapper}/sampleExtract]
@@ -59,6 +82,21 @@ proc fpt_apply_coefficient_slr0 {cmux} {
   set local_inverse [get_cells -hier -filter "NAME =~ ${cmux}/inverseOutputLocalBoundary/outputPayload_payloadBoundary/value_reg* && REF_NAME =~ FD*"]
   if {[llength $local_inverse] != 3840} {error "local inverse payload count [llength $local_inverse] != 3840"}
   set_property USER_SLL_REG FALSE $local_inverse
+  set prepared_root [fpt_prepared_word_root]
+  if {$prepared_root ne ""} {
+    # Keep queue addressing and 16:1 selection on the TX side. Do not constrain
+    # the entire controller: other interfaces retain their established owners.
+    lappend slr1 [fpt_required_cell [file dirname $prepared_root]/chain]
+    lappend slr1 [fpt_required_cell ${prepared_root}/sourceTx]
+    lappend slr0 [fpt_required_cell ${prepared_root}/destinationRx]
+    foreach role {sourceTx destinationRx} {
+      set data [fpt_prepared_word_registers $prepared_root $role payload]
+      set token [fpt_prepared_word_registers $prepared_root $role token]
+      set_property USER_SLL_REG TRUE $data
+      set_property DONT_TOUCH TRUE [concat $data $token]
+    }
+    puts "PREPARED_WORD_FLOORPLAN_PASS TX=SLR1 RX=SLR0 payload=32 stages=2"
+  }
   foreach index {0 1 2} {
     set cells [set slr$index]
     fpt_hard_pblock fpt_narrow_coefficients_slr$index SLR$index $cells

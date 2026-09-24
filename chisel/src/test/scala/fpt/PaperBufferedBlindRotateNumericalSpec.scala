@@ -80,7 +80,7 @@ final class PaperBufferedBlindRotateNumericalSpec
     )
 
     val profile = rtlProfile
-    val config = if (sys.env.get("FPT_U280_ROUTABLE_200_NUMERICS").contains("1")) {
+    val baseConfig = if (sys.env.get("FPT_U280_ROUTABLE_200_NUMERICS").contains("1")) {
       require(
         profile == PaperSetII,
         "the U280 routable numerical target supports paper-set-ii only"
@@ -99,6 +99,9 @@ final class PaperBufferedBlindRotateNumericalSpec
         includeVerilogSource = true
       )
     }
+    val config = baseConfig.copy(blindRotate = baseConfig.blindRotate.copy(
+      preprocessedInput = sys.env.get("FPT_U280_PREPROCESSED_INPUT").contains("1"),
+      bufferedOutput = sys.env.get("FPT_U280_BUFFERED_OUTPUT").contains("1")))
     val blind = config.blindRotate
     val coefficient = blind.cmux.engine.coefficient
     val external = blind.cmux.engine.externalProduct
@@ -133,6 +136,13 @@ final class PaperBufferedBlindRotateNumericalSpec
         // Always-ready runs intentionally hold inputs constant through the
         // entire output drain; retain the same finite bound as the loop.
         dut.clock.setTimeout(30000)
+        dut.io.bufferedOutput.foreach(_.retire.poke(false.B))
+        dut.io.preparedInput.foreach { p =>
+          p.start.valid.poke(false.B); p.start.bits.poke(false.B)
+          p.word.valid.poke(false.B); p.word.bits.poke(0.U)
+          p.activate.valid.poke(false.B); p.activate.bits.poke(false.B)
+          p.release.valid.poke(false.B); p.release.bits.poke(false.B)
+        }
         dut.io.inputStart.poke(false.B)
         dut.io.inputContext.poke(0.U)
         dut.io.testVector.poke(0.U)
@@ -193,7 +203,25 @@ final class PaperBufferedBlindRotateNumericalSpec
           s"cycles=$initialKeyLoadCycles commitExtra=${initialKeyLoadCycles - config.keyBuffer.loadBeatsPerCoefficient}")
         dut.clock.step()
 
-        for (context <- 0 until contexts) {
+        if (blind.preprocessedInput) {
+          val p = dut.io.preparedInput.get
+          p.start.valid.poke(true.B); p.start.ready.expect(true.B)
+          dut.clock.step(); p.start.valid.poke(false.B)
+          for (word <- inputRows.flatMap(_.toSeq)) {
+            p.word.valid.poke(true.B); p.word.bits.poke(word.U)
+            p.word.ready.expect(true.B); dut.clock.step()
+          }
+          p.word.valid.poke(false.B)
+          p.activate.valid.poke(true.B); p.activate.ready.expect(true.B)
+          dut.clock.step(); p.activate.valid.poke(false.B)
+          var waitCycles=0
+          while(!p.initialized.peek().litToBoolean) {
+            dut.clock.step(); waitCycles+=1
+            waitCycles should be < contexts * (coefficient.polynomialBeats + 8) + 100
+          }
+          dut.clock.step()
+          info(s"prepared batch accumulator initialization cycles=$waitCycles")
+        } else for (context <- 0 until contexts) {
           val input = inputRows(context)
           dut.io.inputContext.poke(context.U)
           dut.io.testVector.poke(input(0).U)
@@ -238,11 +266,73 @@ final class PaperBufferedBlindRotateNumericalSpec
         var blockedOutputCycles = 0
         var cycle = 0
         var finalDone = false
+        val nextWords = if (blind.bufferedOutput) inputRows.reverse.flatMap(_.toSeq)
+          else inputRows.flatMap(_.toSeq).map(x => x ^ BigInt(0x13579))
+        var nextPreparationStarted = false
+        var nextPreparedWords = 0
+        var nextPreparedDone = false
+        var captureCycle = Option.empty[Int]
+        var nextActivated = false
+        var nextInitialized = false
+        var nextRunStarted = false
+        var nextRunCycle = Option.empty[Int]
+        var nextKeyStarted = false
+        var nextKeyBeat = 0
         while (!finalDone) {
-          val ready = sys.env.get("FPT_TEST_OUTPUT_ALWAYS_READY").contains("1") ||
-            (cycle % 11 != 3 && cycle % 11 != 7)
+          dut.io.runStart.poke(false.B)
+          dut.io.keyLoadStart.poke(false.B)
+          dut.io.keyLoadValid.poke(false.B)
+          if (blind.bufferedOutput && captureCycle.nonEmpty) {
+            if (!nextKeyStarted && dut.io.keyLoadStartReady.peek().litToBoolean) {
+              dut.io.keyLoadStart.poke(true.B); nextKeyStarted = true
+            } else if (nextKeyStarted && nextKeyBeat < config.keyBuffer.loadBeatsPerCoefficient &&
+                dut.io.keyLoadReady.peek().litToBoolean) {
+              val word = nextKeyBeat / config.keyBuffer.loadGroupsPerRead
+              val group = nextKeyBeat % config.keyBuffer.loadGroupsPerRead
+              val keyRow = word / external.inputFrameBeats
+              val beat = word % external.inputFrameBeats
+              for (loadLane <- 0 until config.keyBuffer.loadLanes) {
+                val scalar = group * config.keyBuffer.loadLanes + loadLane
+                val lane = scalar / external.outputComponents
+                val component = scalar % external.outputComponents
+                val point = beat * external.inputLanes + lane
+                val vector = key(keyRow * external.points + point)
+                dut.io.keyLoad(loadLane).real.poke(vector(2 * component).S)
+                dut.io.keyLoad(loadLane).imag.poke(vector(2 * component + 1).S)
+              }
+              dut.io.keyLoadValid.poke(true.B); nextKeyBeat += 1
+            }
+          }
+          dut.io.preparedInput.foreach { p =>
+            p.start.bits.poke(true.B)
+            p.start.valid.poke((!nextPreparationStarted).B)
+            if(!nextPreparationStarted && p.start.ready.peek().litToBoolean) {
+              nextPreparationStarted = true
+            }
+            val valid = cycle > 0 && nextPreparedWords < nextWords.size
+            p.word.valid.poke(valid.B)
+            p.word.bits.poke(nextWords(math.min(nextPreparedWords, nextWords.size-1)).U)
+            if(valid && p.word.ready.peek().litToBoolean) nextPreparedWords+=1
+            if(p.prepared.valid.peek().litToBoolean) nextPreparedDone=true
+            if (blind.bufferedOutput) {
+              val captured = dut.io.bufferedOutput.get.captured.peek().litToBoolean
+              p.release.valid.poke(captured.B); p.release.bits.poke(false.B)
+              if (captured) captureCycle = Some(cycle)
+              p.activate.bits.poke(true.B)
+              val activate = captureCycle.nonEmpty && nextPreparedDone && !nextActivated
+              p.activate.valid.poke(activate.B)
+              if (activate && p.activate.ready.peek().litToBoolean) nextActivated = true
+              if (p.initialized.peek().litToBoolean) nextInitialized = true
+              if (nextInitialized && !nextRunStarted && dut.io.runReady.peek().litToBoolean) {
+                dut.io.runStart.poke(true.B); nextRunStarted = true; nextRunCycle = Some(cycle)
+              }
+            }
+          }
+          val ready = (!blind.bufferedOutput || nextRunStarted) &&
+            (sys.env.get("FPT_TEST_OUTPUT_ALWAYS_READY").contains("1") ||
+              (cycle % 11 != 3 && cycle % 11 != 7))
           dut.io.resultReady.poke(ready.B)
-          if (dut.io.computeDone.peek().litToBoolean) {
+          if (dut.io.computeDone.peek().litToBoolean && computeDoneCycle.isEmpty) {
             computeDoneCycle = Some(cycle)
           }
           val fire = dut.io.resultValid.peek().litToBoolean && ready
@@ -282,10 +372,15 @@ final class PaperBufferedBlindRotateNumericalSpec
           if (!finalDone) dut.io.active.expect(true.B)
           dut.clock.step()
           cycle += 1
-          cycle should be < 30000
+          assert(cycle < 30000, s"batch timeout capture=$captureCycle prepared=$nextPreparedDone activated=$nextActivated initialized=$nextInitialized keyBeats=$nextKeyBeat nextRun=$nextRunStarted outputs=$outputIndex")
         }
 
         outputIndex should be(expected.size)
+        if (blind.preprocessedInput) {
+          nextPreparedWords should be(nextWords.size)
+          nextPreparedDone should be(true)
+          info("PREPARED_INPUT_OVERLAP_NUMERICAL_PASS")
+        }
         observedContexts.toSeq should be(
           (0 until contexts).flatMap(context =>
             Seq.fill(outputsPerContext)(context)
@@ -293,6 +388,42 @@ final class PaperBufferedBlindRotateNumericalSpec
         )
         computeDoneCycle should not be empty
         firstResultCycle.get should be > computeDoneCycle.get
+        dut.io.bufferedOutput.foreach { p =>
+          dut.io.active.expect(true.B)
+          p.retire.poke(true.B); dut.clock.step(); p.retire.poke(false.B)
+          nextRunStarted should be(true)
+          val captureCycles = captureCycle.get - computeDoneCycle.get
+          captureCycles should be <= 1152
+          val handoffCycles = nextRunCycle.get - computeDoneCycle.get
+          handoffCycles should be <= 1601 // 163100 target II minus 161499 compute cycles.
+          val secondExpected = expected.grouped(outputsPerContext).toSeq.reverse.flatten
+          var secondIndex = 0
+          var secondCycles = 0
+          dut.io.runStart.poke(false.B)
+          dut.io.preparedInput.get.activate.valid.poke(false.B)
+          dut.io.preparedInput.get.release.valid.poke(false.B)
+          while (secondIndex < secondExpected.size && secondCycles < 30000) {
+            val ready = secondCycles % 5 != 2
+            dut.io.resultReady.poke(ready.B)
+            if (ready && dut.io.resultValid.peek().litToBoolean) {
+              val count = dut.io.resultCount.peek().litValue.toInt
+              dut.io.resultContext.expect((secondIndex / outputsPerContext).U)
+              for (lane <- 0 until count) {
+                // Compare to the first invocation's bit-exact RTL outputs,
+                // permuted by context, rather than the approximate C++ oracle.
+                val reversedContext = contexts - 1 - secondIndex / outputsPerContext
+                val index = reversedContext * outputsPerContext + secondIndex % outputsPerContext
+                dut.io.result(lane).expect(BigInt(observedResults(index)).U)
+                secondIndex += 1
+              }
+              dut.io.resultLast.expect((secondIndex == secondExpected.size).B)
+            }
+            dut.clock.step(); secondCycles += 1
+          }
+          secondIndex should be(secondExpected.size)
+          p.retire.poke(true.B); dut.clock.step(); p.retire.poke(false.B)
+          info(s"BUFFERED_OUTPUT_OVERLAP_NUMERICAL_PASS capture_cycles=$captureCycles handoff_cycles=$handoffCycles second_words=$secondIndex next_run_before_output=true")
+        }
         dut.io.active.expect(false.B)
         dut.io.runReady.expect(false.B)
         val histogram = errors.toSeq.sortBy(_._1).mkString("[", ",", "]")

@@ -27,6 +27,8 @@ final class BufferedBlindRotateAccelerator(
   )
 
   val io = IO(new Bundle {
+    val bufferedOutput = if (blindConfig.bufferedOutput) Some(new BufferedOutputOwnership) else None
+    val preparedInput = if (blindConfig.preprocessedInput) Some(new PreparedInputPort) else None
     val inputStart = Input(Bool())
     val inputStartReady = Output(Bool())
     val inputContext = Input(UInt(contextWidth.W))
@@ -70,6 +72,7 @@ final class BufferedBlindRotateAccelerator(
   )
 
   engine.io.inputStart := io.inputStart
+  io.preparedInput.foreach { port => engine.io.preparedInput.get <> port }
   io.inputStartReady := engine.io.inputStartReady
   engine.io.inputContext := io.inputContext
   engine.io.testVector := io.testVector
@@ -92,6 +95,7 @@ final class BufferedBlindRotateAccelerator(
   io.runReady := engine.io.runReady
   io.active := engine.io.active
   io.computeDone := engine.io.computeDone
+  io.bufferedOutput.foreach { p => p <> engine.io.bufferedOutput.get }
 
   // These buses are intentionally absent at the physical boundary. The SGen
   // backends ignore their values when the tangent operations are integrated.

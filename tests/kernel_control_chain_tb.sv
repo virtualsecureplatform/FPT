@@ -25,7 +25,10 @@ module KernelControlCase #(parameter CHAIN=0)(output reg finished=0);
     .key_high1_ptr(), .output_ptr(), .kernel_status(32'h0),
     .debug_key_beats(32'h0), .debug_key_starved_cycles(32'h0),
     .debug_key_bank_blocked_cycles(32'h0), .debug_run_cycles(32'h0),
-    .chain_accepted(32'd11), .chain_prefetched(32'd7), .chain_completed(32'd10));
+    .chain_accepted(32'd11), .chain_prefetched(32'd7), .chain_completed(32'd10),
+    .preparation_cycles(CHAIN ? 32'd101 : 32'd0), .setup_cycles(CHAIN ? 32'd102 : 32'd0),
+    .compute_cycles(CHAIN ? 32'd103 : 32'd0), .output_tail_cycles(CHAIN ? 32'd104 : 32'd0),
+    .dma_wait_cycles(CHAIN ? 32'd105 : 32'd0));
   always @(posedge ACLK) begin
     if (!ARESET && ap_continue) begin
       continues <= continues+1;
@@ -74,6 +77,10 @@ module KernelControlCase #(parameter CHAIN=0)(output reg finished=0);
     if(continues !== (CHAIN ? 2 : 0)) $fatal(1,"wrong continue pulse count");
     read_reg(7'h58,value);
     if(value !== (CHAIN ? 32'd11 : 32'd0)) $fatal(1,"chain counter mapping failed");
+    for(integer i=0;i<5;i=i+1) begin
+      read_reg(7'h64+7'(4*i),value);
+      if(value !== (CHAIN ? 32'(101+i) : 32'd0)) $fatal(1,"prepared counter mapping failed");
+    end
     write_reg(0,128);
     read_reg(0,value);
     if(value[7] !== !CHAIN[0]) $fatal(1,"auto-restart mode guard failed");

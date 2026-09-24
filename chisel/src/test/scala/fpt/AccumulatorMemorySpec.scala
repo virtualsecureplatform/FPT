@@ -323,8 +323,10 @@ final class AccumulatorMemorySpec
     }
   }
 
-  it should "drain the full-width accumulator without using coefficient scratch" in {
-    test(new ReplicatedAccumulatorBanks(config, replicateReads = false, localWriteControls = localControls))
+  for (registered <- Seq(false, true)) {
+  it should s"drain the full-width accumulator without using coefficient scratch registered=$registered" in {
+    test(new ReplicatedAccumulatorBanks(config, replicateReads = false, localWriteControls = localControls,
+      localCoefficientQueues = registered, registeredDrain = registered))
       .withAnnotations(Seq(VerilatorBackendAnnotation, PaperVerilator.flags)) { dut =>
       clearInputs(dut)
       dut.reset.poke(true.B)
@@ -364,6 +366,7 @@ final class AccumulatorMemorySpec
       dut.io.drainDone.expect(true.B)
       dut.io.drainDoneContext.expect(1.U)
     }
+  }
   }
 
   it should "describe the Set-II accumulator capacity explicitly" in {

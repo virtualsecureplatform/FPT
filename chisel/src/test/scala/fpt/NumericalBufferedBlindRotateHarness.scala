@@ -12,6 +12,8 @@ final class NumericalBufferedBlindRotateHarness(config: BufferedBlindRotateConfi
   private val blind = config.blindRotate
   private val width = blind.cmux.engine.coefficient.torusWidth
   val io = IO(new Bundle {
+    val bufferedOutput = if (blind.bufferedOutput) Some(new BufferedOutputOwnership) else None
+    val preparedInput = if (blind.preprocessedInput) Some(new PreparedInputPort) else None
     val inputStart = Input(Bool())
     val inputStartReady = Output(Bool())
     val inputContext = Input(UInt(blind.contextWidth.W))

@@ -1,5 +1,9 @@
 # Exercise ownership and fail-closed hierarchy checks without Vivado.
 source [file join [file dirname [info script]] .. vitis scripts apply_fpt_coefficient_slr0.tcl]
+# First exercise the disabled fixture independently of the caller's build
+# environment. The second fixture explicitly enables prepared input below.
+set ::env(FPT_U280_PREPROCESSED_INPUT) 0
+set ::env(FPT_U280_BUFFERED_OUTPUT) 0
 set cmux top/controller/core/engine/blindRotate/blindRotate/cmux
 set wrapper [file dirname [file dirname $cmux]]
 set fixtures [dict create]
@@ -84,6 +88,66 @@ if {[dict get $properties $local_cell USER_SLL_REG] ne "FALSE"} {error "local in
 if {[dict get $properties $wrapper/sampleExtract USER_SLR_ASSIGNMENT] ne "SLR0"} {
   error "old packaged sample-extraction assignment not overridden"
 }
+set prepared top/controller/preparedWordLink
+fixture $prepared 0
+fixture top/controller/chain 0
+foreach role {sourceTx destinationRx} {
+  fixture $prepared/$role 0
+  for {set bit 0} {$bit < 32} {incr bit} {
+    fixture "$prepared/$role/payload/value_reg\[$bit\]" 1
+  }
+  fixture "$prepared/$role/token/value_reg\[0\]" 1
+}
+set ::env(FPT_U280_PREPROCESSED_INPUT) 1
+set owners [dict create]
+fpt_apply_coefficient_slr0 $cmux
+foreach {cell slr} [list top/controller/chain SLR1 $prepared/sourceTx SLR1 $prepared/destinationRx SLR0] {
+  if {[dict get $owners $cell] ne $slr} {error "wrong prepared ownership $cell"}
+}
+foreach role {sourceTx destinationRx} {
+  foreach cell [fpt_prepared_word_registers $prepared $role payload] {
+    if {![dict get $properties $cell DONT_TOUCH] || ![dict get $properties $cell USER_SLL_REG]} {
+      error "unprotected prepared payload $cell"
+    }
+  }
+}
+set missing "$prepared/destinationRx/payload/value_reg\[31\]"
+dict unset fixtures $missing
+if {![catch {fpt_prepared_word_registers $prepared destinationRx payload} message] || ![string match {*count 31*} $message]} {
+  error "missing prepared receive bit accepted: $message"
+}
+fixture $missing 1
+dict unset fixtures $prepared
+if {![catch {fpt_prepared_word_root} message] || ![string match {*count 0*} $message]} {
+  error "missing required prepared link accepted: $message"
+}
+fixture $prepared 0
+unset ::env(FPT_U280_PREPROCESSED_INPUT)
+puts "PREPARED_WORD_FLOORPLAN_TEST_PASS"
+set ::env(FPT_U280_BUFFERED_OUTPUT) 1
+fixture top/controller/sequencer/outputRetirement 0
+fixture top/controller/completionLink/sourceTx 0
+fixture top/controller/completionLink/destinationRx 0
+foreach role {sourceTx destinationRx} {
+  fixture "top/controller/completionLink/$role/payload/value_reg\[0\]" 1
+  fixture "top/controller/completionLink/$role/token/value_reg\[0\]" 1
+}
+set owners [dict create]
+fpt_apply_coefficient_slr0 $cmux
+if {[dict get $owners top/controller/sequencer/outputRetirement] ne "SLR0"} {
+  error "output retirement escaped SLR0"
+}
+if {[dict exists $owners top/controller/sequencer]} {error "entire sequencer moved"}
+foreach {role slr} {sourceTx SLR0 destinationRx SLR1} {
+  if {[dict get $owners top/controller/completionLink/$role] ne $slr} {
+    error "wrong completion ownership $role"
+  }
+}
+dict unset fixtures top/controller/sequencer/outputRetirement
+if {![catch {fpt_apply_coefficient_slr0 $cmux} message] || ![string match *missing* $message]} {
+  error "missing output island accepted: $message"
+}
+set ::env(FPT_U280_BUFFERED_OUTPUT) 0
 dict unset fixtures $cmux/coefficientDigitLink/middleTx
 if {![catch {fpt_apply_coefficient_slr0 $cmux} message] || ![string match *missing* $message]} {
   error "missing middle TX was not rejected: $message"

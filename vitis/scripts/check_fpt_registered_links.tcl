@@ -1,4 +1,5 @@
 # Explicit payload topology is a contract; Laguna mapping is a diagnostic.
+source [file join [file dirname [info script]] fpt_prepared_word_link.tcl]
 proc fpt_placed_slr {cell} {
   # Vivado 2023.2 can return no SLR for a placed RAM macro (e.g. RAM32M16)
   # when queried directly. Its physical sites, including the internal RAM
@@ -89,6 +90,25 @@ proc fpt_check_registered_links {report {kernel 1} {placed 0} {architecture pair
   fpt_check_link_pair $tx $rx 7680 SLR2 SLR1 $placed $out
   set banks [list $tx $rx]
   if {$kernel} {
+    set prepared_root [fpt_prepared_word_root]
+    if {$prepared_root ne ""} {
+      set prepared_tx [fpt_prepared_word_registers $prepared_root sourceTx payload]
+      set prepared_rx [fpt_prepared_word_registers $prepared_root destinationRx payload]
+      fpt_check_link_pair $prepared_tx $prepared_rx 32 SLR1 SLR0 $placed $out
+      lappend banks $prepared_tx $prepared_rx
+      foreach {role slr} {sourceTx SLR1 destinationRx SLR0} {
+        set token [fpt_prepared_word_registers $prepared_root $role token]
+        if {$placed} {foreach cell $token {fpt_require_placed_slr $cell $slr}}
+      }
+      if {$placed} {
+        set chain [file dirname $prepared_root]/chain
+        foreach cell [get_cells -hier -filter "NAME =~ ${chain}/* && IS_PRIMITIVE && REF_NAME != VCC && REF_NAME != GND"] {
+          fpt_require_placed_slr $cell SLR1
+        }
+      }
+      puts $out "PREPARED_WORD\tSLR1\tSLR0\t32\t2"
+      puts "PREPARED_WORD_LINK_STRUCTURE_PASS placed=$placed payload=32 stages=2"
+    }
     if {$architecture eq "coefficient_slr0_narrow"} {
       set digit_banks {}
       foreach role {sourceTx middleRx middleTx destinationRx} {

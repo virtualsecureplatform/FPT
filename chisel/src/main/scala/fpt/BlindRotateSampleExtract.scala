@@ -21,6 +21,8 @@ final class BatchedBlindRotateSampleExtractEngine(
   private val rowWidth = TransformUtil.counterWidth(external.rows)
 
   val io = IO(new Bundle {
+    val bufferedOutput = if (config.bufferedOutput) Some(new BufferedOutputOwnership) else None
+    val preparedInput = if (config.preprocessedInput) Some(new PreparedInputPort) else None
     val inputStart = Input(Bool())
     val inputStartReady = Output(Bool())
     val inputContext = Input(UInt(contextWidth.W))
@@ -98,18 +100,13 @@ final class BatchedBlindRotateSampleExtractEngine(
   })
 
   private val blindRotate = Module(new BatchedBlindRotateEngine(config))
-  private val sampleExtract = Module(
-    new SampleExtractIndexZero(
-      SampleExtractConfig(
-        coefficient.polynomialSize,
-        coefficient.inverseLanes,
-        coefficient.torusWidth,
-        config.sampleExtractLanes
-      )
-    )
-  )
 
   val extracting = RegInit(false.B)
+  io.preparedInput.foreach { port =>
+    blindRotate.io.preparedInput.get <> port
+    blindRotate.io.preparedInput.get.activate.valid := port.activate.valid && !extracting
+    port.activate.ready := blindRotate.io.preparedInput.get.activate.ready && !extracting
+  }
   val extractionContext = RegInit(0.U(contextWidth.W))
   val drainInFlight = RegInit(false.B)
 
@@ -168,6 +165,45 @@ final class BatchedBlindRotateSampleExtractEngine(
     drainInFlight := false.B
   }
 
+  if (config.bufferedOutput) {
+    require(coefficient.inverseLanes == 64 && coefficient.torusWidth == 32)
+    val snapshot = Module(new BufferedSampleExtract(config.batchContexts, coefficient.polynomialSize))
+    snapshot.suggestName("sampleExtract")
+    val captureStarted = RegInit(false.B)
+    when(blindRotate.io.done) { captureStarted := false.B }
+    snapshot.io.start.valid := extracting && !captureStarted
+    snapshot.io.start.bits := false.B
+    when(snapshot.io.start.fire) { captureStarted := true.B }
+    snapshot.io.contextStart.valid := extracting && captureStarted && !drainInFlight && blindRotate.io.drainStartReady
+    snapshot.io.contextStart.bits := extractionContext
+    blindRotate.io.drainStart := snapshot.io.contextStart.fire
+    blindRotate.io.drainContext := extractionContext
+    when(snapshot.io.contextStart.fire) { drainInFlight := true.B }
+    snapshot.io.input.valid := blindRotate.io.drainValid
+    snapshot.io.input.bits.a := blindRotate.io.drain(0)
+    snapshot.io.input.bits.b := blindRotate.io.drain(1)
+    blindRotate.io.drainReady := snapshot.io.input.ready
+    val lastDrain = blindRotate.io.drainDone && extractionContext === (config.batchContexts - 1).U
+    io.bufferedOutput.get.captured := lastDrain
+    snapshot.io.retire := io.bufferedOutput.get.retire
+    when(blindRotate.io.drainDone) {
+      assert(drainInFlight && blindRotate.io.drainDoneContext === extractionContext)
+      drainInFlight := false.B
+      when(lastDrain) { extracting := false.B }
+        .otherwise { extractionContext := extractionContext + 1.U }
+    }
+    io.resultValid := snapshot.io.output.valid
+    snapshot.io.output.ready := io.resultReady
+    io.result := snapshot.io.output.bits.data
+    io.resultCount := snapshot.io.output.bits.count
+    io.resultContext := snapshot.io.output.bits.context
+    io.resultLast := snapshot.io.output.bits.last
+    io.done := snapshot.io.output.fire && snapshot.io.output.bits.last
+    io.active := blindRotate.io.active || extracting || snapshot.io.occupied
+  } else {
+  val sampleExtract = Module(new SampleExtractIndexZero(SampleExtractConfig(
+    coefficient.polynomialSize, coefficient.inverseLanes, coefficient.torusWidth,
+    config.sampleExtractLanes)))
   val startExtraction = extracting && !drainInFlight &&
     sampleExtract.io.inputStartReady && blindRotate.io.drainStartReady
   sampleExtract.io.inputStart := startExtraction
@@ -218,5 +254,6 @@ final class BatchedBlindRotateSampleExtractEngine(
     }.otherwise {
       extractionContext := extractionContext + 1.U
     }
+  }
   }
 }

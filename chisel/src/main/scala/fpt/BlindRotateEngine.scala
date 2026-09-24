@@ -7,9 +7,13 @@ final case class BatchedBlindRotateEngineConfig(
     cmux: BatchedCmuxEngineConfig,
     domainDimension: Int,
     inputTorusWidth: Int = 32,
-    sampleExtractLanes: Int = 1
+    sampleExtractLanes: Int = 1,
+    preprocessedInput: Boolean = false,
+    bufferedOutput: Boolean = false
 ) {
   require(domainDimension >= 1)
+  require(!preprocessedInput || inputTorusWidth == 32)
+  require(!bufferedOutput || (preprocessedInput && sampleExtractLanes == 4))
   require(Set(1, 4).contains(sampleExtractLanes))
   require(inputTorusWidth >= 2)
   require(cmux.engine.coefficient.components == 2)
@@ -45,7 +49,7 @@ final class BatchedBlindRotateEngine(
 ) extends Module {
   import TransformUtil._
 
-  private val cmuxConfig = config.cmux
+  private val cmuxConfig = config.cmux.copy(registeredDrain = config.bufferedOutput || config.cmux.registeredDrain)
   private val base = cmuxConfig.engine
   private val coefficient = base.coefficient
   private val external = base.externalProduct
@@ -58,6 +62,7 @@ final class BatchedBlindRotateEngine(
   private val rowWidth = counterWidth(external.rows)
 
   val io = IO(new Bundle {
+    val preparedInput = if (config.preprocessedInput) Some(new PreparedInputPort) else None
     val inputStart = Input(Bool())
     val inputStartReady = Output(Bool())
     val inputContext = Input(UInt(contextWidth.W))
@@ -141,10 +146,31 @@ final class BatchedBlindRotateEngine(
   })
 
   val cmux = Module(new BatchedCmuxEngine(cmuxConfig))
-  val exponentMemory = SyncReadMem(
+  val exponentMemory = if (config.preprocessedInput) None else Some(SyncReadMem(
     config.batchContexts * config.domainDimension,
     UInt(config.exponentWidth.W)
-  )
+  ))
+  val preparedInputs = if (config.preprocessedInput) Some(Module(new PreparedBatchInputs(
+    config.batchContexts, config.domainDimension, config.inputTorusWidth, config.exponentWidth))) else None
+  preparedInputs.foreach { p =>
+    p.io.start <> io.preparedInput.get.start
+    p.io.word <> io.preparedInput.get.word
+    io.preparedInput.get.prepared := p.io.prepared
+    p.io.release := io.preparedInput.get.release
+    io.preparedInput.get.preparationCycles := p.io.preparationCycles
+    p.io.read.valid := false.B
+    p.io.read.bits := 0.U
+    p.io.descriptorRequest.valid := false.B
+    p.io.descriptorRequest.bits := 0.U
+    io.preparedInput.get.initialized := false.B
+  }
+  def readStoredExponent(address: UInt, enable: Bool): UInt = {
+    if (config.preprocessedInput) {
+      preparedInputs.get.io.read.valid := enable
+      preparedInputs.get.io.read.bits := address
+      preparedInputs.get.io.exponent
+    } else exponentMemory.get.read(address, enable)
+  }
 
   def nextContext(context: UInt): UInt =
     Mux(
@@ -199,9 +225,9 @@ final class BatchedBlindRotateEngine(
     contextBusy(io.inputContext),
     true.B
   )
-  io.inputStartReady := loadState === loadIdle && !running &&
+  io.inputStartReady := (!config.preprocessedInput).B && loadState === loadIdle && !running &&
     validInputContext && !selectedInputBusy
-  io.inputReady := loadState === collectInput
+  io.inputReady := (!config.preprocessedInput).B && loadState === collectInput
   io.inputDone := loadState === waitAccumulator && cmux.io.loadDone
   io.inputDoneContext := loaderContext
 
@@ -292,10 +318,10 @@ final class BatchedBlindRotateEngine(
 
   when(inputFire) {
     when(maskInput) {
-      exponentMemory.write(
+      exponentMemory.foreach(_.write(
         exponentAddress(loaderContext, inputIndex),
         switchedMask
-      )
+      ))
       correction := correction + maskError
       inputIndex := inputIndex + 1.U
     }.otherwise {
@@ -318,6 +344,36 @@ final class BatchedBlindRotateEngine(
   when(loadState === waitAccumulator && cmux.io.loadDone) {
     initialized(loaderContext) := true.B
     loadState := loadIdle
+  }
+
+  preparedInputs.foreach { p =>
+    val port = io.preparedInput.get
+    val canActivate = loadState === loadIdle && !running && !contextBusy.asUInt.orR
+    p.io.activate.valid := port.activate.valid && canActivate
+    p.io.activate.bits := port.activate.bits
+    port.activate.ready := p.io.activate.ready && canActivate
+    when(port.activate.fire) {
+      loaderContext := 0.U
+      initialized.foreach(_ := false.B)
+      complete.foreach(_ := false.B)
+      loadState := collectInput
+    }
+    p.io.descriptorRequest.valid := loadState === collectInput
+    p.io.descriptorRequest.bits := loaderContext
+    when(loadState === collectInput && p.io.descriptor.valid) {
+      loaderTestVector := p.io.descriptor.bits.testVector
+      loaderExponent := p.io.descriptor.bits.exponent
+      accumulatorBeat := 0.U
+      loadState := startAccumulator
+    }
+    when(loadState === waitAccumulator && cmux.io.loadDone) {
+      when(loaderContext === (config.batchContexts - 1).U) {
+        port.initialized := true.B
+      }.otherwise {
+        loaderContext := loaderContext + 1.U
+        loadState := collectInput
+      }
+    }
   }
 
   val allInitialized = initialized.asUInt.andR
@@ -390,7 +446,7 @@ final class BatchedBlindRotateEngine(
         scanContext := nextContext(scanContext)
       }
     }
-    readExponent := exponentMemory.read(
+    readExponent := readStoredExponent(
       readRequestAddress,
       readRequestValid
     )
@@ -411,7 +467,7 @@ final class BatchedBlindRotateEngine(
         scanContext := nextContext(scanContext)
       }
     }
-    readExponent := exponentMemory.read(readAddress, readEnable)
+    readExponent := readStoredExponent(readAddress, readEnable)
     when(readEnable) {
       pendingContext := scanContext
       pendingDimension := progress(scanContext)

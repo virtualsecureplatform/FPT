@@ -6,10 +6,12 @@ proc fpt_scratch_input_loads {names} {
   set fields {}
   set other 0
   foreach name [lsort -unique $names] {
-    if {[regexp {/(readAddressesGroup|writeAddressGroup|writeEnableGroup|primeCaptureGroup|readComponentGroup|readHalvesGroup)_reg(\[[0-9]+\])?/D$} $name -> role bit]} {
+    # Vivado can retain the generate scope in the leaf name as well as in
+    # the hierarchy: .../lane_groups[0].island/lane_groups[0].foo_reg/D.
+    if {[regexp {/(?:lane_groups\[[0-9]+\]\.)?(readAddressesGroup|writeAddressGroup|writeEnableGroup|primeCaptureGroup|readComponentGroup|readHalvesGroup)_reg(\[[0-9]+\])?/D$} $name -> role bit]} {
       dict incr fields "$role$bit"
     } else {
-      if {[regexp {/(readAddressCut|writeAddressCut|writeEnableCut)_reg} $name]} {
+      if {[regexp {/(?:lane_groups\[[0-9]+\]\.)?(readAddressCut|writeAddressCut|writeEnableCut)_reg} $name]} {
         error "scratch input bypasses group stage: $name"
       }
       incr other
@@ -51,7 +53,12 @@ proc fpt_check_scratch_groups {out {placed 0}} {
         puts $out "SCRATCH_UNUSED\t$c\t$d\t0"
         continue
       }
-      set inputSummary [fpt_scratch_input_loads [get_property NAME $inputLoads]]
+      if {[catch {fpt_scratch_input_loads [get_property NAME $inputLoads]} inputSummary options]} {
+        puts $out "SCRATCH_INPUT_FAILURE\t$controlName\t$inputSummary"
+        foreach pin [lsort -unique [get_property NAME $inputLoads]] {puts $out "SCRATCH_INPUT_LOAD\t$pin"}
+        flush $out
+        return -options $options $inputSummary
+      }
       puts $out "SCRATCH_INPUT\t$controlName\t$inputSummary"
       if {[llength $q] > 16} {error "scratch control fanout: $c D=$d Q=[llength $q]"}
       foreach pin $q {

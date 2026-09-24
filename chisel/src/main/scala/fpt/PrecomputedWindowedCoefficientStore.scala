@@ -459,7 +459,8 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
     val coefficientLaneTileLanes: Int = 0,
     val windowMsbFirst: Boolean = false,
     val minimalMetadataReset: Boolean = false,
-    val localCoefficientQueues: Boolean = false
+    val localCoefficientQueues: Boolean = false,
+    val registeredDrain: Boolean = false
 ) extends BatchedCmuxCoefficientStoreBase(config, batchContexts, bankLocalAccumulatorInit) {
   import TransformUtil._
 
@@ -554,7 +555,8 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
       localWriteControls = coefficientLocality,
       bankLocalInitialization = bankLocalAccumulatorInit,
       minimalMetadataReset = minimalMetadataReset,
-      localCoefficientQueues = localCoefficientQueues
+      localCoefficientQueues = localCoefficientQueues,
+      registeredDrain = registeredDrain
     )
   )
   memory.io.loadStart := io.loadStart
@@ -562,6 +564,34 @@ final class PrecomputedWindowedBatchedCmuxCoefficientStore(
   memory.io.loadValid := io.loadValid
   memory.io.load := io.load
   memory.io.loadDescriptor.foreach(_ := io.loadDescriptor.get)
+  if (registeredDrain && bankLocalAccumulatorInit) {
+    // Isolate the loader FSM from bank-local initialization fanout. Payload
+    // is meaningful only with the resettable token; no wide reset is needed.
+    val command = Cat(io.loadContext, io.loadDescriptor.get.asUInt)
+    val loadCommandPayload = Module(new PhysicalCutRegister(command.getWidth))
+    loadCommandPayload.io.clock := clock
+    loadCommandPayload.io.enable := io.loadStart
+    loadCommandPayload.io.inputData := command
+    val loadCommandToken = Module(new PhysicalControlRegister(1))
+    loadCommandToken.io.clock := clock
+    loadCommandToken.io.reset := reset.asBool
+    loadCommandToken.io.inputData := io.loadStart
+    val descriptorWidth = io.loadDescriptor.get.getWidth
+    memory.io.loadStart := loadCommandToken.io.outputData(0)
+    memory.io.loadContext := loadCommandPayload.io.outputData(command.getWidth - 1, descriptorWidth)
+    memory.io.loadDescriptor.get := loadCommandPayload.io.outputData(descriptorWidth - 1, 0)
+      .asTypeOf(io.loadDescriptor.get)
+    // The source holds its first beat while the command is in flight.
+    memory.io.loadValid := io.loadValid && memory.io.loadReady
+    when(io.loadStart) {
+      assert(!loadCommandToken.io.outputData(0) && !memory.io.loadReady,
+        "overlapping initialization commands")
+      assert(!io.updateValid, "initialization overlaps accumulator update")
+    }
+    when(memory.io.loadReady) {
+      assert(io.loadValid, "bank-local initialization requires an uninterrupted burst")
+    }
+  }
   io.loadReady := memory.io.loadReady
   io.loadDone := memory.io.loadDone
   io.loadDoneContext := memory.io.loadDoneContext

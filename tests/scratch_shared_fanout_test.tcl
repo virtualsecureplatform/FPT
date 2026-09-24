@@ -19,4 +19,18 @@ foreach {bits groups extra expected} {
 foreach names [list [fixture {10} 9 0] [fixture {3 7 11 15} 8 33] [list {scratch/bank/readAddressCut_reg[0]/D}]] {
   if {![catch {fpt_scratch_input_loads $names}]} {error "unsafe broadcast was accepted"}
 }
+# Real synthesized spelling must count as group fields, not shared metadata.
+set prefixed {}
+foreach name [fixture {3 7 11 15} 8 1] {
+  regsub {/(readAddressesGroup_reg)} $name {/lane_groups[0].\1} name
+  lappend prefixed $name
+}
+set summary [fpt_scratch_input_loads $prefixed]
+if {[lrange $summary 0 1] ne {33 1}} {error "generate-prefixed group loads misclassified: $summary"}
+set ninth {scratch/lane_groups[8].island/lane_groups[8].readAddressesGroup_reg[3]/D}
+if {![catch {fpt_scratch_input_loads [concat $prefixed [list $ninth]]}]} {error "ninth prefixed group accepted"}
+if {![catch {fpt_scratch_input_loads [list {scratch/bank/lane_groups[0].readAddressCut_reg[0]/D}]}]} {
+  error "prefixed bank bypass accepted"
+}
+if {![catch {fpt_scratch_input_loads [fixture {} 0 33]}]} {error "33 true metadata loads accepted"}
 puts SCRATCH_SHARED_FANOUT_PASS

@@ -53,7 +53,8 @@ final class ReplicatedAccumulatorBanks(
     val localWriteControls: Boolean = false,
     val bankLocalInitialization: Boolean = false,
     val minimalMetadataReset: Boolean = false,
-    val localCoefficientQueues: Boolean = false
+    val localCoefficientQueues: Boolean = false,
+    val registeredDrain: Boolean = false
 ) extends Module {
   require(!minimalMetadataReset || localWriteControls)
   require(!bankLocalInitialization || (!replicateReads && localWriteControls))
@@ -246,7 +247,7 @@ final class ReplicatedAccumulatorBanks(
     val data = chiselTypeOf(io.drain)
     val last = Bool()
   }
-  val drainResponses = CoefficientQueue(new DrainResponse, 2, localCoefficientQueues, "drainResponses")
+  val drainResponses = CoefficientQueue(new DrainResponse, 2, localCoefficientQueues, "drainResponses", flow = !registeredDrain)
   val drainDoneReg = RegInit(false.B)
   val drainDoneContextReg = Reg(UInt(contextWidth.W))
   val drainBusy = Wire(Bool())
@@ -297,6 +298,7 @@ final class ReplicatedAccumulatorBanks(
   val drainOccupancyAfterResponse =
     drainResponses.count + drainResponseValid.asUInt -
       drainOutputFire.asUInt
+  assert(drainOccupancyAfterResponse <= 2.U, "drain response reservation overflow")
   drainIssueEnable := drainActive && drainOccupancyAfterResponse < 2.U
   drainBusy := drainActive || drainResponseValid ||
     drainResponses.deq.valid
