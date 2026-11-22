@@ -1,0 +1,266 @@
+{
+  "schema_version": 1,
+  "backend": "paper-set-i-streaming",
+  "candidate": "tf26guard4acc40-raw-mixed-prefetch",
+  "numerical_qualified": false,
+  "hardware_qualified": false,
+  "geometry": {
+    "n": 586,
+    "N": 512,
+    "k": 2,
+    "levels": 2,
+    "base_bits": 8,
+    "batch": 12
+  },
+  "forward": {
+    "implementation": "RTL_prototype",
+    "input_format": [
+      9,
+      23
+    ],
+    "stage_formats": [
+      [
+        11,
+        21
+      ],
+      [
+        13,
+        19
+      ],
+      [
+        15,
+        17
+      ],
+      [
+        17,
+        15
+      ]
+    ],
+    "divide_bits": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "twiddle_fraction": 26,
+    "ordering": "butterfly_groups",
+    "radix": 4,
+    "rtl_latency_cycles": null,
+    "input_order": "base4_digit_reversed",
+    "native_point_map": "j / 4 + (j % 4) * 64",
+    "fft_stage_latency_cycles": 5,
+    "twist_latency_cycles": 4,
+    "frame_commutators": 1,
+    "leg_guard_bits": 4
+  },
+  "key": {
+    "format": [
+      7,
+      21
+    ],
+    "ordering": "butterfly_groups",
+    "row_order": "component * 2 + level",
+    "packed_complex_bytes": 7,
+    "supported_layouts": [
+      "dense-v1",
+      "four-port-grouped-v2"
+    ],
+    "selected_layout": "four-port-grouped-v2"
+  },
+  "mac": {
+    "accumulator_format": [
+      26,
+      14
+    ],
+    "rows": 6,
+    "rtl_latency_cycles": 5,
+    "bank_count": 2,
+    "shared_accumulate_and_drain": true,
+    "piso_beats_per_transaction": 12
+  },
+  "inverse": {
+    "implementation": "RTL_prototype",
+    "input_format": [
+      20,
+      12
+    ],
+    "stage_formats": [
+      [
+        20,
+        12
+      ],
+      [
+        21,
+        11
+      ],
+      [
+        22,
+        10
+      ],
+      [
+        23,
+        9
+      ]
+    ],
+    "divide_bits": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "twiddle_fraction": 26,
+    "ordering": "butterfly_groups",
+    "radix": 4,
+    "deferred_normalization_bits": 8,
+    "torus_input_fraction": 17,
+    "rtl_latency_cycles": null,
+    "input_order": "butterfly_groups",
+    "native_point_map": "j / 4 + (j % 4) * 64",
+    "fft_stage_latency_cycles": 5,
+    "twist_latency_cycles": 4,
+    "frame_commutators": 2,
+    "leg_guard_bits": 4
+  },
+  "rounding": "signed_nearest_even",
+  "internal_overflow": "count_before_wrap_and_reject_candidate",
+  "rtl_primitives": {
+    "complex_product_latency_cycles": 3,
+    "butterfly_latency_cycles": 1,
+    "requantize_latency_cycles": 1,
+    "reset": "valid_only",
+    "complex_product_implementation": "PaperStreamingComplexProductSplit"
+  },
+  "targets": {
+    "clock_period_ns": 5,
+    "forward_lanes": 128,
+    "inverse_lanes": 64,
+    "row_interval_cycles": 2,
+    "cmux_interval_cycles": 12,
+    "feedback_cycles": 144,
+    "pbs_per_ms": 28.4,
+    "maximum_lut": 631200,
+    "maximum_ff": 1099200,
+    "maximum_dsp": 6592,
+    "maximum_bram_equivalents": 606
+  },
+  "internal_interface_version": 1,
+  "qualification_scope": "Raw mixed-state engine passed three full 586-step batches against ordinary encrypted-key Boolean/nonconstant lookup fixtures, including stalls and reset; 84,479-cycle steady periods are simulation only. Raw engine synthesis excludes DMA and CSR. Complete DMA encrypted RTL validation, complete platform resource admission, routed timing and board qualification remain pending.",
+  "digit_stream_bits": 8,
+  "coefficient_storage_bits": 17,
+  "lookup_load_rounding": "RNE from Torus32 to Torus17; Boolean lookup is exactly aligned",
+  "arithmetic_synthesis": {
+    "scope": "external product only; excludes coefficient frontend/store, controller and DMA",
+    "total_lut": 598463,
+    "ff": 792174,
+    "dsp": 5682,
+    "ramb36": 0,
+    "ramb18": 0,
+    "clock_period_ns": 5,
+    "estimated_setup_slack_ns": 1.923,
+    "estimated_hold_slack_ns": 0.057,
+    "routed": false,
+    "report": "build/paper-streaming-contract/external-product-compact-synth-u280-v1/post_synth_utilization.rpt"
+  },
+  "output_buffer": {
+    "batches": 2,
+    "contexts_per_batch": 12,
+    "sample_words": 1025,
+    "rtl": "PaperStreamingSampleBuffer17",
+    "total_lut_synth": 3039,
+    "ff_synth": 2853,
+    "ramb18_synth": 128
+  },
+  "output_stream": {
+    "rtl": "PaperStreamingSampleStream",
+    "data_bits": 512,
+    "fifo_words": 32,
+    "words_per_batch": 12300,
+    "beats_per_batch": 769,
+    "last_beat_valid_bytes": 48,
+    "implemented": true,
+    "complete_backend_verified": false,
+    "integration_verification": "Full 586-step key-cache-integrated backend passed synthetic and ordinary encrypted-key tests with Boolean/nonconstant LUT fixtures, loader/output stalls and reset recovery. Raw input preparation and platform DMA remain separate."
+  },
+  "key_cache": {
+    "rtl": "PaperStreamingKeyCache",
+    "step_depth": 32,
+    "synchronous_read_cycles": 1,
+    "total_lut_synth": 3020,
+    "ff_synth": 446,
+    "ramb36_synth": 299,
+    "interface_key_layout_version": 2,
+    "prefill_steps": 8,
+    "bank_addressing": "continuous physical slots across full-key epochs"
+  },
+  "encrypted_rtl_verification": {
+    "seed": 80,
+    "keys": 1,
+    "lookups": [
+      "bool",
+      "ramp8"
+    ],
+    "distinct_inputs": 24,
+    "completions_including_repeated_batches": 48,
+    "words_compared": 49200,
+    "complete_kernel_qualified": false
+  },
+  "input_preparation": {
+    "rtl": "PaperStreamingInputPrepare17",
+    "input_words_per_tlwe": 587,
+    "lookup_words": 512,
+    "scalar_body_codes_per_batch": 6144,
+    "lookup_rounding": "unsigned modular RNE to 17 bits",
+    "total_lut_synth": 112,
+    "ff_synth": 94,
+    "ramb18_synth": 1,
+    "controller_integrated": true,
+    "historical_leaf_synthesis_note": "112 LUT/1 RAMB18 precedes the start-cycle LUT-write guard. Current guard is included in raw_engine_synthesis."
+  },
+  "rtl_top": "PaperStreamingRawBlindRotate",
+  "rtl_parameters": {
+    "STEPS": 586,
+    "DSP_FORWARD_PAIRS": 1,
+    "DSP_INVERSE_LAST": 1,
+    "FUSED_ACCUM_ROUND": 0,
+    "BRAM_STATE_LANES": 112
+  },
+  "coefficient_state": {
+    "rtl": "PaperStreamingMixedCoefficientStore17",
+    "bram_native_lanes": 112,
+    "total_native_lanes": 128,
+    "front_read_cycles": 1,
+    "feedback_commit_cycles": 1,
+    "standalone_total_lut_synth": 6600,
+    "standalone_ramb18_synth": 341
+  },
+  "controller": {
+    "exponent_frames": 2,
+    "initial_body_prefetch_batches": 1,
+    "body_replacement": "final-step body commit; old+delta remains available for sample extraction"
+  },
+  "complete_kernel_qualified": false,
+  "raw_engine_synthesis": {
+    "total_lut": 620155,
+    "logic_lut": 614997,
+    "lutram": 5140,
+    "srl": 18,
+    "ff": 776120,
+    "dsp": 6578,
+    "ramb36": 303,
+    "ramb18": 471,
+    "bram_equivalents": 538.5,
+    "routed": false,
+    "report": "build/paper-streaming-contract/raw-mixed-candidate-synth-u280-v1/post_synth_utilization.rpt",
+    "scope": "raw engine including key cache/input preparation/output buffers; excludes DMA masters, sequencer, input decoder and AXI Lite CSR"
+  },
+  "raw_engine_verification": {
+    "artifact": "build/paper-streaming-contract/encrypted-raw-mixed586-rtl-v1/results.json",
+    "steps": 586,
+    "batches": 3,
+    "distinct_inputs": 24,
+    "words_compared": 36900,
+    "steady_period_cycles": 84479,
+    "clock_assumed_mhz": 200,
+    "routed": false
+  }
+}

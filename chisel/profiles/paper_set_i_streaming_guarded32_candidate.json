@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "backend": "paper-set-i-streaming",
+  "candidate": "guarded32",
+  "numerical_qualified": false,
+  "hardware_qualified": false,
+  "geometry": {
+    "n": 586,
+    "N": 512,
+    "k": 2,
+    "levels": 2,
+    "base_bits": 8,
+    "batch": 12
+  },
+  "forward": {
+    "implementation": "arithmetic_model",
+    "input_format": [
+      9,
+      23
+    ],
+    "stage_formats": [
+      [
+        11,
+        21
+      ],
+      [
+        13,
+        19
+      ],
+      [
+        15,
+        17
+      ],
+      [
+        17,
+        15
+      ]
+    ],
+    "divide_bits": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "twiddle_fraction": 26,
+    "ordering": "natural",
+    "radix": 4,
+    "rtl_latency_cycles": null
+  },
+  "key": {
+    "format": [
+      7,
+      21
+    ],
+    "ordering": "natural",
+    "row_order": "component * 2 + level"
+  },
+  "mac": {
+    "accumulator_format": [
+      26,
+      22
+    ],
+    "rows": 6,
+    "rtl_latency_cycles": null
+  },
+  "inverse": {
+    "implementation": "arithmetic_model",
+    "input_format": [
+      20,
+      12
+    ],
+    "stage_formats": [
+      [
+        20,
+        12
+      ],
+      [
+        21,
+        11
+      ],
+      [
+        22,
+        10
+      ],
+      [
+        23,
+        9
+      ]
+    ],
+    "divide_bits": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "twiddle_fraction": 26,
+    "ordering": "natural",
+    "radix": 4,
+    "deferred_normalization_bits": 8,
+    "torus_input_fraction": 17,
+    "rtl_latency_cycles": null
+  },
+  "rounding": "signed_nearest_even",
+  "internal_overflow": "count_before_wrap_and_reject_candidate",
+  "rtl_primitives": {
+    "complex_product_latency_cycles": 3,
+    "butterfly_latency_cycles": 1,
+    "requantize_latency_cycles": 1,
+    "reset": "valid_only"
+  },
+  "targets": {
+    "clock_period_ns": 5,
+    "forward_lanes": 128,
+    "inverse_lanes": 64,
+    "row_interval_cycles": 2,
+    "cmux_interval_cycles": 12,
+    "feedback_cycles": 144,
+    "pbs_per_ms": 28.4,
+    "maximum_lut": 631200,
+    "maximum_ff": 1099200,
+    "maximum_dsp": 6592,
+    "maximum_bram_equivalents": 606
+  }
+}

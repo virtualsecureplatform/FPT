@@ -1,0 +1,372 @@
+{
+  "schema_version": 1,
+  "backend": "paper-set-i-streaming",
+  "geometry": {
+    "n": 586,
+    "N": 512,
+    "k": 2,
+    "levels": 2,
+    "base_bits": 8,
+    "batch": 12
+  },
+  "forward": {
+    "implementation": "RTL_prototype",
+    "input_format": [
+      9,
+      23
+    ],
+    "stage_formats": [
+      [
+        11,
+        21
+      ],
+      [
+        13,
+        19
+      ],
+      [
+        15,
+        17
+      ],
+      [
+        17,
+        15
+      ]
+    ],
+    "divide_bits": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "twiddle_fraction": 26,
+    "ordering": "butterfly_groups",
+    "radix": 4,
+    "rtl_latency_cycles": null,
+    "input_order": "base4_digit_reversed",
+    "native_point_map": "j / 4 + (j % 4) * 64",
+    "fft_stage_latency_cycles": 5,
+    "twist_latency_cycles": 4,
+    "frame_commutators": 1,
+    "leg_guard_bits": 4
+  },
+  "key": {
+    "format": [
+      7,
+      21
+    ],
+    "ordering": "butterfly_groups",
+    "row_order": "component * 2 + level",
+    "packed_complex_bytes": 7,
+    "supported_layouts": [
+      "dense-v1",
+      "four-port-grouped-v2"
+    ],
+    "selected_layout": "four-port-grouped-v2"
+  },
+  "mac": {
+    "accumulator_format": [
+      26,
+      14
+    ],
+    "rows": 6,
+    "rtl_latency_cycles": 5,
+    "bank_count": 2,
+    "shared_accumulate_and_drain": true,
+    "piso_beats_per_transaction": 12
+  },
+  "inverse": {
+    "implementation": "RTL_prototype",
+    "input_format": [
+      20,
+      12
+    ],
+    "stage_formats": [
+      [
+        20,
+        12
+      ],
+      [
+        21,
+        11
+      ],
+      [
+        22,
+        10
+      ],
+      [
+        23,
+        9
+      ]
+    ],
+    "divide_bits": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "twiddle_fraction": 26,
+    "ordering": "butterfly_groups",
+    "radix": 4,
+    "deferred_normalization_bits": 8,
+    "torus_input_fraction": 17,
+    "rtl_latency_cycles": null,
+    "input_order": "butterfly_groups",
+    "native_point_map": "j / 4 + (j % 4) * 64",
+    "fft_stage_latency_cycles": 5,
+    "twist_latency_cycles": 4,
+    "frame_commutators": 2,
+    "leg_guard_bits": 4
+  },
+  "rounding": "signed_nearest_even",
+  "internal_overflow": "count_before_wrap_and_reject_candidate",
+  "targets": {
+    "clock_period_ns": 5,
+    "forward_lanes": 128,
+    "inverse_lanes": 64,
+    "row_interval_cycles": 2,
+    "cmux_interval_cycles": 12,
+    "feedback_cycles": 144,
+    "pbs_per_ms": 28.4,
+    "maximum_lut": 631200,
+    "maximum_ff": 1099200,
+    "maximum_dsp": 6592,
+    "maximum_bram_equivalents": 606
+  },
+  "digit_stream_bits": 8,
+  "coefficient_storage_bits": 17,
+  "lookup_load_rounding": "RNE from Torus32 to Torus17; Boolean lookup is exactly aligned",
+  "controller": {
+    "exponent_frames": 2,
+    "initial_body_prefetch_batches": 1,
+    "body_replacement": "final-step body commit; old+delta remains available for sample extraction"
+  },
+  "candidate": "tf26guard4acc40-raw-bram128-prefetch",
+  "numerical_qualified": false,
+  "hardware_qualified": false,
+  "complete_kernel_qualified": false,
+  "rtl_top": "PaperStreamingDmaEngine",
+  "rtl_parameters": {
+    "STEPS": 586,
+    "BRAM_STATE_LANES": 128
+  },
+  "kernel_top": "FptPaperStreamingKernel",
+  "kernel_parameters": {
+    "BRAM_STATE_LANES": 128
+  },
+  "qualification_scope": "Full586-step encrypted DMA rekey regression, complete standalone and platform post-opt resource gates, all36 training geometries, and4224 distinct encrypted fixtures across32 ordinary keys passed. Full platform routed timing/resources, factory-default unwaived DRC, and actual board output/performance remain incomplete.",
+  "coefficient_state": {
+    "rtl": "PaperStreamingMixedCoefficientStore17",
+    "bram_native_lanes": 128,
+    "total_native_lanes": 128,
+    "front_read_cycles": 1,
+    "feedback_commit_cycles": 1,
+    "standalone_total_lut_synth": 3698,
+    "standalone_ff_synth": 2358,
+    "standalone_ramb18_synth": 389,
+    "standalone_report": "build/paper-streaming-contract/bram128-state-synth-u280-v1/post_synth_utilization.rpt",
+    "store_test": "build/paper-streaming-contract/bram128-coefficient-store17-rtl-v1/results.json"
+  },
+  "dma": {
+    "configuration": "five 512-bit MM2S without store-and-forward; one 512-bit S2MM",
+    "input_layout_version": 2,
+    "raw_torus32": true,
+    "input_stride_bytes": 30272,
+    "output_stride_bytes": 49216,
+    "output_payload_bytes": 49200,
+    "max_frames_per_job": 4096,
+    "completion": "all streams and DMA statuses, including final write ACK",
+    "vendor_and_control_test": "build/paper-streaming-contract/vendor-dma-control-sim-nosf-v2/manifest.json"
+  },
+  "comparison": {
+    "baseline": "paper_set_i_streaming_tf26guard4acc40_raw_mixed_candidate.json",
+    "coefficient_store_lut_reduction": 2902,
+    "extra_bram_equivalents": 24,
+    "read_dma_bram_equivalents_freed": 42.5,
+    "note": "Leaf differences are not complete-kernel resource admission."
+  },
+  "encrypted_dma_verification": {
+    "report": "build/paper-streaming-contract/encrypted-dma-engine586-bram128-rtl-v1/results.json",
+    "passed": true,
+    "steps": 586,
+    "batches": 5,
+    "distinct_inputs": 24,
+    "words_compared": 61500,
+    "steady_period_cycles": 84479,
+    "clock_assumed_mhz": 200,
+    "reset_and_restart": true,
+    "routed": false
+  },
+  "complete_kernel_synthesis": {
+    "resource_gate_passed": true,
+    "total_lut": 623726,
+    "logic_lut": 619174,
+    "lutram": 2592,
+    "srl": 1960,
+    "ff": 779211,
+    "dsp": 6578,
+    "ramb36": 310,
+    "ramb18": 520,
+    "uram": 0,
+    "bram_equivalents": 570,
+    "lut_headroom": 7474,
+    "report": "build/paper-streaming-contract/bram128-resource-audit-v1/kernel_utilization.rpt",
+    "audit": "build/paper-streaming-contract/bram128-resource-audit-v1/manifest.json",
+    "scope": "complete standalone kernel including six resolved vendor DataMovers, sequencer, decoder and AXI Lite control; unrouted",
+    "routed": false
+  },
+  "geometry_training_selection": {
+    "coverage_complete": true,
+    "report": "build/paper-streaming-contract/geometry-screen-training-v1/results.json",
+    "cases_per_geometry": 64,
+    "survivors": [
+      "T30-K27-A40",
+      "T30-K28-A40",
+      "T30-K28-A48",
+      "T30-K28-A59",
+      "T32-K27-A40",
+      "T32-K27-A48",
+      "T32-K27-A59",
+      "T32-K28-A40",
+      "T32-K28-A48",
+      "T32-K28-A59"
+    ],
+    "retained": [
+      32,
+      28,
+      40
+    ],
+    "reason": "Current arithmetic passed training and existing independent ordinary-key tests and has a full synthesis resource admission. Alternative geometries require fresh seed113+ confirmation and separate RTL implementation/qualification."
+  },
+  "encrypted_dma_rekey_verification": {
+    "passed": true,
+    "report": "build/paper-streaming-contract/encrypted-dma-engine586-bram128-rekey-rtl-v1/results.json",
+    "ordinary_keys": 2,
+    "distinct_inputs": 48,
+    "words_compared": 61500,
+    "reset_between_completed_jobs": false
+  },
+  "platform_post_opt_resources": {
+    "resource_gate_passed": true,
+    "total_lut": 618870,
+    "ff": 774396,
+    "dsp": 6578,
+    "bram_equivalents": 570,
+    "report": "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v3/kernel_post_opt_resources.tsv",
+    "routed": false
+  },
+  "distinct_encrypted_fixture_verification": {
+    "passed": true,
+    "ordinary_keys": 32,
+    "distinct_inputs": 4224,
+    "batches_per_key": 11,
+    "manifest": "build/paper-streaming-contract/board-distinct-fixtures-seeds81-112-v1/manifest.json",
+    "host_loader_all_keys_passed": true,
+    "host_loader_report": "build/paper-streaming-contract/board-distinct-loader-all32-v1/results.json",
+    "board_executed": false
+  },
+  "physical_placement_candidate": {
+    "floorplan": "pipeline-slrs",
+    "platform_build": "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v4",
+    "assignment_validation": null,
+    "automatic_placement_failure": "SLR0-SLR1 cut25478 exceeds23040; build platform-hw-bram128-nosf-v3",
+    "latency_changed": false,
+    "routed": false,
+    "hardware_qualified": false,
+    "actual_platform_assignments_applied": true,
+    "actual_platform_pblock_reports": [
+      "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v4/kernel_floorplan_slr0_pblock_utilization.rpt",
+      "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v4/kernel_floorplan_slr1_pblock_utilization.rpt",
+      "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v4/kernel_floorplan_slr2_pblock_utilization.rpt"
+    ],
+    "status": "place_design succeeded with zero errors; saving placed checkpoint; global estimated WNS=-20.830ns and high congestion; timing not met",
+    "previous_platform_failure": {
+      "build": "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v3",
+      "required_sll0_1": 25984,
+      "available_sll0_1": 23040,
+      "placement_failed": true,
+      "manifest": "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v3/manifest.json"
+    },
+    "existing_alignment_registers_to_slr2": 8197,
+    "revised_assignment_validation": null,
+    "previous_attempts": [
+      {
+        "build": "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v1",
+        "required_sll0_1": 34439,
+        "available_sll0_1": 23040
+      },
+      {
+        "build": "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v2",
+        "required_sll0_1": 34440,
+        "available_sll0_1": 23040
+      },
+      {
+        "build": "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v3",
+        "required_sll0_1": 25984,
+        "available_sll0_1": 23040
+      }
+    ],
+    "prior_twist_boundary_assignment_validation": "build/paper-streaming-contract/pipeline-slr-assignment-validation-v5/manifest.json",
+    "hard_pblock_property_audit": "build/paper-streaming-contract/pipeline-slr-constraint-audit-v1/results.json",
+    "expected_dsp_per_slr": [
+      2024,
+      2250,
+      2304
+    ],
+    "actual_lut_per_slr_including_platform": [
+      212448,
+      121399,
+      295076
+    ],
+    "actual_ff_per_slr_including_platform": [
+      318689,
+      168299,
+      315766
+    ],
+    "actual_dsp_per_slr": [
+      2024,
+      2250,
+      2304
+    ],
+    "slr0_slr1_crossing_check": {
+      "required": 21522,
+      "available": 23040,
+      "within_capacity": true,
+      "utilization_percent": 93.41145833333333,
+      "placement_completed": true,
+      "routed": false,
+      "report": "build/paper-streaming-contract/platform-hw-bram128-pipeline-slrs-v4/vpp_temp/link/vivado/vpl/prj/prj.runs/impl_1/runme.log"
+    },
+    "initial_post_placement_estimate": {
+      "global_wns_ns": -20.83,
+      "global_tns_ns": -653572.206,
+      "routed": false,
+      "limiting_clock_identified": false
+    },
+    "placement_completed": true
+  },
+  "launch_control_candidate": {
+    "register_launch": true,
+    "arithmetic_changed": false,
+    "arithmetic_pipeline_latency_changed": false,
+    "launch_latency_may_change": true,
+    "control_registers": 3,
+    "cache_credit_slr": 2,
+    "ready_and_bank_credit_slr": 0,
+    "regression": "build/paper-streaming-contract/encrypted-dma-engine586-launch-credit-rekey-rtl-v1/results.json",
+    "regression_passed": true,
+    "xo_build": "build/paper-streaming-contract/kernel-launch-credit-xo-v1",
+    "physical_timing_proved": false,
+    "basis": "placed-timing-diagnosis-v1: top50 setup paths originate at reset and traverse nested launch handshakes; MAC-local routing congestion also remains",
+    "xo_packaged": true,
+    "xo_synthesis_resources_measured": false,
+    "xo_sha256": "0eedede4fb49f427ed35aeebad9f00568b9a531de54e1f07dc11a4373b686455",
+    "sequencer_slr": 0,
+    "hierarchy_assignments": 12,
+    "regression_snapshot_inputs_unchanged": true,
+    "simulation_launch_period_cycles": 84480,
+    "simulation_rate_at_assumed_200mhz_pbs_per_ms": 28.40909090909091,
+    "hardware_build": "build/paper-streaming-contract/platform-hw-bram128-launch-credit-v1",
+    "hardware_build_status": "linking; source-verified new XO; actual synthesis resources and timing pending"
+  }
+}
